@@ -562,7 +562,14 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 	// Delete must be idempotent: clients retry deletes on rapid create-delete
 	// races and only clear their local hash upon NoteDeleteAck; returning an
 	// error for already-deleted or missing records causes an infinite retry loop.
-	note, err := s.noteRepo.GetAllByPathHash(ctx, params.PathHash, vaultID, uid)
+	// 同一 path_hash 存在重复行（含墓碑行）时优先取未删除的那行，避免命中墓碑行后跳过删除、
+	// 活跃行残留；没有未删除行时再回退到任意状态的记录。
+	// Prefer the non-deleted row when duplicate path_hash rows exist (incl. tombstones), so a
+	// tombstone hit cannot skip deleting the live row; fall back to any status otherwise.
+	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		note, err = s.noteRepo.GetAllByPathHash(ctx, params.PathHash, vaultID, uid)
+	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 幂等：记录不存在（上传未完成或已物理清理）→ 用请求参数构造成功 DTO，

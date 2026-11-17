@@ -48,6 +48,8 @@ func TestNoteService_Delete_AlreadyDeleted_IsIdempotent(t *testing.T) {
 	// 修复前代码路径：查询过滤 delete → 找不到
 	noteRepo.On("GetByPathHashIncludeRecycle", mock.Anything, "h1", int64(1), int64(1), false).
 		Return(nil, gorm.ErrRecordNotFound).Maybe()
+	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).
+		Return(nil, gorm.ErrRecordNotFound)
 	// 修复后代码路径：不过滤 action → 找到已删除记录
 	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).
 		Return(deletedNote, nil).Maybe()
@@ -75,6 +77,8 @@ func TestNoteService_Delete_RecordNotFound_IsIdempotent(t *testing.T) {
 
 	noteRepo.On("GetByPathHashIncludeRecycle", mock.Anything, "h1", int64(1), int64(1), false).
 		Return(nil, gorm.ErrRecordNotFound).Maybe()
+	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).
+		Return(nil, gorm.ErrRecordNotFound)
 	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).
 		Return(nil, gorm.ErrRecordNotFound).Maybe()
 
@@ -104,7 +108,8 @@ func TestNoteService_Delete_ActiveNote_MarksDeleted(t *testing.T) {
 		Path:     "a.md",
 		PathHash: "h1",
 	}
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(activeNote, nil)
+	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(activeNote, nil)
+	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(activeNote, nil).Maybe()
 	noteRepo.On("GetByPathHashIncludeRecycle", mock.Anything, "h1", int64(1), int64(1), false).
 		Return(activeNote, nil).Maybe()
 	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
@@ -120,6 +125,32 @@ func TestNoteService_Delete_ActiveNote_MarksDeleted(t *testing.T) {
 	assert.Equal(t, string(domain.NoteActionDelete), got.Action, "活跃笔记删除后 action 应为 delete")
 	assert.False(t, got.Unchanged, "真实删除必须广播，不得标记 Unchanged")
 	noteRepo.AssertCalled(t, "UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1))
+}
+
+// TestNoteService_Delete_DuplicateRows_PrefersLiveRow 同一 path_hash 同时存在墓碑行与活跃行时，
+// 删除必须作用于活跃行（修复前 GetAllByPathHash 可能先命中墓碑行，按"已删除"幂等返回，活跃行残留）。
+func TestNoteService_Delete_DuplicateRows_PrefersLiveRow(t *testing.T) {
+	noteRepo := new(domainmocks.MockNoteRepository)
+	shareRepo := new(domainmocks.MockUserShareRepository)
+	vaultSvc := new(servicemocks.MockVaultService)
+	vaultSvc.On("MustGetID", mock.Anything, int64(1), "vault").Return(int64(1), nil)
+
+	tombstone := &domain.Note{ID: 41, VaultID: 1, Action: domain.NoteActionDelete, Path: "a.md", PathHash: "h1"}
+	live := &domain.Note{ID: 42, VaultID: 1, Action: domain.NoteActionModify, Path: "a.md", PathHash: "h1"}
+	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(tombstone, nil).Maybe()
+	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(live, nil)
+	noteRepo.On("UpdateDelete", mock.Anything, mock.MatchedBy(func(n *domain.Note) bool { return n.ID == 42 }), int64(1)).Return(nil)
+	shareRepo.On("UpdateStatusByRes", mock.Anything, int64(1), "note", int64(42), domain.UserShareStatusRevoked).Return(nil)
+
+	svc := service.NewNoteService(nil, noteRepo, nil, nil, shareRepo, nil, vaultSvc, nil, nil, nil, nil, nil)
+	got, err := svc.Delete(context.Background(), 1, &dto.NoteDeleteRequest{
+		Vault: "vault", Path: "a.md", PathHash: "h1",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.False(t, got.Unchanged, "Bug: 存在活跃行时删除必须真实执行并广播")
+	noteRepo.AssertCalled(t, "UpdateDelete", mock.Anything, mock.MatchedBy(func(n *domain.Note) bool { return n.ID == 42 }), int64(1))
 }
 
 // TestFileService_Delete_RecordNotFound_IsIdempotent 验证删除不存在的文件返回成功。
