@@ -196,8 +196,26 @@ func (v *gitRepoURLValidator) dialContext(base func(context.Context, string, str
 		if err != nil {
 			return nil, err
 		}
-		ips, err := v.lookupIP(ctx, network, host)
-		if err != nil {
+		// net.Resolver.LookupIP 只接受 "ip"/"ip4"/"ip6"，而 dialContext 收到的 network
+		// 是 "tcp"/"tcp4"/"tcp6"，直接透传会报 "unknown network tcp"，让 #410 引入的
+		// 拨号校验把所有真实仓库访问当场打回（haierkeys/obsidian-fast-note-sync#231）。
+		lookupNetwork := "ip"
+		switch network {
+		case "tcp4":
+			lookupNetwork = "ip4"
+		case "tcp6":
+			lookupNetwork = "ip6"
+		}
+		var ips []net.IP
+		if parsed := net.ParseIP(host); parsed != nil {
+			ips = []net.IP{parsed}
+		} else {
+			ips, err = v.lookupIP(ctx, lookupNetwork, host)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if err := v.validateResolvedIPs(host, ips); err != nil {
 			return nil, err
 		}
 		if err := v.validateResolvedIPs(host, ips); err != nil {

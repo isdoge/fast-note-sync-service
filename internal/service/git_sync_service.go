@@ -37,6 +37,12 @@ var errNoChanges = errors.New("no changes found")
 
 const gitSyncBatchSize = 100
 
+// gitSyncValidateTimeout 单次 Git 配置验证（ls-remote）的最长耗时。
+// 远端无响应时此前完全依赖 TCP 层默认超时（分钟级），前端表现为永远“检测中”
+// （haierkeys/obsidian-fast-note-sync#231）。显式超时后立刻返回明确错误。
+// gitSyncValidateTimeout bounds a single Git config validation (ls-remote) call.
+const gitSyncValidateTimeout = 20 * time.Second
+
 // GitSyncService defines the Git synchronization business service interface
 // GitSyncService 定义 Git 同步业务服务接口
 type GitSyncService interface {
@@ -202,6 +208,8 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 	}
 
 	oldVaultID := conf.VaultID
+	oldRepoURL := conf.RepoURL
+	oldBranch := conf.Branch
 
 	if params.Vault != "" {
 		v, err := s.vaultRepo.GetByName(ctx, params.Vault, uid)
@@ -230,9 +238,25 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 	conf.IncludeConfig = params.IncludeConfig
 	conf.ConfigSyncRules = params.ConfigSyncRules
 
+	// 仓库地址或分支变更后，已有工作区里残留的是旧远端/旧分支的状态。直接复用会让
+	// 下一轮同步继续操作旧分支（service#428）。最稳的做法是丢弃工作区镜像并重置同步
+	// 游标，让下一次同步在新基线上完整重新导出。工作区只是 DB 内容的缓存，删除安全；
+	// 远端仓库的提交不做任何改动。
+	// Repo/branch changes invalidate the cached workspace: the next sync must clone the new
+	// target from scratch and re-export the full DB content (service#428).
 	saved, err := s.repo.Save(ctx, conf, uid)
 	if err != nil {
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	if params.ID > 0 && (oldRepoURL != saved.RepoURL || oldBranch != saved.Branch) {
+		s.resetWorkspaceAfterTargetChange(uid, saved.ID)
+		// 重置同步游标，让下一轮同步把 DB 里现有的笔记/附件/配置完整重新导出，
+		// 而不是只导出自上次游标以来的增量。
+		saved.LastSyncTime = nil
+		if _, err := s.repo.Save(ctx, saved, uid); err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
 	}
 
 	// 使 NotifyUpdated 的 enabled-config 缓存失效，让下一次调用立即感知最新的启用状态
@@ -241,6 +265,40 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 	s.invalidateEnabledCache(uid, saved.VaultID)
 
 	return s.domainToDTO(saved), nil
+}
+
+// resetWorkspaceAfterTargetChange 在仓库地址或分支变更后取消该配置的进行中同步任务，
+// 等其退出，再删除本地工作区镜像。这样下一次同步会从零 PlainClone 新目标，避免旧工作区
+// 的 HEAD/remote 状态把同步导向旧分支（service#428）。不动远端任何分支或提交。
+// resetWorkspaceAfterTargetChange cancels the in-flight sync for the config, waits for it
+// to exit, then removes the cached workspace so the next sync clones the new target.
+func (s *gitSyncService) resetWorkspaceAfterTargetChange(uid, configID int64) {
+	s.mu.Lock()
+	cancel, running := s.running[configID]
+	s.mu.Unlock()
+
+	if running {
+		cancel()
+		// 等旧任务退出再删目录，避免旧 goroutine 在已删除/重建的目录里继续写。
+		// 用超时兜底，防止极端情况下 UpdateConfig 被永远卡住。
+		done := make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			s.logger.Warn("Timed out waiting for in-flight git sync to stop before workspace reset",
+				zap.Int64("uid", uid), zap.Int64("configId", configID))
+		}
+	}
+
+	wsPath := s.getWorkspacePath(uid, configID)
+	if err := os.RemoveAll(wsPath); err != nil {
+		s.logger.Warn("Failed to remove git workspace after repo/branch change",
+			zap.Int64("uid", uid), zap.Int64("configId", configID), zap.String("path", wsPath), zap.Error(err))
+	}
 }
 
 func (s *gitSyncService) DeleteConfig(ctx context.Context, uid int64, id int64) error {
@@ -293,13 +351,22 @@ func (s *gitSyncService) Validate(ctx context.Context, params *dto.GitSyncValida
 
 	restoreClients := s.repoURLValidator().installHTTPClients()
 	defer restoreClients()
-	refs, err := rem.List(&git.ListOptions{
+
+	// ls-remote 不传 context 时无法被调用方取消也没有超时，远端挂起会让“验证”按钮
+	// 永远停在“检测中”（haierkeys/obsidian-fast-note-sync#231）。显式带超时上下文。
+	listCtx, listCancel := context.WithTimeout(ctx, gitSyncValidateTimeout)
+	defer listCancel()
+
+	refs, err := rem.ListContext(listCtx, &git.ListOptions{
 		Auth: auth,
 	})
 	if err != nil {
 		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
 			// Remote is empty, validation success
 			return nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(listCtx.Err(), context.DeadlineExceeded) {
+			return code.ErrorGitSyncValidateFailed.WithDetails("git ls-remote timed out after " + gitSyncValidateTimeout.String())
 		}
 		return code.ErrorGitSyncValidateFailed.WithDetails(err.Error())
 	}
@@ -659,8 +726,13 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 			Tags:          git.NoTags,
 		})
 		if err != nil {
-			if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-				s.logger.Info("Remote repository is empty, initializing locally", zap.String("path", wsPath))
+			var noMatchingRef git.NoMatchingRefSpecError
+			if errors.Is(err, transport.ErrEmptyRemoteRepository) || errors.Is(err, plumbing.ErrReferenceNotFound) || errors.As(err, &noMatchingRef) {
+				// 远端为空，或目标分支在远端不存在（如刚切换到新分支，service#428）。
+				// 本地初始化，把 HEAD 直接指到目标分支，首次提交后由显式 refspec 的 push 创建分支。
+				s.logger.Info("Remote is empty or branch not found, initializing locally",
+					zap.String("path", wsPath), zap.String("branch", conf.Branch))
+				_ = os.RemoveAll(wsPath)
 				r, err = git.PlainInit(wsPath, false)
 				if err != nil {
 					return fmt.Errorf("git init failed: %w", err)
@@ -671,6 +743,11 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 				})
 				if err != nil {
 					return fmt.Errorf("create remote failed: %w", err)
+				}
+				// 把 HEAD 符号引用写到目标分支；unborn HEAD 上不能用 Worktree.Checkout。
+				headRef := plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(conf.Branch))
+				if err := r.Storer.SetReference(headRef); err != nil {
+					return fmt.Errorf("set HEAD to target branch failed: %w", err)
 				}
 			} else {
 				return fmt.Errorf("git clone failed: %w", err)
@@ -821,7 +898,10 @@ func (s *gitSyncService) localAheadOfRemote(r *git.Repository, branch string) (b
 func (s *gitSyncService) pushWithRecovery(ctx context.Context, r *git.Repository, wt *git.Worktree, conf *domain.GitSyncConfig, auth transport.AuthMethod, wsPath string) error {
 	var err error
 	for attempt := 1; attempt <= gitSyncPushMaxAttempts; attempt++ {
-		err = r.Push(&git.PushOptions{Auth: auth})
+		// 显式指定目标分支 refspec，避免依赖本地 HEAD 与远端分支名的隐式匹配
+		// （分支变更后工作区重建可能短暂 HEAD 未对齐）。普通 fast-forward push，不强推。
+		refSpec := config.RefSpec(fmt.Sprintf("refs/heads/%s:refs/heads/%s", conf.Branch, conf.Branch))
+		err = r.Push(&git.PushOptions{Auth: auth, RefSpecs: []config.RefSpec{refSpec}})
 		if err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
 			return nil
 		}
@@ -1046,7 +1126,12 @@ func (s *gitSyncService) processSettingsBatch(settings []*domain.Setting, conf *
 			continue
 		}
 
-		fullPath := filepath.Join(wsPath, st.Path)
+		fullPath, pathErr := safeWorkspacePath(wsPath, st.Path)
+		if pathErr != nil {
+			s.logger.Warn("Skipping setting whose path escapes the workspace",
+				zap.String("path", st.Path), zap.Error(pathErr))
+			continue
+		}
 
 		if st.Action == domain.SettingActionDelete {
 			if _, err := os.Stat(fullPath); err == nil {
@@ -1090,7 +1175,12 @@ func (s *gitSyncService) processNotesBatch(notes []*domain.Note, wsPath string) 
 		if filepath.Ext(targetPath) == "" {
 			targetPath += ".md"
 		}
-		fullPath := filepath.Join(wsPath, targetPath)
+		fullPath, pathErr := safeWorkspacePath(wsPath, targetPath)
+		if pathErr != nil {
+			s.logger.Warn("Skipping note whose path escapes the workspace",
+				zap.String("path", n.Path), zap.Error(pathErr))
+			continue
+		}
 
 		if n.Action == domain.NoteActionDelete {
 			if _, err := os.Stat(fullPath); err == nil {
@@ -1132,7 +1222,12 @@ func (s *gitSyncService) processFilesBatch(files []*domain.File, conf *domain.Gi
 	var actuallyChanged bool
 
 	for _, f := range files {
-		fullPath := filepath.Join(wsPath, f.Path)
+		fullPath, pathErr := safeWorkspacePath(wsPath, f.Path)
+		if pathErr != nil {
+			s.logger.Warn("Skipping attachment whose path escapes the workspace",
+				zap.String("path", f.Path), zap.Error(pathErr))
+			continue
+		}
 
 		if f.Action == domain.FileActionDelete {
 			if _, err := os.Stat(fullPath); err == nil {
