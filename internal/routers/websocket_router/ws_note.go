@@ -79,6 +79,9 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		c.ToResponse(code.ErrorInvalidParams.WithDetails("ctime is required"))
 		return
 	}
+	// 部分第三方客户端传秒级时间戳，归一化为毫秒，避免新旧比较永远偏旧（#461）
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
 
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "NoteModify", params.Path, params.Vault)
 

@@ -152,6 +152,9 @@ func TestAdminControlHandler_GetConfig_WithSecurityFields(t *testing.T) {
 	cfg.Security.WebGUILoginTokenExpiry = "14d"
 	bindIP := false
 	cfg.Security.WebGUILoginTokenBindIP = &bindIP
+	bindUA := false
+	cfg.Security.WebGUILoginTokenBindUA = &bindUA
+	cfg.Git.AllowedPrivateHosts = []string{"gitea.internal", "10.0.0.0/8"}
 	cfg.Server.CustomResponseHeaders = map[string]string{
 		"X-Test-Get": "GetValue",
 	}
@@ -168,6 +171,8 @@ func TestAdminControlHandler_GetConfig_WithSecurityFields(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	assert.Equal(t, "14d", *resp.Data.WebGUILoginTokenExpiry)
 	assert.Equal(t, false, *resp.Data.WebGUILoginTokenBindIP)
+	assert.Equal(t, false, *resp.Data.WebGUILoginTokenBindUA)
+	assert.Equal(t, []string{"gitea.internal", "10.0.0.0/8"}, *resp.Data.GitAllowedPrivateHosts)
 	assert.NotNil(t, resp.Data.CustomResponseHeaders)
 	assert.Equal(t, "GetValue", (*resp.Data.CustomResponseHeaders)["X-Test-Get"])
 }
@@ -182,7 +187,7 @@ func TestAdminControlHandler_UpdateConfig_Success(t *testing.T) {
 	defer os.Remove(tempFile.Name())
 	cfg.File = tempFile.Name()
 
-	reqBody := `{"webguiLoginTokenExpiry":"30d","webguiLoginTokenBindIp":false,"customResponseHeaders":{"X-Test-Update":"UpdateValue"}}`
+	reqBody := `{"webguiLoginTokenExpiry":"30d","webguiLoginTokenBindIp":false,"webguiLoginTokenBindUa":false,"gitAllowedPrivateHosts":["gitea.internal","10.0.0.0/8"],"customResponseHeaders":{"X-Test-Update":"UpdateValue"}}`
 	c, w := newAdminTestContext("POST", "/api/admin/config", reqBody, 1)
 
 	handler.UpdateConfig(c)
@@ -191,6 +196,8 @@ func TestAdminControlHandler_UpdateConfig_Success(t *testing.T) {
 	assertResponseCode(t, w, code.Success.Code())
 	assert.Equal(t, "30d", cfg.Security.WebGUILoginTokenExpiry)
 	assert.Equal(t, false, *cfg.Security.WebGUILoginTokenBindIP)
+	assert.Equal(t, false, *cfg.Security.WebGUILoginTokenBindUA)
+	assert.Equal(t, []string{"gitea.internal", "10.0.0.0/8"}, cfg.Git.AllowedPrivateHosts)
 	assert.Equal(t, "UpdateValue", cfg.Server.CustomResponseHeaders["X-Test-Update"])
 }
 

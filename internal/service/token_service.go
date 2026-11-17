@@ -186,12 +186,17 @@ func (s *tokenService) CreateForLogin(ctx context.Context, uid int64, clientType
 		boundIP = ip
 	}
 
+	boundUserAgent := ""
+	if s.config.WebGUILoginTokenBindUA {
+		boundUserAgent = userAgent
+	}
+
 	t := &domain.AuthToken{
 		UID:        uid,
 		Scope:      scope,
 		ClientType: clientType,
 		BoundIP:    boundIP,
-		UserAgent:  userAgent,
+		UserAgent:  boundUserAgent,
 		Status:     1,
 		IssueType:  1, // Login
 		CreatedAt:  time.Now(),
@@ -415,7 +420,10 @@ func (s *tokenService) RotateForLogin(ctx context.Context, uid int64, tokenID in
 	}
 
 	token.BoundIP = boundIP
-	token.UserAgent = userAgent
+	token.UserAgent = ""
+	if s.config.WebGUILoginTokenBindUA {
+		token.UserAgent = userAgent
+	}
 	token.ExpiredAt = time.Now().Add(expiry)
 	token.UpdatedAt = time.Now()
 

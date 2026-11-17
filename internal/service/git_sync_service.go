@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -181,7 +180,7 @@ func (s *gitSyncService) GetConfig(ctx context.Context, uid int64, vaultID int64
 func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dto.GitSyncConfigRequest) (*dto.GitSyncConfigDTO, error) {
 	// Validate Repository URL security and format
 	// 验证仓库 URL 的安全性和格式
-	if err := validateRepoURL(params.RepoURL); err != nil {
+	if err := validateRepoURL(params.RepoURL, s.gitConf.AllowedPrivateHosts); err != nil {
 		return nil, err
 	}
 
@@ -272,7 +271,7 @@ func (s *gitSyncService) DeleteConfig(ctx context.Context, uid int64, id int64) 
 func (s *gitSyncService) Validate(ctx context.Context, params *dto.GitSyncValidateRequest) error {
 	// Validate Repository URL security and format
 	// 验证仓库 URL 的安全性和格式
-	if err := validateRepoURL(params.RepoURL); err != nil {
+	if err := validateRepoURL(params.RepoURL, s.gitConf.AllowedPrivateHosts); err != nil {
 		return err
 	}
 
@@ -292,6 +291,8 @@ func (s *gitSyncService) Validate(ctx context.Context, params *dto.GitSyncValida
 		URLs: []string{params.RepoURL},
 	})
 
+	restoreClients := s.repoURLValidator().installHTTPClients()
+	defer restoreClients()
 	refs, err := rem.List(&git.ListOptions{
 		Auth: auth,
 	})
@@ -322,79 +323,9 @@ func (s *gitSyncService) Validate(ctx context.Context, params *dto.GitSyncValida
 	return nil
 }
 
-// validateRepoURL validates git repository URL format and protocols to prevent file:// and SSRF
-// validateRepoURL 校验 git 仓库 URL 格式和协议，防止 file:// 及 SSRF 漏洞
-func validateRepoURL(rawURL string) error {
-	if rawURL == "" {
-		return code.ErrorGitSyncValidateFailed.WithDetails("repository URL is empty")
-	}
-
-	// 1. Check if it is scp-like SSH format (e.g., git@github.com:org/repo.git)
-	// 1. 检查是否为 scp-like SSH 格式 (例如 git@github.com:org/repo.git)
-	if strings.Contains(rawURL, "@") && strings.Contains(rawURL, ":") && !strings.Contains(rawURL, "://") {
-		return nil
-	}
-
-	// 2. Parse URL standard way
-	// 2. 使用标准方式解析 URL
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return code.ErrorGitSyncValidateFailed.WithDetails("invalid repository URL format")
-	}
-
-	scheme := strings.ToLower(u.Scheme)
-	if scheme == "" {
-		return code.ErrorGitSyncValidateFailed.WithDetails("repository URL must specify protocol (e.g., https/ssh)")
-	}
-
-	allowedSchemes := map[string]bool{
-		"http":  true,
-		"https": true,
-		"ssh":   true,
-		"git":   true,
-	}
-
-	if !allowedSchemes[scheme] {
-		return code.ErrorGitSyncValidateFailed.WithDetails("unsupported git protocol: " + scheme)
-	}
-
-	// 3. For http/https, perform SSRF protection by checking private IP address range
-	// 3. 对于 http/https 协议，检测是否请求了私有 IP 段以进行 SSRF 防护
-	if scheme == "http" || scheme == "https" {
-		host := u.Hostname()
-		if host == "" {
-			return code.ErrorGitSyncValidateFailed.WithDetails("invalid hostname in repository URL")
-		}
-		if isPrivateOrLocalHost(host) {
-			return code.ErrorGitSyncValidateFailed.WithDetails("private network access not allowed for repository URL")
-		}
-	}
-
-	return nil
-}
-
-// isPrivateOrLocalHost checks if hostname resolves to loopback or private ranges
-// isPrivateOrLocalHost 检查主机名是否解析为回环或私有 IP 网段
-func isPrivateOrLocalHost(host string) bool {
-	if strings.ToLower(host) == "localhost" {
-		return true
-	}
-
-	if ip := net.ParseIP(host); ip != nil {
-		return isPrivateOrLocalIP(ip)
-	}
-
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return false
-	}
-
-	for _, ip := range ips {
-		if isPrivateOrLocalIP(ip) {
-			return true
-		}
-	}
-	return false
+// validateRepoURL validates repository URLs using the configured private-host allowlist.
+func validateRepoURL(rawURL string, allowedPrivateHosts []string) error {
+	return newGitRepoURLValidator(allowedPrivateHosts, nil).validateRepoURL(rawURL)
 }
 
 // isPrivateOrLocalIP checks if net.IP is loopback, link-local, or private
@@ -701,6 +632,12 @@ func (s *gitSyncService) scheduleGC() {
 }
 
 func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig) error {
+	if err := s.repoURLValidator().validateRepoURL(conf.RepoURL); err != nil {
+		return err
+	}
+	restoreClients := s.repoURLValidator().installHTTPClients()
+	defer restoreClients()
+
 	wsPath := s.getWorkspacePath(conf.UID, conf.ID)
 	auth := &githttp.BasicAuth{
 		Username: conf.Username,
@@ -762,38 +699,72 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 		Force:         true,
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		if errors.Is(err, transport.ErrEmptyRemoteRepository) || errors.Is(err, git.ErrRemoteNotFound) || errors.Is(err, plumbing.ErrReferenceNotFound) {
+		switch {
+		case errors.Is(err, git.ErrNonFastForwardUpdate):
+			// 本地存在未推送的提交且远端已被推进（go-git 的 Force pull 不会强对齐分叉分支）：
+			// 以远端最新 head 为基线重置工作区，后续步骤会把 DB 中的变更重新导出到该基线之上，
+			// 避免永远卡在 pull 失败状态（#435）。远端提交全部保留，不做强推。
+			s.logger.Warn("Local workspace diverged from remote, realigning to remote head",
+				zap.Int64("configId", conf.ID), zap.Error(err))
+			if recErr := s.resetWorkspaceToRemoteHead(r, wt, conf.Branch); recErr != nil {
+				return fmt.Errorf("git pull failed: %w (realign to remote head failed: %v)", err, recErr)
+			}
+		case errors.Is(err, transport.ErrEmptyRemoteRepository) || errors.Is(err, git.ErrRemoteNotFound) || errors.Is(err, plumbing.ErrReferenceNotFound):
 			s.logger.Info("Remote is empty or branch not found, skipping pull", zap.Int64("configId", conf.ID))
-		} else {
+		default:
 			return fmt.Errorf("git pull failed: %w", err)
 		}
 	}
 
-	// 3. Extract DB content to Workspace // 3. 提取 DB 内容到工作区
-	// We need to mirror files from DB to this workspace // 我们需要将 DB 中的文件镜像到此工作区
-	changed, err := s.mirrorNotesToWorkspace(ctx, conf, wsPath, conf.LastSyncTime)
+	// 3. Extract DB content to Workspace and commit // 3. 提取 DB 内容到工作区并提交
+	committed, err := s.exportAndCommit(ctx, conf, wt, wsPath)
 	if err != nil {
-		return fmt.Errorf("mirror to workspace failed: %w", err)
+		return err
 	}
 
-	if !changed {
-		s.logger.Info("No notes or attachments updated, skipping Git operations", zap.Int64("configId", conf.ID))
+	// 4. Push when the local branch has commits the remote lacks // 4. 本地有远端缺少的提交时推送
+	// 不能只看本次镜像是否有变更：上次 push 失败会留下未推送提交，此时镜像无新变更也
+	// 必须补推，否则配置永远卡在失败状态无法自愈（#435）。
+	pushNeeded, err := s.localAheadOfRemote(r, conf.Branch)
+	if err != nil {
+		return err
+	}
+	if !pushNeeded {
+		s.logger.Info("No notes or attachments updated, skipping Git operations", zap.Int64("configId", conf.ID), zap.Bool("changed", committed))
 		return errNoChanges
 	}
 
-	// 4. Commit and Push // 4. 提交并推送
+	s.logger.Info("Pushing changes", zap.Int64("configId", conf.ID))
+	return s.pushWithRecovery(ctx, r, wt, conf, auth, wsPath)
+}
+
+// gitSyncPushMaxAttempts bounds push retries within one sync run: the first attempt plus one
+// retry after realigning the workspace to the remote head. If the remote keeps moving, the
+// run fails and the next scheduled sync retries (cursor is not advanced on failure).
+// gitSyncPushMaxAttempts 限制单次同步内的 push 重试次数：首次尝试加一次对齐远端后的重试。
+// 若远端持续变动，本轮失败并交由下一轮同步重试（失败时游标不前进）。
+const gitSyncPushMaxAttempts = 2
+
+// exportAndCommit mirrors DB content (notes, attachments, settings) into the workspace and
+// commits when the worktree is dirty. It reports whether a commit was created.
+// exportAndCommit 将 DB 内容（笔记、附件、设置）镜像到工作区，工作区有变更时提交。
+// 返回是否产生了新提交。
+func (s *gitSyncService) exportAndCommit(ctx context.Context, conf *domain.GitSyncConfig, wt *git.Worktree, wsPath string) (bool, error) {
+	if _, err := s.mirrorNotesToWorkspace(ctx, conf, wsPath, conf.LastSyncTime); err != nil {
+		return false, fmt.Errorf("mirror to workspace failed: %w", err)
+	}
+
 	status, err := wt.Status()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if status.IsClean() {
 		s.logger.Info("No changes to commit", zap.Int64("configId", conf.ID))
-		return errNoChanges
+		return false, nil
 	}
 
-	err = wt.AddWithOptions(&git.AddOptions{All: true})
-	if err != nil {
-		return err
+	if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+		return false, err
 	}
 
 	name := s.gitConf.Name
@@ -805,26 +776,140 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 		email = "fns@email.com"
 	}
 
-	_, err = wt.Commit("Update from Sync Service", &git.CommitOptions{
+	if _, err := wt.Commit("Update from Sync Service", &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  name,
 			Email: email,
 			When:  time.Now(),
 		},
-	})
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// localAheadOfRemote reports whether the local branch HEAD differs from the remote-tracking
+// ref, i.e. there are local commits the remote does not have (or the remote has no such
+// branch yet). A missing local HEAD (no commits yet) means there is nothing to push.
+// localAheadOfRemote 判断本地分支 HEAD 是否与远端跟踪引用不一致，即本地存在远端没有的
+// 提交（或远端尚无该分支）。本地还没有任何提交时无需推送。
+func (s *gitSyncService) localAheadOfRemote(r *git.Repository, branch string) (bool, error) {
+	head, err := r.Head()
 	if err != nil {
-		return err
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	remoteRef, err := r.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	return head.Hash() != remoteRef.Hash(), nil
+}
+
+// pushWithRecovery pushes and, when the remote rejects the push as non-fast-forward (the
+// remote moved between pull and push, or the push session saw a stale expected SHA), realigns
+// the workspace to the freshly fetched remote head, re-exports DB content on top of it and
+// retries once. It never force-pushes: remote commits are always kept.
+// pushWithRecovery 执行 push；当远端以 non-fast-forward 拒绝时（pull 与 push 之间远端被推进，
+// 或 push 会话拿到过时的期望 SHA），先对齐到刚抓取的远端 head、在其上重新导出 DB 内容后重试
+// 一次。全程不强推：远端已有提交始终保留。
+func (s *gitSyncService) pushWithRecovery(ctx context.Context, r *git.Repository, wt *git.Worktree, conf *domain.GitSyncConfig, auth transport.AuthMethod, wsPath string) error {
+	var err error
+	for attempt := 1; attempt <= gitSyncPushMaxAttempts; attempt++ {
+		err = r.Push(&git.PushOptions{Auth: auth})
+		if err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return nil
+		}
+		if !isNonFastForwardPushErr(err) || attempt == gitSyncPushMaxAttempts {
+			break
+		}
+		s.logger.Warn("Git push rejected as non-fast-forward, realigning workspace to remote head and retrying",
+			zap.Int64("configId", conf.ID), zap.Int("attempt", attempt), zap.Error(err))
+
+		inSync, recErr := s.realignAndReexport(ctx, r, wt, conf, auth, wsPath)
+		if recErr != nil {
+			return fmt.Errorf("git push failed: %w (realign to remote head failed: %v)", err, recErr)
+		}
+		if inSync {
+			return nil
+		}
+	}
+	return fmt.Errorf("git push failed: %w", err)
+}
+
+// realignAndReexport fetches the latest remote branch head, resets the workspace to it and
+// re-exports DB content on top, creating a fresh commit. It reports inSync=true when the
+// remote already contains the local state (or the re-export produced no changes), meaning no
+// further push is needed. Remote commits are never discarded: the reset target is always the
+// fetched remote head and the retry push is a regular fast-forward push.
+// realignAndReexport 抓取远端分支最新 head，将工作区重置到该处并在其上重新导出 DB 内容、
+// 生成新提交。当远端已包含本地状态（或重新导出后无变更）时返回 inSync=true，表示无需再推。
+// 远端提交不会被丢弃：重置目标始终是抓取到的远端 head，且重试用的是普通 fast-forward push。
+func (s *gitSyncService) realignAndReexport(ctx context.Context, r *git.Repository, wt *git.Worktree, conf *domain.GitSyncConfig, auth transport.AuthMethod, wsPath string) (bool, error) {
+	refSpec := config.RefSpec(fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", conf.Branch, conf.Branch))
+	if err := r.Fetch(&git.FetchOptions{Auth: auth, RefSpecs: []config.RefSpec{refSpec}, Force: true, Tags: git.NoTags}); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return false, fmt.Errorf("git fetch failed: %w", err)
 	}
 
-	s.logger.Info("Pushing changes", zap.Int64("configId", conf.ID))
-	err = r.Push(&git.PushOptions{
-		Auth: auth,
-	})
+	remoteRef, err := r.Reference(plumbing.NewRemoteReferenceName("origin", conf.Branch), true)
 	if err != nil {
-		return fmt.Errorf("git push failed: %w", err)
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			// 远端还没有该分支（例如新建空仓库），直接重试 push 创建分支
+			return false, nil
+		}
+		return false, err
 	}
 
+	if head, err := r.Head(); err == nil && head.Hash() == remoteRef.Hash() {
+		// 远端已包含本地提交（例如上次 push 实际成功但状态回报丢失）
+		return true, nil
+	}
+
+	if err := s.resetWorkspaceToRemoteHead(r, wt, conf.Branch); err != nil {
+		return false, err
+	}
+
+	committed, err := s.exportAndCommit(ctx, conf, wt, wsPath)
+	if err != nil {
+		return false, err
+	}
+	return !committed, nil
+}
+
+// resetWorkspaceToRemoteHead hard-resets the worktree to the remote-tracking head of the
+// branch. The workspace is a pure mirror of DB content, so discarding local commits is safe:
+// the following mirror re-exports the same DB state on top of the remote head.
+// resetWorkspaceToRemoteHead 将工作区硬重置到分支的远端跟踪 head。工作区只是 DB 内容的
+// 镜像，丢弃本地提交是安全的：随后的镜像会把同样的 DB 状态重新导出到远端 head 之上。
+func (s *gitSyncService) resetWorkspaceToRemoteHead(r *git.Repository, wt *git.Worktree, branch string) error {
+	remoteRef, err := r.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
+	if err != nil {
+		return fmt.Errorf("resolve remote head failed: %w", err)
+	}
+	if err := wt.Reset(&git.ResetOptions{Mode: git.HardReset, Commit: remoteRef.Hash()}); err != nil {
+		return fmt.Errorf("git reset to remote head failed: %w", err)
+	}
 	return nil
+}
+
+// isNonFastForwardPushErr reports whether a push error means the remote refused a
+// non-fast-forward update. Client-side checks return "non-fast-forward update: <ref>";
+// server-side report-status messages depend on the server (git returns "cannot lock ref
+// ... but expected ...").
+// isNonFastForwardPushErr 判断 push 错误是否为远端拒绝 non-fast-forward 更新。客户端本地
+// 校验返回 "non-fast-forward update: <ref>"；服务端 report-status 文案因服务端实现而异
+// （git 返回 "cannot lock ref ... but expected ..."）。
+func isNonFastForwardPushErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "non-fast-forward") || strings.Contains(msg, "cannot lock ref")
 }
 
 func (s *gitSyncService) mirrorNotesToWorkspace(ctx context.Context, conf *domain.GitSyncConfig, wsPath string, lastSyncTime *time.Time) (bool, error) {

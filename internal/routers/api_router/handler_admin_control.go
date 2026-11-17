@@ -145,6 +145,7 @@ func (h *AdminControlHandler) GetConfig(c *gin.Context) {
 		PullReleaseChannel:            &cfg.App.PullReleaseChannel,
 		WebGUILoginTokenExpiry:        &cfg.Security.WebGUILoginTokenExpiry,
 		WebGUILoginTokenBindIP:        cfg.Security.WebGUILoginTokenBindIP,
+		WebGUILoginTokenBindUA:        cfg.Security.WebGUILoginTokenBindUA,
 		CustomResponseHeaders:         &cfg.Server.CustomResponseHeaders,
 		DefaultPageSize:               &cfg.App.DefaultPageSize,
 		MaxPageSize:                   &cfg.App.MaxPageSize,
@@ -170,6 +171,7 @@ func (h *AdminControlHandler) GetConfig(c *gin.Context) {
 		FtsBleveStoreRaw:              cfg.App.FtsBleveStoreRaw,
 		GitName:                       &cfg.Git.Name,
 		GitEmail:                      &cfg.Git.Email,
+		GitAllowedPrivateHosts:        &cfg.Git.AllowedPrivateHosts,
 		PipelineWindowUp:              cfg.App.PipelineWindowUp,
 		PipelineWindowDown:            cfg.App.PipelineWindowDown,
 	}
@@ -355,6 +357,9 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 	if params.WebGUILoginTokenBindIP != nil {
 		cfg.Security.WebGUILoginTokenBindIP = params.WebGUILoginTokenBindIP
 	}
+	if params.WebGUILoginTokenBindUA != nil {
+		cfg.Security.WebGUILoginTokenBindUA = params.WebGUILoginTokenBindUA
+	}
 	if params.CustomResponseHeaders != nil {
 		cfg.Server.CustomResponseHeaders = *params.CustomResponseHeaders
 	}
@@ -429,6 +434,9 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 	}
 	if params.GitEmail != nil {
 		cfg.Git.Email = *params.GitEmail
+	}
+	if params.GitAllowedPrivateHosts != nil {
+		cfg.Git.AllowedPrivateHosts = *params.GitAllowedPrivateHosts
 	}
 	if params.PipelineWindowUp != nil {
 		// Stored as-is (may exceed the read-time clamp); PipelineWindowUpClamped()

@@ -192,6 +192,11 @@ security:
   # Whether to bind client IP for WebGUI login tokens.
   # Set to false when using Cloudflare Tunnel to avoid disconnection due to IP changes.
   webgui-login-token-bind-ip: true
+  # WebGUI 登录 Token 是否绑定浏览器 User-Agent，默认 true。
+  # 反向代理或远程访问网关改写 User-Agent、导致附件下载报 313 时可设为 false；关闭后不再校验 UA。
+  # Whether to bind the browser User-Agent for WebGUI login tokens. Defaults to true.
+  # Set to false if a reverse proxy or remote access gateway rewrites User-Agent and causes error 313; UA checks are then disabled.
+  webgui-login-token-bind-ua: true
 
 # 主数据库配置
 # Main database configuration
@@ -395,6 +400,15 @@ git:
   # Git 提交记录中的作者邮箱
   # Author email used in git commits
   email: "fns@email.com"
+  # HTTP(S) Git 仓库的私网访问白名单，支持主机名、精确 IP 和 CIDR；默认 [] 保持全部私网拦截。
+  # 主机名条目要求 DNS 解析结果为私网地址，且每个私网地址还须被某个 IP/CIDR 条目覆盖，防止 DNS rebinding。
+  # 例如 ["gitea.internal", "192.168.1.20"] 仅允许该主机名解析到 192.168.1.20；
+  # 内网测试/仅有 IP 仓库可只写 "192.168.1.0/24"，此时 URL 中的主机名不受限。
+  # Private network allowlist for HTTP(S) Git repositories: hostnames, exact IPs or CIDRs. Empty [] blocks all private networks (default).
+  # A hostname entry requires private DNS results, and every private result must also match an IP/CIDR entry to prevent DNS rebinding.
+  # Example ["gitea.internal", "192.168.1.20"] permits only that hostname resolving to 192.168.1.20.
+  # A CIDR-only list such as "192.168.1.0/24" allows matching resolved IPs regardless of hostname.
+  allowed-private-hosts: []
 
 webgui:
   # Web 界面字体设置。留空使用默认，"local" 使用本地字体，或填入字体链接。

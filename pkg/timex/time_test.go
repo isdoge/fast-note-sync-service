@@ -38,3 +38,27 @@ func TestTime_UnixMethods(t *testing.T) {
 		t.Errorf("Unix() changed after sleep, it should be static. got %v, want %v", tt.Unix(), now.Unix())
 	}
 }
+
+func TestNormalizeMilli(t *testing.T) {
+	cases := []struct {
+		name string
+		in   int64
+		want int64
+	}{
+		{"zero stays zero", 0, 0},
+		{"negative unchanged", -1651719914, -1651719914},
+		{"seconds converted", 1651719914, 1651719914000},
+		{"small seconds converted", 1, 1000},
+		{"largest seconds value converted", 99_999_999_999, 99_999_999_999_000},
+		{"threshold treated as milliseconds", 100_000_000_000, 100_000_000_000},
+		{"milliseconds unchanged", 1651719914000, 1651719914000},
+		{"now milliseconds unchanged", 1785129518518, 1785129518518},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeMilli(tc.in); got != tc.want {
+				t.Fatalf("NormalizeMilli(%d) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}

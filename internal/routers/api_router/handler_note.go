@@ -11,6 +11,7 @@ import (
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	apperrors "github.com/haierkeys/fast-note-sync-service/pkg/errors"
+	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
@@ -214,6 +215,9 @@ func (h *NoteHandler) CreateOrUpdate(c *gin.Context) {
 	if params.ContentHash == "" {
 		params.ContentHash = util.EncodeHash32(params.Content)
 	}
+	// 部分第三方客户端传秒级时间戳，归一化为毫秒，避免显示为 1970 年且新旧比较永远偏旧（#461）
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
 	if params.Mtime == 0 {
 		params.Mtime = time.Now().UnixMilli()
 	}

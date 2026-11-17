@@ -157,6 +157,9 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 		c.ToResponse(code.ErrorInvalidParams.WithDetails("ctime is required"))
 		return
 	}
+	// 部分第三方客户端传秒级时间戳，归一化为毫秒（#461）
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
 
 	ctx := c.Context()
 
