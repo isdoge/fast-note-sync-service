@@ -184,7 +184,7 @@ func TestShareHandler_List_Success(t *testing.T) {
 		{ID: 1, VaultName: "main", NotePath: "test.md"},
 	}
 
-	mockSvc.On("ListShares", mock.Anything, int64(1), "created_at", "desc", mock.AnythingOfType("*app.Pager")).
+	mockSvc.On("ListShares", mock.Anything, int64(1), "created_at", "desc", mock.AnythingOfType("*app.Pager"), "").
 		Return(mockData, 1, nil)
 
 	handler := newTestShareHandler(mockSvc, nil)
@@ -193,6 +193,71 @@ func TestShareHandler_List_Success(t *testing.T) {
 	handler.List(c)
 
 	assert.Equal(t, http.StatusOK, w.Code)
+	assertResponseCode(t, w, code.Success.Code())
+	mockSvc.AssertExpectations(t)
+}
+
+// #461：受限令牌（只允许 B 库）请求分享列表，服务层必须收到白名单参数，
+// 由服务层过滤掉其它库的分享，不能整库返回。
+func TestShareHandler_List_RestrictedTokenPassesAllowlist(t *testing.T) {
+	mockSvc := new(svcmocks.MockShareService)
+
+	mockData := []*dto.ShareListItem{
+		{ID: 1, VaultName: "B", NotePath: "b.md"},
+	}
+
+	mockSvc.On("ListShares", mock.Anything, int64(1), "created_at", "desc", mock.AnythingOfType("*app.Pager"), "B").
+		Return(mockData, 1, nil)
+
+	handler := newTestShareHandler(mockSvc, nil)
+	c, w := newShareTestContext("GET", "/api/shares?sort_by=created_at&sort_order=desc", "", 1)
+	c.Set("vaults", "B")
+
+	handler.List(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assertResponseCode(t, w, code.Success.Code())
+	mockSvc.AssertExpectations(t)
+}
+
+// #461：受限令牌（只允许 B 库）按 ID 撤销 A 库的分享，必须先校验分享所属库，拒绝且不执行撤销。
+func TestShareHandler_Cancel_RestrictedTokenOtherVaultRejected(t *testing.T) {
+	mockSvc := new(svcmocks.MockShareService)
+	vaultSvc := new(svcmocks.MockVaultService)
+
+	// A 库的分享（share id=10）
+	mockSvc.On("GetShareVaultName", mock.Anything, int64(1), int64(10)).
+		Return("A", nil)
+
+	testApp := app.NewTestApp(&app.Services{ShareService: mockSvc, VaultService: vaultSvc})
+	handler := NewShareHandler(testApp, pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, testApp))
+	body := `{"id":10, "vault":"B"}`
+	c, w := newShareTestContext("DELETE", "/api/share", body, 1)
+	c.Set("vaults", "B")
+
+	handler.Cancel(c)
+
+	assertResponseCode(t, w, code.ErrorAuthTokenScopeRestricted.Code())
+	mockSvc.AssertNotCalled(t, "StopShare", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// #461：受限令牌按 ID 撤销自己允许库（B 库）的分享，放行。
+func TestShareHandler_Cancel_RestrictedTokenAllowedVaultAccepted(t *testing.T) {
+	mockSvc := new(svcmocks.MockShareService)
+	vaultSvc := new(svcmocks.MockVaultService)
+
+	mockSvc.On("GetShareVaultName", mock.Anything, int64(1), int64(10)).
+		Return("B", nil)
+	mockSvc.On("StopShare", mock.Anything, int64(1), int64(10)).Return(nil)
+
+	testApp := app.NewTestApp(&app.Services{ShareService: mockSvc, VaultService: vaultSvc})
+	handler := NewShareHandler(testApp, pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, testApp))
+	body := `{"id":10, "vault":"B"}`
+	c, w := newShareTestContext("DELETE", "/api/share", body, 1)
+	c.Set("vaults", "B")
+
+	handler.Cancel(c)
+
 	assertResponseCode(t, w, code.Success.Code())
 	mockSvc.AssertExpectations(t)
 }

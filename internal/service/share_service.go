@@ -108,9 +108,21 @@ type ShareService interface {
 	// CreateShortLink 为分享生成短链
 	CreateShortLink(ctx context.Context, uid int64, vaultName string, path string, pathHash string, baseURL string, longURL string, isForce bool) (string, error)
 
-	// ListShares lists all shares of a user with sorting and pagination
-	// ListShares 列出用户的所有分享（支持排序和分页）
-	ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager) ([]*dto.ShareListItem, int, error)
+	// ListShares lists all shares of a user with sorting and pagination.
+	// allowedVaults is the token's vault allowlist ("" means unrestricted); shares of
+	// other vaults are filtered out so a restricted token cannot read them (#461).
+	// ListShares 列出用户的所有分享（支持排序和分页）。
+	// allowedVaults 为令牌的笔记库白名单（"" 表示不限制），其它库的分享会被过滤，
+	// 受限令牌无法读到（#461）。
+	ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager, allowedVaults string) ([]*dto.ShareListItem, int, error)
+
+	// GetShare retrieves a share record by ID
+	// GetShare 按 ID 获取分享记录
+	GetShare(ctx context.Context, uid int64, id int64) (*domain.UserShare, error)
+
+	// GetShareVaultName resolves the vault name a share's main resource belongs to.
+	// GetShareVaultName 解析分享主资源所属的笔记库名称。
+	GetShareVaultName(ctx context.Context, uid int64, id int64) (string, error)
 
 	// GetShareByPath retrieves share info by path
 	// GetShareByPath 根据路径获取分享信息
@@ -484,9 +496,13 @@ func (s *shareService) UpdateSharePassword(ctx context.Context, uid int64, vault
 	return s.repo.UpdateExpiresAt(ctx, uid, share.ID, expiresAt)
 }
 
-// ListShares lists all shares of a user with sorting, pagination and fills in resource titles
-// ListShares 列出用户的所有分享，支持排序、分页，并填充资源标题
-func (s *shareService) ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager) ([]*dto.ShareListItem, int, error) {
+// ListShares lists all shares of a user with sorting, pagination and fills in resource titles.
+// allowedVaults is the token's vault allowlist ("" means unrestricted); shares of other
+// vaults are filtered out so a restricted token cannot read them (#461).
+// ListShares 列出用户的所有分享，支持排序、分页，并填充资源标题。
+// allowedVaults 为令牌的笔记库白名单（"" 表示不限制），其它库的分享会被过滤，
+// 受限令牌无法读到（#461）。
+func (s *shareService) ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager, allowedVaults string) ([]*dto.ShareListItem, int, error) {
 	// 1. 获取总数
 	count64, err := s.repo.CountByUID(ctx, uid)
 	if err != nil {
@@ -502,6 +518,24 @@ func (s *shareService) ListShares(ctx context.Context, uid int64, sortBy string,
 	shares, err := s.repo.ListByUID(ctx, uid, sortBy, sortOrder, pkgapp.GetPageOffset(pager.Page, pager.PageSize), pager.PageSize)
 	if err != nil {
 		return nil, 0, err
+	}
+
+	// 3. 受限令牌：先解析每条分享所属的笔记库，过滤掉白名单之外的分享（#461）
+	// 3. Restricted token: resolve each share's vault first, drop shares outside the allowlist (#461)
+	if allowedVaults != "" {
+		kept := make([]*domain.UserShare, 0, len(shares))
+		for _, share := range shares {
+			vaultName, err := s.shareVaultName(ctx, uid, share)
+			if err != nil {
+				s.logger.Warn("ListShares: resolve share vault failed", zap.Int64("shareId", share.ID), zap.Error(err))
+				continue
+			}
+			if util.VerifyVaultAccess(allowedVaults, vaultName) {
+				kept = append(kept, share)
+			}
+		}
+		shares = kept
+		count = len(shares)
 	}
 
 	items := make([]*dto.ShareListItem, 0, len(shares))
@@ -594,6 +628,66 @@ func (s *shareService) ListShares(ctx context.Context, uid int64, sortBy string,
 	}
 
 	return items, count, nil
+}
+
+// GetShare retrieves a share record by ID
+// GetShare 按 ID 获取分享记录
+func (s *shareService) GetShare(ctx context.Context, uid int64, id int64) (*domain.UserShare, error) {
+	return s.repo.GetByID(ctx, uid, id)
+}
+
+// GetShareVaultName resolves the vault name a share's main resource belongs to
+// GetShareVaultName 解析分享主资源所属的笔记库名称
+func (s *shareService) GetShareVaultName(ctx context.Context, uid int64, id int64) (string, error) {
+	share, err := s.repo.GetByID(ctx, uid, id)
+	if err != nil {
+		return "", err
+	}
+	if share == nil {
+		return "", code.ErrorShareNotFound
+	}
+	return s.shareVaultName(ctx, uid, share)
+}
+
+// shareVaultName resolves which vault a share's main resource (note or file) belongs to
+// shareVaultName 解析分享主资源（笔记或文件）所属的笔记库
+func (s *shareService) shareVaultName(ctx context.Context, uid int64, share *domain.UserShare) (string, error) {
+	switch share.ResType {
+	case "note":
+		note, err := s.noteRepo.GetByID(ctx, share.ResID, uid)
+		if err != nil {
+			return "", err
+		}
+		if note == nil {
+			return "", code.ErrorNoteNotFound
+		}
+		vault, err := s.vaultRepo.GetByID(ctx, note.VaultID, uid)
+		if err != nil {
+			return "", err
+		}
+		if vault == nil {
+			return "", code.ErrorVaultNotFound
+		}
+		return vault.Name, nil
+	case "file":
+		file, err := s.fileRepo.GetByID(ctx, share.ResID, uid)
+		if err != nil {
+			return "", err
+		}
+		if file == nil {
+			return "", code.ErrorFileNotFound
+		}
+		vault, err := s.vaultRepo.GetByID(ctx, file.VaultID, uid)
+		if err != nil {
+			return "", err
+		}
+		if vault == nil {
+			return "", code.ErrorVaultNotFound
+		}
+		return vault.Name, nil
+	default:
+		return "", code.ErrorInvalidParams.WithDetails("unknown share res type: " + share.ResType)
+	}
 }
 
 // GetShareByPath retrieves share info by path
