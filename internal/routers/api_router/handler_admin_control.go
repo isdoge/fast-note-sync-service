@@ -60,10 +60,7 @@ func NewAdminControlHandler(a *app.App, wss *pkgapp.WebsocketServer) *AdminContr
 func (h *AdminControlHandler) Config(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
 	cfg := h.App.Config()
-	ftsBleveEnabled := true
-	if cfg.App.FtsBleveEnabled != nil {
-		ftsBleveEnabled = *cfg.App.FtsBleveEnabled
-	}
+	ftsBleveEnabled := h.App.Dao.BleveMgr.IsEnabled()
 	data := dto.AdminWebGUIConfig{
 		FontSet:          cfg.WebGUI.FontSet,
 		RegisterIsEnable: h.App.UserService.IsRegisterEnabled(c),

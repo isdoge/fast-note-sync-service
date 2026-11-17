@@ -170,6 +170,8 @@ app:
   # 是否启用 Bleve 全文搜索。
   # true (默认): 启用 Bleve 全文搜索，支持 searchMode=content 检索。
   # false: 禁用 Bleve 全文搜索，检索退回到普通数据库模糊匹配。
+  # 32 位 ARM（GOARCH=arm）启动时自动禁用并记录警告，避免 zapx 未对齐的
+  # 64 位原子操作导致崩溃；全文搜索不可用，其它功能正常。其它架构遵循此配置。
   # Whether to enable Bleve Full-Text Search (default true).
   fts-bleve-enabled: true
 
