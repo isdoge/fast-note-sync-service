@@ -13,6 +13,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
+	pkgdiff "github.com/haierkeys/fast-note-sync-service/pkg/diff"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -253,7 +254,8 @@ func (s *noteHistoryService) ProcessDelay(ctx context.Context, noteID int64, uid
 		content2 := s.ensureValidUTF8(note.Content)
 
 		diffs := dmp.DiffMain(content1, content2, false)
-		patchText = dmp.PatchToText(dmp.PatchMake(content1, diffs))
+		// 等价于 dmp.PatchToText(dmp.PatchMake(content1, diffs))，避免大笔记峰值内存随补丁数 × 笔记大小增长（#499）
+		patchText = pkgdiff.PatchText(dmp, content1, diffs)
 	}()
 
 	if patchText == "" && note.Content != note.ContentLastSnapshot {
