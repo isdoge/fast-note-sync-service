@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/haierkeys/fast-note-sync-service/internal/dao"
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
@@ -31,6 +32,7 @@ type ConflictService interface {
 // conflictService 实现 ConflictService 接口
 type conflictService struct {
 	noteRepo     domain.NoteRepository
+	noteTagRepo  domain.NoteTagRepository
 	vaultService VaultService
 	logger       *zap.Logger
 	clientName   string
@@ -38,9 +40,10 @@ type conflictService struct {
 
 // NewConflictService creates a ConflictService instance
 // NewConflictService 创建 ConflictService 实例
-func NewConflictService(noteRepo domain.NoteRepository, vaultSvc VaultService, logger *zap.Logger) ConflictService {
+func NewConflictService(noteRepo domain.NoteRepository, noteTagRepo domain.NoteTagRepository, vaultSvc VaultService, logger *zap.Logger) ConflictService {
 	return &conflictService{
 		noteRepo:     noteRepo,
+		noteTagRepo:  noteTagRepo,
 		vaultService: vaultSvc,
 		logger:       logger,
 		clientName:   "conflict-service",
@@ -90,6 +93,19 @@ func (s *conflictService) CreateConflictFile(ctx context.Context, uid int64, par
 			zap.Int64(logger.FieldUID, uid),
 			zap.Error(err))
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	// 冲突副本与普通新建笔记一样写入标签索引；失败只记日志，不影响冲突副本本身
+	// Index the conflict copy's tags like any newly created note; failures are logged only
+	if s.noteTagRepo != nil {
+		tags, source := dao.ExtractTags(params.ClientContent)
+		if err := s.noteTagRepo.ReplaceForNote(ctx, created.ID, tags, vaultID, uid, source); err != nil {
+			s.logger.Warn("conflict file tag index failed",
+				zap.String("conflictPath", conflictPath),
+				zap.Int64(logger.FieldUID, uid),
+				zap.Int64("noteId", created.ID),
+				zap.Error(err))
+		}
 	}
 
 	s.logger.Info("conflict file created",
