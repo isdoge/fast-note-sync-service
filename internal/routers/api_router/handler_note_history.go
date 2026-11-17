@@ -77,6 +77,12 @@ func (h *NoteHistoryHandler) Get(c *gin.Context) {
 		apperrors.ErrorResponse(c, err)
 		return
 	}
+	if allowedVaults := tokenVaults(c); allowedVaults != "" {
+		if vault, err := h.App.VaultService.Get(ctx, uid, history.VaultID); err != nil || !util.VerifyVaultAccess(allowedVaults, vault.Name) {
+			response.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted"))
+			return
+		}
+	}
 
 	response.ToResponse(code.Success.WithData(history))
 }
@@ -179,6 +185,21 @@ func (h *NoteHistoryHandler) Restore(c *gin.Context) {
 	// 获取请求上下文
 	ctx := c.Request.Context()
 
+	// 受限令牌：历史版本必须属于请求中（已按白名单校验）的笔记库，否则可按 ID 改写其它库的笔记（#458）
+	// Restricted token: the history must belong to the requested (allowlist-checked) vault
+	if tokenVaults(c) != "" {
+		history, err := h.App.NoteHistoryService.Get(ctx, uid, params.HistoryID)
+		if err != nil {
+			h.logError(ctx, "NoteHistoryHandler.Restore", err)
+			apperrors.ErrorResponse(c, err)
+			return
+		}
+		if vault, err := h.App.VaultService.Get(ctx, uid, history.VaultID); err != nil || vault.Name != params.Vault {
+			response.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted"))
+			return
+		}
+	}
+
 	// Execute restore
 	// 执行恢复
 	note, err := h.App.NoteHistoryService.RestoreFromHistory(ctx, uid, params.HistoryID)
@@ -190,4 +211,15 @@ func (h *NoteHistoryHandler) Restore(c *gin.Context) {
 
 	response.ToResponse(code.Success.WithData(note).WithVault(params.Vault))
 	h.WSS.BroadcastToUser(uid, code.Success.WithData(note).WithVault(params.Vault), "NoteSyncModify")
+}
+
+// tokenVaults returns the vault allowlist of the current token ("" means unrestricted).
+// Requests addressing a history by ID carry no vault of their own to check, so the history's
+// vault has to be checked against this list (#458).
+// tokenVaults 返回当前令牌的笔记库白名单（"" 表示不限制）。按 ID 访问历史版本的请求本身不带可校验的 vault，
+// 需要用历史所属库对照该白名单（#458）。
+func tokenVaults(c *gin.Context) string {
+	allowed, _ := c.Get("vaults")
+	vaults, _ := allowed.(string)
+	return vaults
 }
