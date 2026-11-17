@@ -275,8 +275,8 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 			}
 
 			// If content is consistent but modification time is different, only update modification time
-			// 检查内容是否一致但修改时间不同，则只更新修改时间
-			if mtimeCheck && file.Mtime < params.Mtime && file.ContentHash == params.ContentHash {
+			// 检查内容是否一致但修改时间不同，则只更新修改时间（墓碑记录不走此分支，须经下方墓碑闸门）
+			if mtimeCheck && file.Action != domain.FileActionDelete && file.Mtime < params.Mtime && file.ContentHash == params.ContentHash {
 				err := s.fileRepo.UpdateActionMtime(ctx, domain.FileActionModify, params.Mtime, file.ID, uid)
 				if err != nil {
 					return nil, code.ErrorDBQuery.WithDetails(err.Error())

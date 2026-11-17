@@ -416,8 +416,8 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 				return &result{isNew: isNew, dto: s.domainToDTO(note)}, nil
 			}
 			// If content is consistent but modification time is different, only update modification time
-			// 检查内容是否一致但修改时间不同，则只更新修改时间
-			if mtimeCheck && note.Mtime < params.Mtime && note.ContentHash == params.ContentHash {
+			// 检查内容是否一致但修改时间不同，则只更新修改时间（墓碑记录不走此分支，须经下方墓碑闸门）
+			if mtimeCheck && note.Action != domain.NoteActionDelete && note.Mtime < params.Mtime && note.ContentHash == params.ContentHash {
 				err := s.noteRepo.UpdateActionMtime(ctx, domain.NoteActionModify, params.Mtime, note.ID, uid)
 				if err != nil {
 					return nil, code.ErrorDBQuery.WithDetails(err.Error())

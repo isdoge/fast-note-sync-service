@@ -299,3 +299,85 @@ func TestFolderService_IsDeleted(t *testing.T) {
 		require.False(t, deleted)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Section E：mtime-only 分支不得绕过墓碑闸门
+// 墓碑与上传 contentHash 相同、上传 mtime 大于墓碑 mtime 但早于删除时刻时，
+// 修复前会走"只更新 mtime"分支把 action 改回 modify，绕过墓碑闸门复活记录。
+// ---------------------------------------------------------------------------
+
+func TestNoteService_ModifyOrCreate_MtimeOnlyBranchSkipsTombstone(t *testing.T) {
+	noteRepo := new(domainmocks.MockNoteRepository)
+	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+
+	_, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
+		Vault:       "vault",
+		Path:        "skills/old.md",
+		PathHash:    "h1",
+		Content:     "old content",
+		ContentHash: "oldhash",
+		Mtime:       200,
+		Ctime:       200,
+	}, true)
+
+	require.ErrorIs(t, err, code.ErrorStaleReviveRejected,
+		"Bug: 墓碑记录不得走 mtime-only 分支，陈旧重报必须被墓碑闸门拒绝")
+	require.Nil(t, got)
+	noteRepo.AssertNotCalled(t, "UpdateActionMtime", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	noteRepo.AssertNotCalled(t, "Update", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestFileService_UpdateOrCreate_MtimeOnlyBranchSkipsTombstone(t *testing.T) {
+	fileRepo := new(domainmocks.MockFileRepository)
+	fileRepo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).Return(deletedFileFixture(), nil)
+
+	svc := NewFileService(nil, fileRepo, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+
+	_, got, err := svc.UpdateOrCreate(context.Background(), 1, &dto.FileUpdateRequest{
+		Vault:       "vault",
+		Path:        "skills/img.png",
+		PathHash:    "fh1",
+		ContentHash: "oldfh",
+		SavePath:    "/tmp/test-not-written",
+		Size:        5,
+		Ctime:       200,
+		Mtime:       200,
+	}, true)
+
+	require.ErrorIs(t, err, code.ErrorStaleReviveRejected,
+		"Bug: 墓碑文件不得走 mtime-only 分支，陈旧重报必须被墓碑闸门拒绝")
+	require.Nil(t, got)
+	fileRepo.AssertNotCalled(t, "UpdateActionMtime", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	fileRepo.AssertNotCalled(t, "Update", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// 新鲜 mtime 且内容相同：走完整复活路径（action=create），而不是 mtime-only 的 modify。
+func TestNoteService_ModifyOrCreate_FreshSameContentRevivesAsCreate(t *testing.T) {
+	noteRepo := new(domainmocks.MockNoteRepository)
+	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+
+	updated := deletedNoteFixture()
+	updated.Action = domain.NoteActionCreate
+	noteRepo.On("Update", mock.Anything, mock.MatchedBy(func(n *domain.Note) bool {
+		return n.Action == domain.NoteActionCreate
+	}), int64(1)).Return(updated, nil)
+	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 11}, nil).Maybe()
+
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+
+	_, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
+		Vault:       "vault",
+		Path:        "skills/old.md",
+		PathHash:    "h1",
+		Content:     "old content",
+		ContentHash: "oldhash",
+		Mtime:       testDeletedAt + 60_000,
+		Ctime:       100,
+	}, true)
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	noteRepo.AssertNotCalled(t, "UpdateActionMtime", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
