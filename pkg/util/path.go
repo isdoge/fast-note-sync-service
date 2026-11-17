@@ -84,6 +84,35 @@ func ValidatePath(path string) bool {
 	return !strings.Contains(cleaned, "..") && !strings.HasPrefix(cleaned, "/")
 }
 
+// CleanVaultPath strips leading "/" separators from a vault-relative path and
+// validates it with ValidatePath. It returns the cleaned path and true, or
+// "" and false when the path is empty, absolute (after trimming), contains
+// "..", or contains NUL bytes. Backslashes are left untouched: whether "\"
+// counts as a separator is a separate decision for a later version.
+// CleanVaultPath 去掉库相对路径的前导 "/" 并用 ValidatePath 校验。
+// 返回清洗后的路径和 true；路径为空、去前导斜杠后仍是绝对路径、含 ".." 或含
+// NUL 时返回 "" 和 false。反斜杠不做转换（是否当分隔符是下一版要定的事）。
+func CleanVaultPath(path string) (string, bool) {
+	path = strings.TrimLeft(path, "/")
+	if !ValidatePath(path) {
+		return "", false
+	}
+	return path, true
+}
+
+// EnsureMDExt appends the ".md" suffix (case-insensitive check) to a
+// vault-relative note path so notes synced to Obsidian are always markdown
+// files. Paths already ending in .md/.MD (any case) are returned unchanged.
+// EnsureMDExt 给库相对笔记路径补上 ".md" 后缀（大小写不敏感判断），避免无扩展名
+// 笔记同步到 Obsidian 后不可见、再同步时被当成附件。已以 .md（任意大小写）结尾
+// 的路径原样返回。
+func EnsureMDExt(path string) string {
+	if strings.HasSuffix(strings.ToLower(path), ".md") {
+		return path
+	}
+	return path + ".md"
+}
+
 // NormalizePath normalizes path for cross-platform compatibility.
 // Converts backslashes to forward slashes and cleans the path.
 // NormalizePath 规范化路径以实现跨平台兼容性。
