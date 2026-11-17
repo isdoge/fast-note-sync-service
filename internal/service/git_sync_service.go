@@ -217,7 +217,10 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 
 	conf.RepoURL = params.RepoURL
 	conf.Username = params.Username
-	conf.Password = params.Password
+	// An empty password from the edit form preserves the stored credential.
+	if params.Password != "" {
+		conf.Password = params.Password
+	}
 	conf.Branch = params.Branch
 	if conf.Branch == "" {
 		conf.Branch = "main"

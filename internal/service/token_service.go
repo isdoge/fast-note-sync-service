@@ -89,6 +89,9 @@ func (s *tokenService) domainToDTO(token *domain.AuthToken) *dto.TokenResponse {
 }
 
 func (s *tokenService) Create(ctx context.Context, uid int64, params *dto.TokenIssueRequest) (*dto.TokenCreateResponse, error) {
+	if params.ExpiredDays < 1 || params.ExpiredDays > int(util.MaxDurationDays) {
+		return nil, code.ErrorInvalidParams.WithDetails(fmt.Sprintf("expiredDays must be between 1 and %d", util.MaxDurationDays))
+	}
 	// Format scope for 3D-RBAC compatibility
 	var formattedScope string
 	if params.Protocol != "" || params.Client != "" || params.Function != "" {
@@ -106,8 +109,19 @@ func (s *tokenService) Create(ctx context.Context, uid int64, params *dto.TokenI
 		}
 		formattedScope = fmt.Sprintf("p:%s c:%s f:%s", p, c, f)
 	} else {
-		// Legacy format (e.g. "p:rest,ws c:ObsidianPlugin f:*")
-		formattedScope = "p:" + params.Scope
+		// Legacy WebGUI tokens also support MCP. Explicit protocol restrictions
+		// are handled by the 3D-RBAC branch above.
+		protocols := params.Scope
+		hasMCP := false
+		for _, protocol := range strings.Split(protocols, ",") {
+			if strings.EqualFold(strings.TrimSpace(protocol), "mcp") {
+				hasMCP = true
+			}
+		}
+		if protocols != "" && protocols != "*" && !hasMCP {
+			protocols += ",mcp"
+		}
+		formattedScope = "p:" + protocols
 		if params.ClientType != "" {
 			formattedScope += " c:" + params.ClientType
 		}
@@ -236,6 +250,10 @@ func (s *tokenService) Update(ctx context.Context, uid int64, tokenID int64, par
 			return s.tokenRepo.UpdateScope(ctx, tokenID, params.Scope)
 		}
 		return code.ErrorInvalidAuthToken.WithDetails("Only manual tokens can be fully edited")
+	}
+
+	if params.ExpiredDays < 1 || params.ExpiredDays > int(util.MaxDurationDays) {
+		return code.ErrorInvalidParams.WithDetails(fmt.Sprintf("expiredDays must be between 1 and %d", util.MaxDurationDays))
 	}
 
 	// Update fields if provided

@@ -425,20 +425,25 @@ func (s *backupService) ExecuteUserBackup(ctx context.Context, uid int64, config
 	if !config.IsEnabled {
 		return code.ErrorBackupConfigDisabled
 	}
-	// Record error and propagate it back so the API layer can surface failures to the UI
-	// 记录错误并向上抛出，便于 API 层将失败状态展示到 UI（避免弹窗"假成功"）
-	if err := s.handleBackupSync(ctx, config, true); err != nil {
-		// Service shutdown errors bypass finishTask and are not persisted to history
-		if s.ctx.Err() != nil {
-			return err
-		}
-		s.logger.Warn("Manual backup completed with errors",
-			zap.Int64("uid", uid),
-			zap.Int64("configID", configID),
-			zap.Error(err),
-		)
+	// Validate with the request context, but run the accepted task under the
+	// service context so client disconnects and proxy timeouts cannot abort it.
+	s.runningMu.Lock()
+	if err := s.ctx.Err(); err != nil {
+		s.runningMu.Unlock()
 		return err
 	}
+	s.wg.Add(1)
+	s.runningMu.Unlock()
+	safego.Go(s.logger, func() {
+		defer s.wg.Done()
+		if err := s.handleBackupSync(s.ctx, config, true); err != nil {
+			s.logger.Warn("Manual backup completed with errors",
+				zap.Int64("uid", uid),
+				zap.Int64("configID", configID),
+				zap.Error(err),
+			)
+		}
+	})
 	return nil
 }
 
@@ -451,13 +456,19 @@ func (s *backupService) ExecuteTaskBackups(ctx context.Context) error {
 	}
 
 	now := time.Now()
+	pendingByUser := make(map[int64]bool)
 	for _, config := range configs {
 		if !config.IsEnabled {
 			continue
 		}
 
-		// Check if user has pending changes
-		_, pending := s.pendingSyncs.LoadAndDelete(config.UID)
+		// Consume each user's signal once per poll, then share it with all configs.
+		// Changes arriving after this snapshot remain pending for the next poll.
+		pending, seen := pendingByUser[config.UID]
+		if !seen {
+			_, pending = s.pendingSyncs.LoadAndDelete(config.UID)
+			pendingByUser[config.UID] = pending
+		}
 
 		isScheduled := config.NextRunTime.Before(now)
 		shouldTrigger := false
@@ -826,29 +837,27 @@ func (s *backupService) finishTask(ctx context.Context, config *domain.BackupCon
 					if history.Type != "sync" && history.FilePath != "" {
 						st, err := s.storageService.Get(saveCtx, history.UID, history.StorageID)
 						if err != nil || st == nil || !st.IsEnabled {
-							s.logger.Warn("Could not get storage client for cleanup or storage disabled", zap.Int64("sid", history.StorageID), zap.Error(err))
+							s.logger.Error("Could not get storage client for cleanup or storage disabled", zap.Int64("sid", history.StorageID), zap.Error(err))
 							continue
 						}
 
 						client, err := s.getStorageClient(saveCtx, history.UID, st)
 						if err != nil {
-							s.logger.Warn("Failed to initialize storage client for cleanup", zap.Error(err))
+							s.logger.Error("Failed to initialize storage client for cleanup", zap.Error(err))
 							continue
 						}
 
-						if err := client.Delete(history.FilePath); err != nil {
-							s.logger.Warn("Failed to delete old backup file", zap.String("file", history.FilePath), zap.Error(err))
-						} else {
-							s.logger.Info("Successfully deleted old backup file", zap.String("file", history.FilePath))
+						if err := client.Delete(history.FilePath); err != nil && !os.IsNotExist(err) {
+							s.logger.Error("Failed to delete old backup file", zap.String("file", history.FilePath), zap.Error(err))
+							continue
 						}
+						s.logger.Info("Successfully deleted old backup file", zap.String("file", history.FilePath))
+					}
+					// Keep failed cleanup records so a later run can retry the same object.
+					if err := s.backupRepo.DeleteHistory(saveCtx, history.UID, history.ID); err != nil {
+						s.logger.Error("Failed to delete old backup history record", zap.Int64("historyID", history.ID), zap.Error(err))
 					}
 				}
-			}
-
-			// 3. Delete records from database
-			// 3. 从数据库中删除记录
-			if err := s.backupRepo.DeleteOldHistory(saveCtx, config.UID, config.ID, cutoffTime); err != nil {
-				s.logger.Error("Failed to delete old backup history records from database", zap.Error(err))
 			}
 		}
 	}
@@ -901,6 +910,9 @@ func (s *backupService) exportArchiveFiles(ctx context.Context, uid, vaultID int
 				}
 				return err
 			}
+		}
+		if err := os.Chtimes(destPath, mtime, mtime); err != nil {
+			return err
 		}
 		totalCount++
 		totalSize += localSize
@@ -1239,7 +1251,9 @@ func (s *backupService) NotifyUpdated(uid int64) {
 func (s *backupService) Shutdown(ctx context.Context) error {
 	// 1. Signal all background tasks to stop
 	// 1. 通知所有后台任务停止
+	s.runningMu.Lock()
 	s.cancel()
+	s.runningMu.Unlock()
 
 	s.timerMu.Lock()
 	// Stop all pending sync timers

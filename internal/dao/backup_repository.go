@@ -308,6 +308,14 @@ func (r *backupRepository) ListOldHistory(ctx context.Context, uid int64, config
 	return list, nil
 }
 
+func (r *backupRepository) DeleteHistory(ctx context.Context, uid int64, historyID int64) error {
+	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		q := r.backup(uid).BackupHistory
+		_, err := q.WithContext(ctx).Where(q.ID.Eq(historyID), q.UID.Eq(uid)).Delete()
+		return err
+	})
+}
+
 func (r *backupRepository) DeleteOldHistory(ctx context.Context, uid int64, configID int64, cutoffTime time.Time) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		q := r.backup(uid).BackupHistory

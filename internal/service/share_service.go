@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"html"
 	"mime"
 	"net/http"
 	"net/url"
@@ -914,6 +915,11 @@ func (s *shareService) resolveSharedFileReference(ctx context.Context, uid int64
 		}
 	}
 
+	// Apply the same decoding as the exact-path candidates before searching
+	// attachments stored outside the note's directory by their basename.
+	if decoded, err := url.PathUnescape(ref); err == nil && decoded != "" {
+		ref = decoded
+	}
 	normalizedRef := normalizeShareVaultPath(ref)
 	if normalizedRef != "" && !strings.Contains(normalizedRef, "/") {
 		file, err := s.fileRepo.GetByPathLike(ctx, normalizedRef, vaultID, uid)
@@ -1111,6 +1117,14 @@ func rewriteMarkdownImageLinks(content string, fileRefs map[string]*domain.File,
 			return `<video src="` + apiURL + `" controls style="max-width:100%"></video>`
 		case "audio":
 			return `<audio src="` + apiURL + `" controls></audio>`
+		case "":
+			if file.Path != "" {
+				label := alt
+				if label == "" {
+					label = file.Path
+				}
+				return `<a href="` + html.EscapeString(apiURL) + `" target="_blank">` + html.EscapeString(label) + `</a>`
+			}
 		}
 
 		// Image (default) — preserve the original markdown image form, only
