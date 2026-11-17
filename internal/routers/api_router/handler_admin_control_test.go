@@ -1,6 +1,7 @@
 package api_router
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,13 +11,41 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
+	"github.com/haierkeys/fast-note-sync-service/internal/dao"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/internal/service/mocks"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
+
+// 公开配置返回全文索引的实际生效状态（前端据此决定是否提供内容检索）；
+// 管理设置表单回显保存的配置值（修改后重启生效），不因平台限制被改写。
+func TestAdminControlHandler_FTSReportsEffectiveState(t *testing.T) {
+	handler, a, userSvc := newTestAdminHandler()
+	// 模拟配置请求启用、平台限制使实际管理器禁用的情况。
+	a.Config().App.FtsBleveEnabled = util.Ptr(true)
+	userSvc.On("IsRegisterEnabled", mock.Anything).Return(true)
+	c, w := newAdminTestContext("GET", "/api/webgui/config", "", 0)
+	handler.Config(c)
+	var public struct {
+		Data dto.AdminWebGUIConfig `json:"data"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &public))
+	assert.False(t, public.Data.FtsBleveEnabled)
+	c, w = newAdminTestContext("GET", "/api/admin/config", "", 1)
+	handler.GetConfig(c)
+	var admin struct {
+		Data dto.AdminConfig `json:"data"`
+	}
+	assert.NoError(t, json.Unmarshal(w.Body.Bytes(), &admin))
+	if assert.NotNil(t, admin.Data.FtsBleveEnabled) {
+		assert.True(t, *admin.Data.FtsBleveEnabled)
+	}
+	assert.True(t, *a.Config().App.FtsBleveEnabled, "保留保存到配置文件的请求值")
+}
 
 func newAdminTestContext(method, url, body string, uid int64) (*gin.Context, *httptest.ResponseRecorder) {
 	w := httptest.NewRecorder()
@@ -42,6 +71,8 @@ func newTestAdminHandler() (*AdminControlHandler, *app.App, *mocks.MockUserServi
 		UserService: mockUserSvc,
 	}
 	testApp := app.NewTestApp(svcs)
+	testApp.Dao = dao.New(nil, context.Background(),
+		dao.WithBleveManager(dao.NewBleveManager(util.Ptr(false), nil, nil)))
 	// Set mock config values
 	cfg := testApp.Config()
 	cfg.User.AdminUID = 1
