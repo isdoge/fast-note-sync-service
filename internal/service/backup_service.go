@@ -451,13 +451,19 @@ func (s *backupService) ExecuteTaskBackups(ctx context.Context) error {
 	}
 
 	now := time.Now()
+	pendingByUser := make(map[int64]bool)
 	for _, config := range configs {
 		if !config.IsEnabled {
 			continue
 		}
 
-		// Check if user has pending changes
-		_, pending := s.pendingSyncs.LoadAndDelete(config.UID)
+		// Consume each user's signal once per poll, then share it with all configs.
+		// Changes arriving after this snapshot remain pending for the next poll.
+		pending, seen := pendingByUser[config.UID]
+		if !seen {
+			_, pending = s.pendingSyncs.LoadAndDelete(config.UID)
+			pendingByUser[config.UID] = pending
+		}
 
 		isScheduled := config.NextRunTime.Before(now)
 		shouldTrigger := false
