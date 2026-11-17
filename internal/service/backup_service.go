@@ -908,6 +908,9 @@ func (s *backupService) exportArchiveFiles(ctx context.Context, uid, vaultID int
 				return err
 			}
 		}
+		if err := os.Chtimes(destPath, mtime, mtime); err != nil {
+			return err
+		}
 		totalCount++
 		totalSize += localSize
 		return nil
