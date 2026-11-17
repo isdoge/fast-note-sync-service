@@ -866,6 +866,30 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 			}
 			return nil, code.ErrorDBQuery.WithDetails(err.Error())
 		}
+		// 墓碑行优先级（与 noteService.Delete eba76c4d 同理）：目录移动/反复移动后
+		// 同一 path_hash 常同时存在 rename 墓碑行与活跃行，GetByPathHash 是无 ORDER BY
+		// 的 First()，命中哪行不确定。命中墓碑行时会把陈旧的 ContentHash/SavePath/Size
+		// 复制进新路径行——新行指向错误内容，其它端下载到张冠李戴的附件（#312）。
+		// 命中墓碑行时回退列出全部行，优先取活跃行；全是墓碑行则维持原行为（再标记一次无害）。
+		// Tombstone priority (same rationale as noteService.Delete eba76c4d): after folder
+		// moves / repeated moves the same path_hash often holds both a rename tombstone and
+		// a live row, and GetByPathHash is an unordered First() — which row it hits is
+		// nondeterministic. Hitting the tombstone copies its stale ContentHash/SavePath/Size
+		// into the new-path row, pointing it at the wrong content (#312). On a tombstone hit,
+		// fall back to listing all rows and prefer the live one; all-tombstone keeps the old
+		// behavior (re-marking is harmless).
+		if f.Action == domain.FileActionDelete {
+			rows, lerr := s.fileRepo.ListByPathHash(ctx, oldPathHash, vaultID, uid)
+			if lerr != nil {
+				return nil, code.ErrorDBQuery.WithDetails(lerr.Error())
+			}
+			for _, row := range rows {
+				if row.Action != domain.FileActionDelete {
+					f = row
+					break
+				}
+			}
+		}
 
 		// 3. Mark old file as deleted
 		// 3. Mark old file as deleted
