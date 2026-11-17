@@ -1,22 +1,11 @@
-# GitHub Container Registry 登录示例（使用具备 packages:write 的令牌）
-# echo "$GITHUB_TOKEN" | docker login ghcr.io -u isdoge --password-stdin
-
 # 环境变量（可选）
 # include .env
 # export $(shell sed 's/=.*//' .env)
 
 # -------------------------
-# 项目 / 镜像 配置
+# 项目配置
 # -------------------------
 REPO = $(eval REPO := $$(shell go list -f '{{.ImportPath}}' .))$(value REPO)
-
-DockerRegistry  = ghcr.io
-DockerUser      = isdoge
-DockerName      = fast-note-sync-service
-DockerImage     = $(DockerRegistry)/$(DockerUser)/$(DockerName)
-
-ReleaseTagPre   = release-v
-DevelopTagPre   = develop-v
 
 P_NAME          = fast-note-sync
 P_BIN           = fast-note-sync-service
@@ -24,7 +13,6 @@ P_BIN           = fast-note-sync-service
 # -------------------------
 # Git / 构建信息
 # -------------------------
-GitTag          = $(shell git describe --tags --abbrev=0)
 Version         ?= $(shell sed -nE 's/^[[:space:]]*Version[[:space:]]+string[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/app/version.go)
 GitVersion      = $(shell git log -1 --format=%h)
 GitVersionDesc  = $(shell git log -1 --format=%s)
@@ -50,7 +38,6 @@ buildDir = $(rootDir)/build
 # PHONY 目标
 # -------------------------
 .PHONY: all  build-all run test clean \
-        push-online push-dev \
         build-macos-amd64 build-macos-arm64 build-linux-amd64 \
         build-linux-arm64 build-linux-arm build-windows-amd64 gox-linux gox-all \
 		docs fmt update air dev ver gen sup proto
@@ -65,7 +52,6 @@ sup:
 	node scripts/process_support_csv.js
 	node scripts/process_support.mjs --model Qwen/Qwen3.6-35B-A3B
 
-sup-md:
 test:
 	go test $$(go list ./... | grep -v -E 'internal/service/mocks|internal/domain/mocks|internal/dto|internal/model|internal/query|internal/config|internal/app|/docs|internal/middleware|cmd')
 
@@ -152,30 +138,8 @@ gox-all:
 
 
 # -------------------------
-# Docker 发布
-# -------------------------
-push-online: build-linux
-	$(call dockerImageClean)
-	docker build --platform linux/amd64 -t $(DockerImage):latest -f docker/Dockerfile .
-	docker tag  $(DockerImage):latest $(DockerImage):$(ReleaseTagPre)$(GitTag)
-	docker push $(DockerImage):$(ReleaseTagPre)$(GitTag)
-	docker push $(DockerImage):latest
-
-push-dev: build-linux
-	$(call dockerImageClean)
-	docker build --platform linux/amd64 -t $(DockerImage):dev-latest -f docker/Dockerfile .
-	docker tag $(DockerImage):dev-latest $(DockerImage):$(DevelopTagPre)$(GitTag)
-	docker push $(DockerImage):$(DevelopTagPre)$(GitTag)
-	docker push $(DockerImage):dev-latest
-
-# -------------------------
 # 代码片段（定义）
 # -------------------------
-define dockerImageClean
-	@echo "docker Image Clean"
-	bash docker_image_clean.sh
-endef
-
 define init
 	@echo "Build Init"
 endef

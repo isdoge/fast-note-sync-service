@@ -112,3 +112,7 @@ CLAUDE.md
 # env
 .env
 fast-note-sync-service
+
+# 本地脚本产物 / 原始打赏流水（不入库）
+scripts/test-outputs/
+docs/Support_kofi_Raw.csv
