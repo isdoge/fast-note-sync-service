@@ -242,14 +242,21 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 		}
 	}
 
-	// Validate webguiLoginTokenExpiry format
-	// 验证 webguiLoginTokenExpiry 格式
-	if params.WebGUILoginTokenExpiry != nil && *params.WebGUILoginTokenExpiry != "" {
-		_, err := util.ParseDuration(*params.WebGUILoginTokenExpiry)
-		if err != nil {
-			logger.Warn("apiRouter.WebGUI.UpdateConfig invalid webguiLoginTokenExpiry format",
-				zap.String("value", *params.WebGUILoginTokenExpiry))
-			response.ToResponse(code.ErrorInvalidParams.WithDetails("webguiLoginTokenExpiry format invalid, e.g. 7d, 24h, 30m"))
+	// Validate token lifetimes before mutating or saving the live config.
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{
+		{"tokenExpiry", params.TokenExpiry},
+		{"shareTokenExpiry", params.ShareTokenExpiry},
+		{"webguiLoginTokenExpiry", params.WebGUILoginTokenExpiry},
+	} {
+		if field.value == nil {
+			continue
+		}
+		d, err := util.ParseDuration(*field.value)
+		if err != nil || d <= 0 {
+			response.ToResponse(code.ErrorInvalidParams.WithDetails(fmt.Sprintf("%s format invalid: must be positive and at most %d days (e.g. 7d, 24h, 30m)", field.name, util.MaxDurationDays)))
 			return
 		}
 	}

@@ -1,6 +1,7 @@
 package util
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -80,6 +81,9 @@ func TimeParse(layout string, in string) time.Time {
 	return timer
 }
 
+// MaxDurationDays is the largest whole-day duration representable by time.Duration.
+const MaxDurationDays = int64((1<<63 - 1) / (24 * time.Hour))
+
 // ParseDuration parses duration string, supports 'd' (day) suffix
 // ParseDuration 解析时间字符串，支持 'd' (天) 后缀
 func ParseDuration(s string) (time.Duration, error) {
@@ -89,6 +93,9 @@ func ParseDuration(s string) (time.Duration, error) {
 		days, err := strconv.Atoi(daysStr)
 		if err != nil {
 			return 0, err
+		}
+		if int64(days) > MaxDurationDays || int64(days) < -MaxDurationDays {
+			return 0, fmt.Errorf("duration exceeds maximum of %d days", MaxDurationDays)
 		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
