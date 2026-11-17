@@ -140,11 +140,13 @@ func TestNoteService_Rename_MigratesNoteHistory(t *testing.T) {
 	folderSvc.On("CleanupEmptyAncestors", mock.Anything, int64(1), int64(1), "旧笔记.md").Return(nil)
 
 	// Migrate goroutine 依赖
-	noteRepo.On("GetByID", mock.Anything, int64(137), int64(1)).Return(oldNote, nil)
+	// GetByID 返回独立对象（与真实仓库一致）：Migrate 会改写它，若与 Rename 主流程共用同一指针会形成测试自身的数据竞争
+	noteRepo.On("GetByID", mock.Anything, int64(137), int64(1)).Return(oldNoteFixture(), nil)
 	noteRepo.On("UpdateSnapshot", mock.Anything, oldNote.ContentLastSnapshot, oldNote.ContentLastSnapshotHash, oldNote.Version, int64(2048), int64(1)).Return(nil)
 	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 1024}, nil).Maybe()
-	historyRepo.On("Migrate", mock.Anything, int64(137), int64(2048), int64(1)).Return(nil)
+	migrated := make(chan struct{})
+	historyRepo.On("Migrate", mock.Anything, int64(137), int64(2048), int64(1)).Return(nil).Run(func(mock.Arguments) { close(migrated) })
 
 	svc := newNoteSvc(t, noteRepo, historyRepo, vaultSvc, folderSvc)
 
@@ -158,16 +160,12 @@ func TestNoteService_Rename_MigratesNoteHistory(t *testing.T) {
 	require.NoError(t, err)
 
 	// Rename 内部 go s.Migrate(...) 异步执行，等待 history 迁移被触发
-	deadline := time.Now().Add(2 * time.Second)
-	migrated := false
-	for time.Now().Before(deadline) {
-		if len(historyRepo.Calls) > 0 {
-			migrated = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// （用 Run 回调通知，不直接读 historyRepo.Calls，后者无锁访问会与 mock 写入竞争）
+	select {
+	case <-migrated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Rename 后应触发 note_history 迁移（oldNoteID 137 -> newNoteID 2048）")
 	}
-	require.True(t, migrated, "Rename 后应触发 note_history 迁移（oldNoteID 137 -> newNoteID 2048）")
 	historyRepo.AssertCalled(t, "Migrate", mock.Anything, int64(137), int64(2048), int64(1))
 
 	// 确认 Rename 主流程 stub 全部命中
