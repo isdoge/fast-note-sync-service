@@ -23,7 +23,7 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		api.Use(middleware.TraceMiddlewareWithConfig(*cfg.Tracer.Enabled, cfg.Tracer.Header)) // Trace ID middleware
 		// Trace ID 中间件
 		api.Use(middleware.RateLimiter(methodLimiters))
-		api.Use(middleware.RateLimiter(globalLimiters))
+		api.Use(middleware.FailureRateLimiter(globalLimiters))
 
 		// MCP routes
 		registerMCPRoutes(api, appContainer, wss)

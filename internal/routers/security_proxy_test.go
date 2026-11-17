@@ -34,28 +34,40 @@ func TestClientIPTrustsOnlyConfiguredProxy(t *testing.T) {
 	}
 }
 
-// 登录接口全局兜底桶：大量不同来源各自未超单客户端限额时，总量超过全局容量后被拒绝。
+// 登录接口全局兜底桶：大量不同来源各自未超单客户端限额时，失败总量超过全局容量后被拒绝；
+// 成功登录不消耗全局额度，攻击之外的正常登录高峰不会触发兜底。
 func TestLoginGlobalLimiterCapsDistributedAttempts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	_ = r.SetTrustedProxies(nil)
-	perClient := limiter.NewMethodLimiter().AddBuckets(limiter.BucketRule{Key: "/api/user/login", PerClient: true, FillInterval: time.Hour, Capacity: 5, Quantum: 1})
-	global := limiter.NewMethodLimiter().AddBuckets(limiter.BucketRule{Key: "/api/user/login", FillInterval: time.Hour, Capacity: 50, Quantum: 50})
-	r.Use(middleware.RateLimiter(perClient), middleware.RateLimiter(global))
-	r.POST("/api/user/login", func(c *gin.Context) { c.Status(http.StatusUnauthorized) })
+	run := func(succeed bool) int {
+		r := gin.New()
+		_ = r.SetTrustedProxies(nil)
+		perClient := limiter.NewMethodLimiter().AddBuckets(limiter.BucketRule{Key: "/api/user/login", PerClient: true, FillInterval: time.Hour, Capacity: 5, Quantum: 1})
+		global := limiter.NewMethodLimiter().AddBuckets(limiter.BucketRule{Key: "/api/user/login", FillInterval: time.Hour, Capacity: 50, Quantum: 50})
+		r.Use(middleware.RateLimiter(perClient), middleware.FailureRateLimiter(global))
+		handled := 0
+		r.POST("/api/user/login", func(c *gin.Context) {
+			handled++
+			if succeed {
+				c.Set(middleware.LoginSucceededKey, true)
+				c.Status(http.StatusOK)
+				return
+			}
+			c.Status(http.StatusUnauthorized)
+		})
 
-	rejected := 0
-	for i := 0; i < 60; i++ {
-		request := httptest.NewRequest(http.MethodPost, "/api/user/login", nil)
-		request.RemoteAddr = fmt.Sprintf("[2001:db8:%x::1]:1000", i)
-		response := httptest.NewRecorder()
-		r.ServeHTTP(response, request)
-		if response.Code != http.StatusUnauthorized {
-			rejected++
+		for i := 0; i < 60; i++ {
+			request := httptest.NewRequest(http.MethodPost, "/api/user/login", nil)
+			request.RemoteAddr = fmt.Sprintf("[2001:db8:%x::1]:1000", i)
+			response := httptest.NewRecorder()
+			r.ServeHTTP(response, request)
 		}
+		return 60 - handled
 	}
-	if rejected != 10 {
-		t.Fatalf("expected 10 requests rejected by global bucket, got %d", rejected)
+	if rejected := run(false); rejected != 10 {
+		t.Fatalf("expected 10 failed logins rejected by global bucket, got %d", rejected)
+	}
+	if rejected := run(true); rejected != 0 {
+		t.Fatalf("successful logins must not consume global quota, got %d rejected", rejected)
 	}
 
 	// 生产配置：登录接口必须同时存在单客户端桶与全局桶

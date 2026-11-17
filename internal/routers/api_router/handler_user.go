@@ -112,6 +112,7 @@ func (h *UserHandler) Login(c *gin.Context) {
 		return
 	}
 
+	c.Set(middleware.LoginSucceededKey, true)
 	response.ToResponse(code.Success.WithData(userDTO))
 }
 
