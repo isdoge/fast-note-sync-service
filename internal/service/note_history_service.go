@@ -392,6 +392,7 @@ func (s *noteHistoryService) RestoreFromHistory(ctx context.Context, uid int64, 
 	go s.folderService.SyncResourceFID(context.Background(), uid, vaultID, []int64{updated.ID}, nil)
 	go s.noteService.CountSizeSum(context.Background(), vaultID, uid)
 	go s.noteService.UpdateNoteLinks(context.Background(), updated.ID, updated.Content, vaultID, uid)
+	go s.noteService.UpdateNoteTags(context.Background(), updated.ID, updated.Content, vaultID, uid)
 
 	NoteHistoryDelayPush(updated.ID, uid)
 

@@ -133,6 +133,10 @@ type NoteService interface {
 	// UpdateNoteLinks 从内容中提取 Wiki 链接并更新链接索引
 	UpdateNoteLinks(ctx context.Context, noteID int64, content string, vaultID, uid int64)
 
+	// UpdateNoteTags extracts tags from content and replaces the note's rows in the tag index
+	// UpdateNoteTags 从内容中提取标签并替换该笔记的标签索引
+	UpdateNoteTags(ctx context.Context, noteID int64, content string, vaultID, uid int64)
+
 	// RecycleClear cleans up the recycle bin
 	// RecycleClear 清理回收站
 	RecycleClear(ctx context.Context, uid int64, params *dto.NoteRecycleClearRequest) error
@@ -604,6 +608,9 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
+	// 删除后从标签索引移除（失败只记日志）；从回收站恢复时 Restore 会重建
+	s.DeleteNoteTags(ctx, note.ID, uid)
+
 	// If note has active share, automatically revoke (to prevent count residue) // 若笔记有 active 分享，自动撤销（防止计数残留）
 	if err := s.shareRepo.UpdateStatusByRes(ctx, uid, "note", note.ID, domain.UserShareStatusRevoked); err != nil {
 		zap.L().Warn("Failed to revoke share on note deletion",
@@ -827,6 +834,9 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 			)
 		}
 		go s.Migrate(context.Background(), n.ID, newNoteCreated.ID, uid)
+		// 标签索引按笔记 ID 归属：旧 ID 的行删除，新 ID 按正文重建
+		s.DeleteNoteTags(ctx, n.ID, uid)
+		s.UpdateNoteTags(ctx, newNoteCreated.ID, n.Content, vaultID, uid)
 		if s.backupService != nil {
 			go s.backupService.NotifyUpdated(uid)
 		}
