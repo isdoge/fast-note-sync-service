@@ -1,5 +1,5 @@
-# Docker 登录示例
-# docker login --username=xxxxxx registry.cn-shanghai.aliyuncs.com
+# GitHub Container Registry 登录示例（使用具备 packages:write 的令牌）
+# echo "$GITHUB_TOKEN" | docker login ghcr.io -u isdoge --password-stdin
 
 # 环境变量（可选）
 # include .env
@@ -10,8 +10,10 @@
 # -------------------------
 REPO = $(eval REPO := $$(shell go list -f '{{.ImportPath}}' .))$(value REPO)
 
-DockerHubUser   = haierkeys
-DockerHubName   = fast-note-sync-service
+DockerRegistry  = ghcr.io
+DockerUser      = isdoge
+DockerName      = fast-note-sync-service
+DockerImage     = $(DockerRegistry)/$(DockerUser)/$(DockerName)
 
 ReleaseTagPre   = release-v
 DevelopTagPre   = develop-v
@@ -23,6 +25,7 @@ P_BIN           = fast-note-sync-service
 # Git / 构建信息
 # -------------------------
 GitTag          = $(shell git describe --tags --abbrev=0)
+Version         ?= $(shell sed -nE 's/^[[:space:]]*Version[[:space:]]+string[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/app/version.go)
 GitVersion      = $(shell git log -1 --format=%h)
 GitVersionDesc  = $(shell git log -1 --format=%s)
 BuildTime       = $(shell date +%FT%T%z)
@@ -31,7 +34,7 @@ BuildTime       = $(shell date +%FT%T%z)
 # 获取提交信息，并处理掉换行符（用 @@@ 占位）以便安全地注入到 ldflags
 COMMIT_MSG_CLEAN = $(shell echo "$(COMMIT_MSG)" | tr '\n' '^' | sed 's/\^/@@@/g' | sed 's/"/\\"/g' | sed "s/'/’/g")
 Changelog       ?= $(COMMIT_MSG_CLEAN)
-LDFLAGS = -ldflags '-s -w -X ${REPO}/internal/app.Version=$(GitTag) -X "${REPO}/internal/app.GitTag=$(GitVersion)" -X ${REPO}/internal/app.BuildTime=$(BuildTime) -X "${REPO}/internal/app.Changelog=$(Changelog)"'
+LDFLAGS = -ldflags '-s -w -X ${REPO}/internal/app.Version=$(Version) -X "${REPO}/internal/app.GitTag=$(GitVersion)" -X ${REPO}/internal/app.BuildTime=$(BuildTime) -X "${REPO}/internal/app.Changelog=$(Changelog)"'
 
 # go 命令封装
 gob = go build ${LDFLAGS}
@@ -153,17 +156,17 @@ gox-all:
 # -------------------------
 push-online: build-linux
 	$(call dockerImageClean)
-	docker build --platform linux/amd64 -t $(DockerHubUser)/$(DockerHubName):latest -f docker/Dockerfile .
-	docker tag  $(DockerHubUser)/$(DockerHubName):latest $(DockerHubUser)/$(DockerHubName):$(ReleaseTagPre)$(GitTag)
-	docker push $(DockerHubUser)/$(DockerHubName):$(ReleaseTagPre)$(GitTag)
-	docker push $(DockerHubUser)/$(DockerHubName):latest
+	docker build --platform linux/amd64 -t $(DockerImage):latest -f docker/Dockerfile .
+	docker tag  $(DockerImage):latest $(DockerImage):$(ReleaseTagPre)$(GitTag)
+	docker push $(DockerImage):$(ReleaseTagPre)$(GitTag)
+	docker push $(DockerImage):latest
 
 push-dev: build-linux
 	$(call dockerImageClean)
-	docker build --platform linux/amd64 -t $(DockerHubUser)/$(DockerHubName):dev-latest -f docker/Dockerfile .
-	docker tag $(DockerHubUser)/$(DockerHubName):dev-latest $(DockerHubUser)/$(DockerHubName):$(DevelopTagPre)$(GitTag)
-	docker push $(DockerHubUser)/$(DockerHubName):$(DevelopTagPre)$(GitTag)
-	docker push $(DockerHubUser)/$(DockerHubName):dev-latest
+	docker build --platform linux/amd64 -t $(DockerImage):dev-latest -f docker/Dockerfile .
+	docker tag $(DockerImage):dev-latest $(DockerImage):$(DevelopTagPre)$(GitTag)
+	docker push $(DockerImage):$(DevelopTagPre)$(GitTag)
+	docker push $(DockerImage):dev-latest
 
 # -------------------------
 # 代码片段（定义）

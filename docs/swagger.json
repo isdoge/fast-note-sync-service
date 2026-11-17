@@ -5154,7 +5154,7 @@
                         "UserAuthToken": []
                     }
                 ],
-                "description": "Parallel-probe GitHub and CNB release endpoints, return reachability, latency, recommended source and current selected mode",
+                "description": "Probe GitHub releases and return reachability, latency, recommended source and current mode",
                 "produces": [
                     "application/json"
                 ],
@@ -5488,7 +5488,7 @@
                     "type": "string"
                 },
                 "pullSource": {
-                    "description": "Data pull source: auto | github | cnb // 数据拉取源：auto | github | cnb",
+                    "description": "Data pull source: auto | github (legacy values use GitHub) // 数据拉取源：auto | github (legacy values use GitHub)",
                     "type": "string"
                 },
                 "registerIsEnable": {
@@ -7611,17 +7611,9 @@
             }
         },
         "dto.SourceProbeDTO": {
-            "description": "Probe result containing GitHub/CNB reachability, latency, recommended source and current mode",
+            "description": "Probe result containing GitHub reachability, latency, recommended source and current mode",
             "type": "object",
             "properties": {
-                "cnb": {
-                    "description": "CNB probe result // CNB 探测结果",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/dto.SourceProbeItem"
-                        }
-                    ]
-                },
                 "github": {
                     "description": "GitHub probe result // GitHub 探测结果",
                     "allOf": [
@@ -7631,7 +7623,7 @@
                     ]
                 },
                 "recommended": {
-                    "description": "Recommended source: \"github\" or \"cnb\" // 推荐源",
+                    "description": "Recommended source: \"github\" // 推荐源",
                     "type": "string",
                     "example": "github"
                 },

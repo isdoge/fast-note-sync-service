@@ -68,8 +68,8 @@ type AppSettings struct {
 	// WebSocketWriteTimeout WebSocket 应用层出站消息（ToResponse/BroadcastResponse/SendBinary 等）
 	// 的写超时（秒），防止僵尸连接让 WriteMessage 无限阻塞；yaml 显式 0 = 不设写超时（旧行为），nil 才用默认 10
 	WebSocketWriteTimeout *int `yaml:"ws-write-timeout" default:"10"`
-	// PullSource data pull source: auto | github | cnb
-	// PullSource 数据拉取源：auto | github | cnb
+	// PullSource data pull source: auto | github (legacy values use GitHub)
+	// PullSource 数据拉取源：auto | github (legacy values use GitHub)
 	PullSource string `yaml:"pull-source" default:"auto"`
 	// PullReleaseChannel update version channel: stable | beta
 	// PullReleaseChannel 更新版本通道：stable（正式版） | beta（测试版）

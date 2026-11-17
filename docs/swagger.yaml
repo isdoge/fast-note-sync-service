@@ -198,8 +198,8 @@ definitions:
         description: 'Update version channel: stable | beta // 更新版本通道：stable | beta'
         type: string
       pullSource:
-        description: 'Data pull source: auto | github | cnb // 数据拉取源：auto | github
-          | cnb'
+        description: 'Data pull source: auto | github (legacy values use GitHub) // 数据拉取源：auto | github
+          (legacy values use GitHub)'
         type: string
       registerIsEnable:
         description: Registration enablement // 是否开启注册
@@ -1773,19 +1773,15 @@ definitions:
     - vault
     type: object
   dto.SourceProbeDTO:
-    description: Probe result containing GitHub/CNB reachability, latency, recommended
+    description: Probe result containing GitHub reachability, latency, recommended
       source and current mode
     properties:
-      cnb:
-        allOf:
-        - $ref: '#/definitions/dto.SourceProbeItem'
-        description: CNB probe result // CNB 探测结果
       github:
         allOf:
         - $ref: '#/definitions/dto.SourceProbeItem'
         description: GitHub probe result // GitHub 探测结果
       recommended:
-        description: 'Recommended source: "github" or "cnb" // 推荐源'
+        description: 'Recommended source: "github" // 推荐源'
         example: github
         type: string
       selectedMode:
@@ -5294,7 +5290,7 @@ paths:
       - System
   /api/version/probe:
     get:
-      description: Parallel-probe GitHub and CNB release endpoints, return reachability,
+      description: Probe GitHub releases and return reachability,
         latency, recommended source and current selected mode
       produces:
       - application/json
