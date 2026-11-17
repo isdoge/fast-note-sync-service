@@ -154,6 +154,14 @@ app:
   # WebSocket 应用层写超时(秒)，防止僵尸连接阻塞写入；显式设为 0 表示不设超时
   # WebSocket application-layer write timeout (seconds); guards against zombie connections blocking writes. Explicit 0 disables the deadline
   ws-write-timeout: 10
+  # WebSocket ping 间隔（秒，默认 25）；0 使用默认值，负数无效。
+  # WebSocket ping interval in seconds (default 25); 0 uses default, negative values are invalid.
+  ws-ping-interval: 25
+  # 上行存活超时（秒，默认 60），pong、ping 或应用数据帧均刷新存活时间。
+  # 超时后再发一次 ping，宽限一个 ping 周期后仍无上行响应才断开。
+  # Cloudflare Tunnel 可先尝试 180；若始终收不到 pong，仍需插件空闲时发送应用层心跳。
+  # Liveness timeout in seconds (default 60), followed by one ping interval of grace.
+  ws-ping-wait: 60
 
   # 数据拉取源设置: auto | github（旧值回落到 GitHub）
   # Data pull source setting: auto | github (legacy values use GitHub)

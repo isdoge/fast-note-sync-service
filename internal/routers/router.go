@@ -72,6 +72,8 @@ func NewRouter(frontendFiles embed.FS, appContainer *app.App, uni *ut.UniversalT
 	}
 
 	var wss = pkgapp.NewWebsocketServer(pkgapp.WSConfig{
+		PingInterval: time.Duration(cfg.App.WebSocketPingInterval),
+		PingWait:     time.Duration(cfg.App.WebSocketPingWait),
 		GWSOption: gws.ServerOption{
 			ResponseHeader:   responseHeader,
 			CheckUtf8Enabled: *cfg.App.WebSocketCheckUtf8Enabled,
