@@ -434,9 +434,11 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 			var action domain.NoteAction
 			if note.Action == domain.NoteActionDelete {
 				// 墓碑闸门：已被服务端删除的记录，只有未判定为"陈旧重报"的上传
-				// 才允许复活。陈旧 = mtime 与 ctime 都无法证明晚于删除时刻（含容差）。
+				// 才允许复活。陈旧 = 内容与墓碑一致（原样重报），且 mtime 与 ctime
+				// 都无法证明晚于删除时刻（含容差）。内容不同说明客户端有服务端未见过的
+				// 修改，按正常上传复活，避免调用方补发删除导致这份修改丢失。
 				// 典型场景：客户端本地状态失效后全量重报历史文件，把服务端删除顶回来。
-				if isStaleRevive(params.Mtime, params.Ctime, note.UpdatedTimestamp) {
+				if note.ContentHash == params.ContentHash && isStaleRevive(params.Mtime, params.Ctime, note.UpdatedTimestamp) {
 					zap.L().Info("stale revive rejected",
 						zap.Int64(logger.FieldUID, uid),
 						zap.String(logger.FieldPath, note.Path),

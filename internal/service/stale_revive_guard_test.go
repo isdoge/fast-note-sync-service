@@ -111,14 +111,14 @@ func TestNoteService_ModifyOrCreate_StaleReviveRejected(t *testing.T) {
 		Vault:       "vault",
 		Path:        "skills/old.md",
 		PathHash:    "h1",
-		Content:     "stale re-reported content",
-		ContentHash: "stalehash",
-		Mtime:       200,
-		Ctime:       200,
+		Content:     "old content",
+		ContentHash: "oldhash", // 与墓碑一致：原样重报
+		Mtime:       100,
+		Ctime:       100,
 	}, true)
 
 	require.ErrorIs(t, err, code.ErrorStaleReviveRejected,
-		"Bug: mtime/ctime 均早于删除时刻的上传必须被墓碑闸门拒绝（修复前会被无条件复活）")
+		"Bug: 内容与墓碑一致、mtime/ctime 均早于删除时刻的上传必须被墓碑闸门拒绝（修复前会被无条件复活）")
 	require.Nil(t, got)
 	noteRepo.AssertNotCalled(t, "Update", mock.Anything, mock.Anything, mock.Anything)
 	noteRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything, mock.Anything)
@@ -213,11 +213,11 @@ func TestFileService_UpdateOrCreate_StaleReviveRejected(t *testing.T) {
 		Vault:       "vault",
 		Path:        "skills/img.png",
 		PathHash:    "fh1",
-		ContentHash: "stalehash",
+		ContentHash: "oldfh", // 与墓碑一致：原样重报
 		SavePath:    "/tmp/test-not-written",
 		Size:        5,
-		Ctime:       200,
-		Mtime:       200,
+		Ctime:       100,
+		Mtime:       100,
 	}, true)
 
 	require.ErrorIs(t, err, code.ErrorStaleReviveRejected,
@@ -380,4 +380,69 @@ func TestNoteService_ModifyOrCreate_FreshSameContentRevivesAsCreate(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	noteRepo.AssertNotCalled(t, "UpdateActionMtime", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+// ---------------------------------------------------------------------------
+// Section F：时间戳陈旧但内容与墓碑不同 → 放行复活（#480 复核 F-1）
+// 内容不同说明客户端有服务端未见过的修改；若拒绝并补发删除，客户端会删掉
+// 这份修改。闸门只拦原样重报。
+// ---------------------------------------------------------------------------
+
+func TestNoteService_ModifyOrCreate_StaleTimestampsDifferentContentRevives(t *testing.T) {
+	noteRepo := new(domainmocks.MockNoteRepository)
+	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+
+	updated := deletedNoteFixture()
+	updated.Action = domain.NoteActionCreate
+	updated.ContentHash = "offlineedit"
+	noteRepo.On("Update", mock.Anything, mock.MatchedBy(func(n *domain.Note) bool {
+		return n.Action == domain.NoteActionCreate && n.ContentHash == "offlineedit"
+	}), int64(1)).Return(updated, nil)
+	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 11}, nil).Maybe()
+
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+
+	_, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
+		Vault:       "vault",
+		Path:        "skills/old.md",
+		PathHash:    "h1",
+		Content:     "offline edit",
+		ContentHash: "offlineedit",
+		Mtime:       200,
+		Ctime:       200,
+	}, true)
+
+	require.NoError(t, err, "Bug: 内容与墓碑不同的上传必须按正常上传复活，不得拒绝后补发删除")
+	require.NotNil(t, got)
+	noteRepo.AssertCalled(t, "Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1))
+}
+
+func TestFileService_UpdateOrCreate_StaleTimestampsDifferentContentRevives(t *testing.T) {
+	fileRepo := new(domainmocks.MockFileRepository)
+	fileRepo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).Return(deletedFileFixture(), nil)
+
+	updated := deletedFileFixture()
+	updated.Action = domain.FileActionCreate
+	updated.ContentHash = "offlineedit"
+	fileRepo.On("Update", mock.Anything, mock.MatchedBy(func(f *domain.File) bool {
+		return f.Action == domain.FileActionCreate && f.ContentHash == "offlineedit"
+	}), int64(1)).Return(updated, nil)
+	fileRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 5}, nil).Maybe()
+
+	svc := NewFileService(nil, fileRepo, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+
+	_, got, err := svc.UpdateOrCreate(context.Background(), 1, &dto.FileUpdateRequest{
+		Vault:       "vault",
+		Path:        "skills/img.png",
+		PathHash:    "fh1",
+		ContentHash: "offlineedit",
+		SavePath:    "/tmp/test-not-written",
+		Size:        5,
+		Ctime:       200,
+		Mtime:       200,
+	}, true)
+
+	require.NoError(t, err, "Bug: 附件内容与墓碑不同的上传必须按正常上传复活")
+	require.NotNil(t, got)
+	fileRepo.AssertCalled(t, "Update", mock.Anything, mock.AnythingOfType("*domain.File"), int64(1))
 }

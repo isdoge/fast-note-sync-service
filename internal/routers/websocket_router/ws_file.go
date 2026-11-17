@@ -379,6 +379,7 @@ func (h *FileWSHandler) FileUploadChunkBinary(c *pkgapp.WebsocketClient, data []
 		if err != nil {
 			// 陈旧重报被墓碑闸门拒绝：回 ACK 清理客户端待传状态、补发删除指令清理
 			// 本地残留；不落库、不广播，并立即回收上传会话与临时文件。
+			// 闸门只拒绝内容与墓碑一致的原样重报，补发删除不会丢失未同步的修改。
 			if errors.Is(err, code.ErrorStaleReviveRejected) {
 				c.ToResponse(code.Success.WithData(dto.FileUploadAckMessage{
 					Path:     session.Path,

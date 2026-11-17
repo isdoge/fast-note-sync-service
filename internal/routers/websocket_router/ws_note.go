@@ -412,6 +412,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		if err != nil {
 			// 陈旧重报被墓碑闸门拒绝：仅静默确认以清理客户端 pending 状态
 			// （不广播、不推进同步水位），并补发删除指令让该客户端清理本地残留。
+			// 闸门只拒绝内容与墓碑一致的原样重报，补发删除不会丢失未同步的修改。
 			if errors.Is(err, code.ErrorStaleReviveRejected) {
 				c.ToResponse(code.Success.WithData(dto.NoteModifyAckMessage{
 					Path:     params.Path,

@@ -299,8 +299,9 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 			// 设置 action
 			var action domain.FileAction
 			if file.Action == domain.FileActionDelete {
-				// 墓碑闸门（与笔记侧同一策略）：陈旧重报不得复活已删文件。
-				if isStaleRevive(params.Mtime, params.Ctime, file.UpdatedTimestamp) {
+				// 墓碑闸门（与笔记侧同一策略）：内容与墓碑一致的陈旧重报不得复活已删文件；
+				// 内容不同按正常上传复活。
+				if file.ContentHash == params.ContentHash && isStaleRevive(params.Mtime, params.Ctime, file.UpdatedTimestamp) {
 					zap.L().Info("stale revive rejected",
 						zap.Int64(logger.FieldUID, uid),
 						zap.String(logger.FieldPath, file.Path),
