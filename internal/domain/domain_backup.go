@@ -77,6 +77,8 @@ type BackupRepository interface {
 	// ListOldHistory List old history records created before cutoffTime
 	// 获取早于 cutoffTime 的历史记录
 	ListOldHistory(ctx context.Context, uid int64, configID int64, cutoffTime time.Time) ([]*BackupHistory, error)
+	// DeleteHistory removes one history record after its stored file was cleaned up.
+	DeleteHistory(ctx context.Context, uid int64, historyID int64) error
 	// DeleteOldHistory Delete old history records created before cutoffTime
 	// 删除早于 cutoffTime 的历史记录
 	DeleteOldHistory(ctx context.Context, uid int64, configID int64, cutoffTime time.Time) error

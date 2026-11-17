@@ -837,29 +837,27 @@ func (s *backupService) finishTask(ctx context.Context, config *domain.BackupCon
 					if history.Type != "sync" && history.FilePath != "" {
 						st, err := s.storageService.Get(saveCtx, history.UID, history.StorageID)
 						if err != nil || st == nil || !st.IsEnabled {
-							s.logger.Warn("Could not get storage client for cleanup or storage disabled", zap.Int64("sid", history.StorageID), zap.Error(err))
+							s.logger.Error("Could not get storage client for cleanup or storage disabled", zap.Int64("sid", history.StorageID), zap.Error(err))
 							continue
 						}
 
 						client, err := s.getStorageClient(saveCtx, history.UID, st)
 						if err != nil {
-							s.logger.Warn("Failed to initialize storage client for cleanup", zap.Error(err))
+							s.logger.Error("Failed to initialize storage client for cleanup", zap.Error(err))
 							continue
 						}
 
-						if err := client.Delete(history.FilePath); err != nil {
-							s.logger.Warn("Failed to delete old backup file", zap.String("file", history.FilePath), zap.Error(err))
-						} else {
-							s.logger.Info("Successfully deleted old backup file", zap.String("file", history.FilePath))
+						if err := client.Delete(history.FilePath); err != nil && !os.IsNotExist(err) {
+							s.logger.Error("Failed to delete old backup file", zap.String("file", history.FilePath), zap.Error(err))
+							continue
 						}
+						s.logger.Info("Successfully deleted old backup file", zap.String("file", history.FilePath))
+					}
+					// Keep failed cleanup records so a later run can retry the same object.
+					if err := s.backupRepo.DeleteHistory(saveCtx, history.UID, history.ID); err != nil {
+						s.logger.Error("Failed to delete old backup history record", zap.Int64("historyID", history.ID), zap.Error(err))
 					}
 				}
-			}
-
-			// 3. Delete records from database
-			// 3. 从数据库中删除记录
-			if err := s.backupRepo.DeleteOldHistory(saveCtx, config.UID, config.ID, cutoffTime); err != nil {
-				s.logger.Error("Failed to delete old backup history records from database", zap.Error(err))
 			}
 		}
 	}
