@@ -10,11 +10,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/haierkeys/fast-note-sync-service/internal/middleware"
 	"github.com/haierkeys/fast-note-sync-service/pkg/limiter"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestClientIPTrustsOnlyConfiguredProxy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	r := newRouterEngine([]string{"192.0.2.10/32", "127.0.0.1/32"})
+	r := newRouterEngine([]string{"192.0.2.10/32", "127.0.0.1/32"}, zap.NewNop())
 	r.GET("/probe", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
 	for _, test := range []struct{ remote, forwarded, expected string }{
 		{"192.0.2.1:1234", "198.51.100.2", "192.0.2.1"},
@@ -59,5 +61,38 @@ func TestLoginGlobalLimiterCapsDistributedAttempts(t *testing.T) {
 	// 生产配置：登录接口必须同时存在单客户端桶与全局桶
 	if _, ok := globalLimiters.GetBucket("/api/user/login"); !ok {
 		t.Fatal("global login bucket missing")
+	}
+}
+
+// trusted-proxies 含非法项（非 IP/CIDR）时跳过该项并打 warn，不 panic；合法项照常生效。
+func TestNewRouterEngineSkipsInvalidTrustedProxies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	core, logs := observer.New(zap.WarnLevel)
+	var r *gin.Engine
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Fatalf("invalid trusted-proxies entry must not panic: %v", p)
+			}
+		}()
+		r = newRouterEngine([]string{"nginx", "192.0.2.10", "10.0.0.0/33", "2001:db8::/32"}, zap.New(core))
+	}()
+	if logs.Len() != 2 {
+		t.Fatalf("expected 2 warnings for invalid entries, got %d", logs.Len())
+	}
+	r.GET("/probe", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
+	for _, test := range []struct{ remote, expected string }{
+		{"192.0.2.10:1234", "198.51.100.2"},
+		{"[2001:db8::5]:1234", "198.51.100.2"},
+		{"192.0.2.11:1234", "192.0.2.11"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/probe", nil)
+		request.RemoteAddr = test.remote
+		request.Header.Set("X-Forwarded-For", "198.51.100.2")
+		response := httptest.NewRecorder()
+		r.ServeHTTP(response, request)
+		if response.Body.String() != test.expected {
+			t.Fatalf("remote %s: got %s, want %s", test.remote, response.Body.String(), test.expected)
+		}
 	}
 }

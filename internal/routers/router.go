@@ -2,6 +2,7 @@ package routers
 
 import (
 	"embed"
+	"net"
 	"net/http"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	ut "github.com/go-playground/universal-translator"
 	"github.com/lxzan/gws"
+	"go.uber.org/zap"
 )
 
 var methodLimiters = limiter.NewMethodLimiter().AddBuckets(
@@ -102,7 +104,7 @@ func NewRouter(frontendFiles embed.FS, appContainer *app.App, uni *ut.UniversalT
 	// 初始化 WebSocket 路由
 	initWebSocketRoutes(wss, appContainer)
 
-	r := newRouterEngine(cfg.Server.TrustedProxies)
+	r := newRouterEngine(cfg.Server.TrustedProxies, appContainer.Logger())
 	r.Use(middleware.Proxy(cfg.Server.TrustedProxies))
 	r.Use(middleware.Cors(cfg.Server.CORSAllowedOrigins, cfg.Server.ExtApiUrl))
 	if len(cfg.Server.CustomResponseHeaders) > 0 {
@@ -140,7 +142,7 @@ func NewRouter(frontendFiles embed.FS, appContainer *app.App, uni *ut.UniversalT
 
 func NewWebGuiRouter(frontendFiles embed.FS, appContainer *app.App) *gin.Engine {
 	cfg := appContainer.Config()
-	r := newRouterEngine(cfg.Server.TrustedProxies)
+	r := newRouterEngine(cfg.Server.TrustedProxies, appContainer.Logger())
 	r.Use(middleware.Proxy(cfg.Server.TrustedProxies))
 	r.Use(middleware.Cors(cfg.Server.CORSAllowedOrigins, cfg.Server.ExtApiUrl))
 	if len(cfg.Server.CustomResponseHeaders) > 0 {
@@ -157,7 +159,7 @@ func NewWebGuiRouter(frontendFiles embed.FS, appContainer *app.App) *gin.Engine 
 
 func NewShareRouter(frontendFiles embed.FS, appContainer *app.App) *gin.Engine {
 	cfg := appContainer.Config()
-	r := newRouterEngine(cfg.Server.TrustedProxies)
+	r := newRouterEngine(cfg.Server.TrustedProxies, appContainer.Logger())
 	r.Use(middleware.Proxy(cfg.Server.TrustedProxies))
 	r.Use(middleware.Cors(cfg.Server.CORSAllowedOrigins, cfg.Server.ExtApiUrl))
 	if len(cfg.Server.CustomResponseHeaders) > 0 {
@@ -172,12 +174,24 @@ func NewShareRouter(frontendFiles embed.FS, appContainer *app.App) *gin.Engine {
 }
 
 // newRouterEngine trusts forwarding headers only from the configured reverse proxies.
-func newRouterEngine(trustedProxies []string) *gin.Engine {
+// Invalid entries (neither IP nor CIDR) are skipped with a warning instead of aborting startup.
+// newRouterEngine 只信任配置的反向代理转发头；非法项（非 IP/CIDR）跳过并打 warn 日志，不中止启动。
+func newRouterEngine(trustedProxies []string, logger *zap.Logger) *gin.Engine {
 	if len(trustedProxies) == 0 {
 		trustedProxies = []string{"127.0.0.1", "::1"}
 	}
+	valid := make([]string, 0, len(trustedProxies))
+	for _, proxy := range trustedProxies {
+		if net.ParseIP(proxy) == nil {
+			if _, _, err := net.ParseCIDR(proxy); err != nil {
+				logger.Warn("server.trusted-proxies: invalid entry ignored (expect IP or CIDR)", zap.String("entry", proxy))
+				continue
+			}
+		}
+		valid = append(valid, proxy)
+	}
 	r := gin.New()
-	if err := r.SetTrustedProxies(trustedProxies); err != nil {
+	if err := r.SetTrustedProxies(valid); err != nil {
 		panic(err)
 	}
 	return r
