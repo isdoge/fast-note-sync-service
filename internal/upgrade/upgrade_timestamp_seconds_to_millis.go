@@ -25,13 +25,15 @@ const secondsToMillisThreshold = int64(100_000_000_000)
 //   - updated_timestamp 等服务端自产毫秒列不在处理范围内；迁移通过 schema_version
 //     只执行一次。
 //
-// 迁移版本取 "3.7.1"：只需唯一且大于已发布版本 3.7.0，即只执行一次。
+// 迁移版本取引入它的发布版本 "3.7.0"。升级管理器按“标识大于上次运行的版本”决定是否执行，
+// 并靠 schema_version 的唯一记录保证只跑一次：从 3.6.x 升级到 3.7.0 时执行，之后不再执行。
+// 标识必须在所有迁移里唯一（3.6.2 为标签回填），也不能占用尚未发布的后续版本号。
 type TimestampSecondsToMillisMigrate struct{}
 
 // Version returns the migration version
 // Version 返回升级版本号
 func (m *TimestampSecondsToMillisMigrate) Version() string {
-	return "3.7.1"
+	return "3.7.0"
 }
 
 // Description returns the migration description
