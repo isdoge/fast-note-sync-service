@@ -3,13 +3,14 @@ package aliyun_oss
 import (
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
 	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
 )
 
-func cacheKey(conf *Config) string {
-	return conf.AccessKeyID + ":" + conf.AccessKeySecret + ":" + conf.Endpoint + ":" + conf.Region
+func cacheKey(conf *Config) Config {
+	return *conf
 }
 
 type Config struct {
@@ -26,9 +27,14 @@ type OSS struct {
 	Config *Config
 }
 
-var clients = make(map[string]*OSS)
+var clients = make(map[Config]*OSS)
+var clientsMu sync.Mutex
 
 func NewClient(conf *Config) (*OSS, error) {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	snapshot := *conf
+	conf = &snapshot
 	key := cacheKey(conf)
 	if clients[key] != nil {
 		return clients[key], nil

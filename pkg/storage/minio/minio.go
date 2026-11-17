@@ -2,6 +2,7 @@ package minio
 
 import (
 	"context"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -11,8 +12,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-func cacheKey(conf *Config) string {
-	return conf.AccessKeyID + ":" + conf.AccessKeySecret + ":" + conf.Endpoint + ":" + conf.Region
+func cacheKey(conf *Config) Config {
+	return *conf
 }
 
 type Config struct {
@@ -30,9 +31,14 @@ type MinIO struct {
 	Config          *Config
 }
 
-var clients = make(map[string]*MinIO)
+var clients = make(map[Config]*MinIO)
+var clientsMu sync.Mutex
 
 func NewClient(conf *Config) (*MinIO, error) {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	snapshot := *conf
+	conf = &snapshot
 	var endpoint = conf.Endpoint
 	var region = conf.Region
 	var accessKeyId = conf.AccessKeyID
