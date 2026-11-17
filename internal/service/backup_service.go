@@ -425,20 +425,25 @@ func (s *backupService) ExecuteUserBackup(ctx context.Context, uid int64, config
 	if !config.IsEnabled {
 		return code.ErrorBackupConfigDisabled
 	}
-	// Record error and propagate it back so the API layer can surface failures to the UI
-	// 记录错误并向上抛出，便于 API 层将失败状态展示到 UI（避免弹窗"假成功"）
-	if err := s.handleBackupSync(ctx, config, true); err != nil {
-		// Service shutdown errors bypass finishTask and are not persisted to history
-		if s.ctx.Err() != nil {
-			return err
-		}
-		s.logger.Warn("Manual backup completed with errors",
-			zap.Int64("uid", uid),
-			zap.Int64("configID", configID),
-			zap.Error(err),
-		)
+	// Validate with the request context, but run the accepted task under the
+	// service context so client disconnects and proxy timeouts cannot abort it.
+	s.runningMu.Lock()
+	if err := s.ctx.Err(); err != nil {
+		s.runningMu.Unlock()
 		return err
 	}
+	s.wg.Add(1)
+	s.runningMu.Unlock()
+	safego.Go(s.logger, func() {
+		defer s.wg.Done()
+		if err := s.handleBackupSync(s.ctx, config, true); err != nil {
+			s.logger.Warn("Manual backup completed with errors",
+				zap.Int64("uid", uid),
+				zap.Int64("configID", configID),
+				zap.Error(err),
+			)
+		}
+	})
 	return nil
 }
 
@@ -1248,7 +1253,9 @@ func (s *backupService) NotifyUpdated(uid int64) {
 func (s *backupService) Shutdown(ctx context.Context) error {
 	// 1. Signal all background tasks to stop
 	// 1. 通知所有后台任务停止
+	s.runningMu.Lock()
 	s.cancel()
+	s.runningMu.Unlock()
 
 	s.timerMu.Lock()
 	// Stop all pending sync timers
