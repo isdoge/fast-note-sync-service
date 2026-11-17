@@ -232,6 +232,11 @@ func (s *noteHistoryService) ProcessDelay(ctx context.Context, noteID int64, uid
 	}
 
 	if note.Content == note.ContentLastSnapshot {
+		// 内容未变但哈希不一致（如空笔记：EncodeHash32("") 为 "0"，快照哈希默认为 ""）时同步快照哈希，
+		// 否则该笔记每次启动都会被 ListContentUnchanged 重新调度（#499）
+		if note.ContentHash != note.ContentLastSnapshotHash {
+			return s.noteRepo.UpdateSnapshot(ctx, note.Content, note.ContentHash, note.Version, note.ID, uid)
+		}
 		return nil
 	}
 

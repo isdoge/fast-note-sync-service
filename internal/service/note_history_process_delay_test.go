@@ -46,3 +46,16 @@ func TestNoteHistoryService_ProcessDelay_PatchRestoresContent(t *testing.T) {
 	noteRepo.AssertExpectations(t)
 }
 
+// 正文未变但快照哈希不一致（空笔记 EncodeHash32("")="0"，快照哈希默认 ""）时，必须同步快照哈希，
+// 不生成历史版本，否则该笔记每次启动都会被重新调度（#499）。
+func TestNoteHistoryService_ProcessDelay_SyncsSnapshotHashWhenContentUnchanged(t *testing.T) {
+	noteRepo := new(domainmocks.MockNoteRepository)
+	historyRepo := new(domainmocks.MockNoteHistoryRepository)
+	note := &domain.Note{ID: 5, VaultID: 1, Path: "empty.md", Content: "", ContentHash: "0", ContentLastSnapshot: "", ContentLastSnapshotHash: "", Version: 0}
+	noteRepo.On("GetByID", mock.Anything, int64(5), int64(9)).Return(note, nil)
+	noteRepo.On("UpdateSnapshot", mock.Anything, "", "0", int64(0), int64(5), int64(9)).Return(nil)
+
+	require.NoError(t, newHistorySvcForProcessDelay(noteRepo, historyRepo).ProcessDelay(context.Background(), 5, 9))
+	noteRepo.AssertExpectations(t)
+	historyRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything, mock.Anything)
+}
