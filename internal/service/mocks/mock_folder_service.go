@@ -112,8 +112,8 @@ func (m *MockFolderService) SyncResourceFID(ctx context.Context, uid int64, vaul
 	return args.Error(0)
 }
 
-func (m *MockFolderService) IsDeleted(ctx context.Context, uid int64, vault string, pathHash string) (bool, error) {
-	args := m.Called(ctx, uid, vault, pathHash)
+func (m *MockFolderService) IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64) (bool, error) {
+	args := m.Called(ctx, uid, vault, pathHash, mtime)
 	return args.Bool(0), args.Error(1)
 }
 

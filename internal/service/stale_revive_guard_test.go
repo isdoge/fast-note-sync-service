@@ -260,44 +260,35 @@ func TestFileService_UpdateOrCreate_FreshEditRevivesDeletedFile(t *testing.T) {
 // Section D：目录侧墓碑判定（doFolderSync 用它拦截旧上报复活）
 // ---------------------------------------------------------------------------
 
-func TestFolderService_IsDeleted(t *testing.T) {
+func TestFolderService_IsStaleRevive(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("tombstone record reports deleted", func(t *testing.T) {
-		repo := new(domainmocks.MockFolderRepository)
-		repo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).
-			Return(&domain.Folder{ID: 3, Action: domain.FolderActionDelete}, nil)
+	cases := []struct {
+		name   string
+		folder *domain.Folder
+		err    error
+		mtime  int64
+		want   bool
+	}{
+		{"tombstone, stale report -> stale", &domain.Folder{ID: 3, Action: domain.FolderActionDelete, UpdatedTimestamp: testDeletedAt}, nil, testDeletedAt - 10_000_000, true},
+		{"tombstone, no mtime reported -> stale", &domain.Folder{ID: 3, Action: domain.FolderActionDelete, UpdatedTimestamp: testDeletedAt}, nil, 0, true},
+		{"tombstone, re-created after deletion -> fresh", &domain.Folder{ID: 3, Action: domain.FolderActionDelete, UpdatedTimestamp: testDeletedAt}, nil, testDeletedAt + 60_000, false},
+		{"tombstone, mtime within tolerance -> fresh", &domain.Folder{ID: 3, Action: domain.FolderActionDelete, UpdatedTimestamp: testDeletedAt}, nil, testDeletedAt - staleReviveToleranceMs, false},
+		{"active record -> not stale", &domain.Folder{ID: 3, Action: domain.FolderActionCreate, UpdatedTimestamp: testDeletedAt}, nil, 0, false},
+		{"missing record -> not stale", nil, gorm.ErrRecordNotFound, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := new(domainmocks.MockFolderRepository)
+			repo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).Return(tc.folder, tc.err)
 
-		svc := NewFolderService(repo, nil, nil, stubVaultService{}, nil, nil, nil, nil)
+			svc := NewFolderService(repo, nil, nil, stubVaultService{}, nil, nil, nil, nil)
 
-		deleted, err := svc.IsDeleted(ctx, 1, "vault", "fh1")
-		require.NoError(t, err)
-		require.True(t, deleted, "Bug: 已删除目录（墓碑）必须报告 deleted=true，供 doFolderSync 拦截陈旧上报")
-	})
-
-	t.Run("active record reports alive", func(t *testing.T) {
-		repo := new(domainmocks.MockFolderRepository)
-		repo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).
-			Return(&domain.Folder{ID: 3, Action: domain.FolderActionCreate}, nil)
-
-		svc := NewFolderService(repo, nil, nil, stubVaultService{}, nil, nil, nil, nil)
-
-		deleted, err := svc.IsDeleted(ctx, 1, "vault", "fh1")
-		require.NoError(t, err)
-		require.False(t, deleted)
-	})
-
-	t.Run("missing record reports alive", func(t *testing.T) {
-		repo := new(domainmocks.MockFolderRepository)
-		repo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).
-			Return(nil, gorm.ErrRecordNotFound)
-
-		svc := NewFolderService(repo, nil, nil, stubVaultService{}, nil, nil, nil, nil)
-
-		deleted, err := svc.IsDeleted(ctx, 1, "vault", "fh1")
-		require.NoError(t, err)
-		require.False(t, deleted)
-	})
+			stale, err := svc.IsStaleRevive(ctx, 1, "vault", "fh1", tc.mtime)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, stale, "Bug: 目录墓碑闸门须与笔记/文件同一 mtime 规则判定")
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

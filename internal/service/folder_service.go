@@ -33,7 +33,7 @@ type FolderService interface {
 	EnsurePathFID(ctx context.Context, uid int64, vaultID int64, path string) (int64, error)
 	CleanupEmptyAncestors(ctx context.Context, uid int64, vaultID int64, resourcePath string) error
 	SyncResourceFID(ctx context.Context, uid int64, vaultID int64, noteIDs []int64, fileIDs []int64) error
-	IsDeleted(ctx context.Context, uid int64, vault string, pathHash string) (bool, error)
+	IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64) (bool, error)
 	GetTree(ctx context.Context, uid int64, params *dto.FolderTreeRequest) (*dto.FolderTreeResponse, error)
 	CleanDuplicateFolders(ctx context.Context, uid int64, vaultID int64) error
 	WithClient(clientType, clientName, clientVersion string) FolderService
@@ -165,14 +165,17 @@ func (s *folderService) UpdateOrCreate(ctx context.Context, uid int64, params *d
 	return s.domainToDTO(f), nil
 }
 
-// IsDeleted reports whether the folder record for the given path hash is
-// soft-deleted (tombstone). Missing records return false.
-// doFolderSync uses it to keep client-reported stale folders from reviving
-// server-side deletions.
+// IsStaleRevive reports whether a client-reported folder would be a stale
+// revive of a soft-deleted (tombstone) record, using the same mtime/ctime rule
+// as notes and files (folders report no ctime). Missing or active records
+// return false. doFolderSync uses it to keep stale folder reports from
+// reviving server-side deletions while letting folders re-created after the
+// deletion through.
 //
-// IsDeleted 报告给定路径哈希的目录记录是否处于已删除（墓碑）状态；
-// 记录不存在时返回 false。供 doFolderSync 拦截客户端陈旧上报的复活。
-func (s *folderService) IsDeleted(ctx context.Context, uid int64, vault string, pathHash string) (bool, error) {
+// IsStaleRevive 报告客户端上报的目录是否为对墓碑记录的陈旧复活：与笔记/文件同一
+// mtime/ctime 规则（目录上报不带 ctime）。记录不存在或未删除时返回 false。
+// 供 doFolderSync 拦截陈旧上报，同时放行删除之后重新创建的目录。
+func (s *folderService) IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64) (bool, error) {
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
 	if err != nil {
 		return false, err
@@ -186,7 +189,7 @@ func (s *folderService) IsDeleted(ctx context.Context, uid int64, vault string, 
 		return false, err
 	}
 
-	return f.Action == domain.FolderActionDelete, nil
+	return f.Action == domain.FolderActionDelete && isStaleRevive(mtime, 0, f.UpdatedTimestamp), nil
 }
 
 func (s *folderService) Delete(ctx context.Context, uid int64, params *dto.FolderDeleteRequest) (*dto.FolderDTO, error) {
