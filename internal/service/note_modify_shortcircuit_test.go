@@ -46,7 +46,7 @@ func TestNoteService_ModifyOrCreate_IdempotentShortCircuit_ReturnsDTO(t *testing
 	}
 	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(existing, nil)
 
-	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, vaultSvc, nil, nil, nil, nil, nil)
+	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, vaultSvc, nil, nil, nil, nil, nil)
 	isNew, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
 		Vault:       "vault",
 		Path:        "a.md",

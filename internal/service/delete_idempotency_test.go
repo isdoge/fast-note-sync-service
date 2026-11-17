@@ -54,7 +54,7 @@ func TestNoteService_Delete_AlreadyDeleted_IsIdempotent(t *testing.T) {
 	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).
 		Return(deletedNote, nil).Maybe()
 
-	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, vaultSvc, nil, nil, nil, nil, nil)
+	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, vaultSvc, nil, nil, nil, nil, nil)
 	got, err := svc.Delete(context.Background(), 1, &dto.NoteDeleteRequest{
 		Vault: "vault", Path: "a.md", PathHash: "h1",
 	})
@@ -82,7 +82,7 @@ func TestNoteService_Delete_RecordNotFound_IsIdempotent(t *testing.T) {
 	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).
 		Return(nil, gorm.ErrRecordNotFound).Maybe()
 
-	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, vaultSvc, nil, nil, nil, nil, nil)
+	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, vaultSvc, nil, nil, nil, nil, nil)
 	got, err := svc.Delete(context.Background(), 1, &dto.NoteDeleteRequest{
 		Vault: "vault", Path: "a.md", PathHash: "h1",
 	})
@@ -115,7 +115,7 @@ func TestNoteService_Delete_ActiveNote_MarksDeleted(t *testing.T) {
 	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
 	shareRepo.On("UpdateStatusByRes", mock.Anything, int64(1), "note", int64(42), domain.UserShareStatusRevoked).Return(nil)
 
-	svc := service.NewNoteService(nil, noteRepo, nil, nil, shareRepo, nil, vaultSvc, nil, nil, nil, nil, nil)
+	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, shareRepo, nil, vaultSvc, nil, nil, nil, nil, nil)
 	got, err := svc.Delete(context.Background(), 1, &dto.NoteDeleteRequest{
 		Vault: "vault", Path: "a.md", PathHash: "h1",
 	})
@@ -142,7 +142,7 @@ func TestNoteService_Delete_DuplicateRows_PrefersLiveRow(t *testing.T) {
 	noteRepo.On("UpdateDelete", mock.Anything, mock.MatchedBy(func(n *domain.Note) bool { return n.ID == 42 }), int64(1)).Return(nil)
 	shareRepo.On("UpdateStatusByRes", mock.Anything, int64(1), "note", int64(42), domain.UserShareStatusRevoked).Return(nil)
 
-	svc := service.NewNoteService(nil, noteRepo, nil, nil, shareRepo, nil, vaultSvc, nil, nil, nil, nil, nil)
+	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, shareRepo, nil, vaultSvc, nil, nil, nil, nil, nil)
 	got, err := svc.Delete(context.Background(), 1, &dto.NoteDeleteRequest{
 		Vault: "vault", Path: "a.md", PathHash: "h1",
 	})

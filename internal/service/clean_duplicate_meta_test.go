@@ -40,7 +40,7 @@ func TestNoteService_CleanDuplicateNotes_UsesMetaListWithoutContentRead(t *testi
 	noteRepo.On("ListByUpdatedTimestamp", mock.Anything, int64(0), int64(1), int64(1)).
 		Return([]*domain.Note{}, nil).Maybe()
 
-	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	err := svc.CleanDuplicateNotes(context.Background(), 1, 1)
 
 	require.NoError(t, err, "Bug: 去重扫描不应因内容文件缺失而失败")

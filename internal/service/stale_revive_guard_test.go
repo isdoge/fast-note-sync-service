@@ -105,7 +105,7 @@ func TestNoteService_ModifyOrCreate_StaleReviveRejected(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
 	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
 
-	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
 	_, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
 		Vault:       "vault",
@@ -137,7 +137,7 @@ func TestNoteService_ModifyOrCreate_FreshMtimeRevivesDeletedNote(t *testing.T) {
 	noteRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(updated, nil)
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 11}, nil).Maybe()
 
-	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
 	isNew, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
 		Vault:       "vault",
@@ -167,7 +167,7 @@ func TestNoteService_ModifyOrCreate_FreshCtimeRevivesDeletedNote(t *testing.T) {
 	noteRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(updated, nil)
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 11}, nil).Maybe()
 
-	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
 	_, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
 		Vault:       "vault",
@@ -301,7 +301,7 @@ func TestNoteService_ModifyOrCreate_MtimeOnlyBranchSkipsTombstone(t *testing.T) 
 	noteRepo := new(domainmocks.MockNoteRepository)
 	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
 
-	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
 	_, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
 		Vault:       "vault",
@@ -356,7 +356,7 @@ func TestNoteService_ModifyOrCreate_FreshSameContentRevivesAsCreate(t *testing.T
 	}), int64(1)).Return(updated, nil)
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 11}, nil).Maybe()
 
-	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
 	_, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
 		Vault:       "vault",
@@ -391,7 +391,7 @@ func TestNoteService_ModifyOrCreate_StaleTimestampsDifferentContentRevives(t *te
 	}), int64(1)).Return(updated, nil)
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 11}, nil).Maybe()
 
-	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
+	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
 	_, got, err := svc.ModifyOrCreate(context.Background(), 1, &dto.NoteModifyOrCreateRequest{
 		Vault:       "vault",
