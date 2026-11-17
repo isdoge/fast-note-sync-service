@@ -106,8 +106,19 @@ func (s *tokenService) Create(ctx context.Context, uid int64, params *dto.TokenI
 		}
 		formattedScope = fmt.Sprintf("p:%s c:%s f:%s", p, c, f)
 	} else {
-		// Legacy format (e.g. "p:rest,ws c:ObsidianPlugin f:*")
-		formattedScope = "p:" + params.Scope
+		// Legacy WebGUI tokens also support MCP. Explicit protocol restrictions
+		// are handled by the 3D-RBAC branch above.
+		protocols := params.Scope
+		hasMCP := false
+		for _, protocol := range strings.Split(protocols, ",") {
+			if strings.EqualFold(strings.TrimSpace(protocol), "mcp") {
+				hasMCP = true
+			}
+		}
+		if protocols != "" && protocols != "*" && !hasMCP {
+			protocols += ",mcp"
+		}
+		formattedScope = "p:" + protocols
 		if params.ClientType != "" {
 			formattedScope += " c:" + params.ClientType
 		}
