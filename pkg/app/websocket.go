@@ -486,6 +486,9 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 			return false, errs
 		}
 		if decoded {
+			if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
+				return false, ValidErrors{verr}
+			}
 			validator := c.app.Validator()
 			if validator == nil {
 				return true, nil
@@ -518,6 +521,10 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 			Message: "Invalid message format",
 		})
 		return false, errs
+	}
+
+	if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
+		return false, ValidErrors{verr}
 	}
 
 	// Step 2: Parameter validation
