@@ -368,8 +368,22 @@ func (c *WebsocketClient) setClientInfo(name, clientType, version string, platfo
 	c.clientType = clientType
 	c.clientVersion = version
 	c.clientPlatform = platform
-	c.offlineSyncStrategy = offlineSyncStrategy
+	c.offlineSyncStrategy = knownOfflineSyncStrategy(offlineSyncStrategy)
 	c.useProtobuf = useProtobuf
+}
+
+// knownOfflineSyncStrategy returns the strategy if it is one the sync handlers recognize, and
+// "" (the default strategy) otherwise. Handlers only test for exact known values, so an
+// unrecognized one (e.g. a client sending "auto") matched no branch: the client was never told
+// the server had newer content and its pushes skipped merge/conflict handling (#440).
+// knownOfflineSyncStrategy 对同步处理器认识的策略原样返回，否则返回 ""（默认策略）。处理器只按已知值做精确判断，
+// 未知值（如客户端发送 "auto"）不命中任何分支：服务端有更新时不会通知客户端拉取，客户端上传也跳过合并与冲突处理（#440）。
+func knownOfflineSyncStrategy(strategy string) string {
+	switch strategy {
+	case "", "newTimeMerge", "ignoreTimeMerge", "manualMerge":
+		return strategy
+	}
+	return ""
 }
 
 // setUseProtobuf sets only the useProtobuf field, guarded by the same infoMu as setClientInfo.
@@ -1306,6 +1320,12 @@ func (w *WebsocketServer) ClientInfo(c *WebsocketClient, msg *WebSocketMessage) 
 	// Atomically update all connection metadata, avoiding concurrent readers observing a partially-updated state
 	c.setClientInfo(info.Name, info.Type, info.Version, platform, info.OfflineSyncStrategy, useProtobuf)
 	c.DiffMergePaths = make(map[string]DiffMergeEntry)
+	if c.OfflineSyncStrategy() != info.OfflineSyncStrategy {
+		log(LogWarn, "WS ClientInfo unknown offlineSyncStrategy, falling back to default strategy",
+			zap.String("offlineSyncStrategy", info.OfflineSyncStrategy),
+			zap.String("name", info.Name),
+			zap.String("version", info.Version))
+	}
 
 	if useProtobuf {
 		log(LogInfo, "WS Client upgraded to Protobuf successfully", zap.String("uid", func() string {

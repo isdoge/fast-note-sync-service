@@ -102,3 +102,22 @@ func TestWebsocketClient_SetUseProtobuf_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+// #440：未知的 offlineSyncStrategy（如某第三方客户端默认的 "auto"）不命中任何同步分支，会静默关闭
+// “服务端更新时通知客户端拉取”与合并/冲突保护；必须回落为默认策略 ""，已知值保持不变。
+func TestWebsocketClient_SetClientInfo_UnknownOfflineSyncStrategyFallsBackToDefault(t *testing.T) {
+	for in, want := range map[string]string{
+		"auto":            "",
+		"NewTimeMerge":    "",
+		"":                "",
+		"newTimeMerge":    "newTimeMerge",
+		"ignoreTimeMerge": "ignoreTimeMerge",
+		"manualMerge":     "manualMerge",
+	} {
+		c := &WebsocketClient{}
+		c.setClientInfo("n", "t", "1", nil, in, false)
+		if got := c.OfflineSyncStrategy(); got != want {
+			t.Fatalf("offlineSyncStrategy %q stored as %q, want %q", in, got, want)
+		}
+	}
+}
