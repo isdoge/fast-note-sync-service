@@ -1252,13 +1252,14 @@ func (r *noteRepository) SearchHits(ctx context.Context, vaultID int64, uid int6
 			return order[modelList[i].ID] < order[modelList[j].ID]
 		})
 	} else {
-		like := "%" + keyword + "%"
-		countQ := q.UnderlyingDB().Model(&model.Note{}).Where("path LIKE ?", like)
+		// 关键字中的 % _ 按字面匹配
+		like := "%" + escapeLike(keyword) + "%"
+		countQ := q.UnderlyingDB().Model(&model.Note{}).Where("path LIKE ? ESCAPE '!'", like)
 		if err = countQ.Count(&total).Error; err != nil {
 			return nil, 0, err
 		}
 		orderClause := buildOrderClause(sortBy, sortOrder)
-		if err = q.UnderlyingDB().Where("path LIKE ?", like).
+		if err = q.UnderlyingDB().Where("path LIKE ? ESCAPE '!'", like).
 			Order(orderClause).Limit(limit).Offset(offset).
 			Find(&modelList).Error; err != nil {
 			return nil, 0, err
