@@ -64,6 +64,7 @@ type AdminConfig struct {
 	PipelineWindowDown            *int               `json:"pipelineWindowDown,omitempty" form:"pipelineWindowDown"`                       // Download pipeline window size for pv>=2 connections; 0 = stop-and-wait // pv>=2 连接的下行流水线窗口大小；0 = stop-and-wait
 	GitName                       *string            `json:"gitName,omitempty" form:"gitName"`                                             // Git author name // Git 提交的作者名称
 	GitEmail                      *string            `json:"gitEmail,omitempty" form:"gitEmail"`                                           // Git author email // Git 提交的作者邮箱
+	GitAllowedPrivateHosts        *[]string          `json:"gitAllowedPrivateHosts,omitempty" form:"gitAllowedPrivateHosts"`               // Allowed private Git hosts // 允许访问的私网 Git 主机
 }
 
 // AdminUserDatabaseConfig User database configuration structure

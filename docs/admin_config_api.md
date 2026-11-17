@@ -68,6 +68,7 @@
 | `pipelineWindowUp`        | `integer` | `8`       | 上行同步流水线窗口大小（在途批次数） |
 | `pipelineWindowDown`      | `integer` | `4`       | 下行同步流水线窗口大小（在途页数）   |
 | `webguiLoginTokenBindUa`  | `boolean` | `true`    | WebGUI 登录令牌是否绑定 User-Agent |
+| `gitAllowedPrivateHosts`  | `array`   | `[]`      | Git 私网主机名/IP/CIDR 白名单 |
 
 ---
 
@@ -84,6 +85,7 @@
 | `pipelineWindowUp`        | `integer` | `8`       | **上行同步流水线窗口大小**（3.6.0+）：pv≥2 连接上行分批同步允许同时在途未确认的批次数，读取处钳制到 `[0,32]`。`0` 表示禁用窗口、退回逐批 stop-and-wait（**运行时回滚开关**：出问题时改为 `0` 即可立即生效，无需重启或降级版本）。字段类型为可空整型，仅当请求体显式携带该字段时才会更新，可正确区分"未传"与"显式传 `0`"。 |
 | `pipelineWindowDown`      | `integer` | `4`       | **下行同步流水线窗口大小**（3.6.0+）：pv≥2 连接下行分页同步允许服务端同时预推的在途页数，读取处钳制到 `[0,16]`。`0` 表示禁用窗口、退回逐页 stop-and-wait，同为运行时回滚开关；字段语义与 `pipelineWindowUp` 一致。 |
 | `webguiLoginTokenBindUa`  | `boolean` | `true`    | **WebGUI 登录令牌 UA 绑定**：默认绑定签发时的 User-Agent。反向代理改写 UA 导致 313 时可设为 `false`；新签发及轮转的令牌不再保存和校验 UA，已有绑定 UA 的令牌需重新登录或轮转。 |
+| `gitAllowedPrivateHosts`  | `array`   | `[]`      | **Git 私网白名单**：元素为主机名、精确 IP 或 CIDR，空数组保持全部私网拦截。主机名条目要求解析结果为私网，且每个私网结果还须匹配某个 IP/CIDR 条目；例如 `["gitea.internal", "192.168.1.20"]`。仅配置 CIDR 时允许该网段的任意解析地址。保存、检测、克隆、拉取、推送及实际拨号均校验。 |
 
 ---
 

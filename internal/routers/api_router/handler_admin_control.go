@@ -171,6 +171,7 @@ func (h *AdminControlHandler) GetConfig(c *gin.Context) {
 		FtsBleveStoreRaw:              cfg.App.FtsBleveStoreRaw,
 		GitName:                       &cfg.Git.Name,
 		GitEmail:                      &cfg.Git.Email,
+		GitAllowedPrivateHosts:        &cfg.Git.AllowedPrivateHosts,
 		PipelineWindowUp:              cfg.App.PipelineWindowUp,
 		PipelineWindowDown:            cfg.App.PipelineWindowDown,
 	}
@@ -433,6 +434,9 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 	}
 	if params.GitEmail != nil {
 		cfg.Git.Email = *params.GitEmail
+	}
+	if params.GitAllowedPrivateHosts != nil {
+		cfg.Git.AllowedPrivateHosts = *params.GitAllowedPrivateHosts
 	}
 	if params.PipelineWindowUp != nil {
 		// Stored as-is (may exceed the read-time clamp); PipelineWindowUpClamped()

@@ -71,6 +71,26 @@ func TestLoadConfigWebGUILoginTokenBindUADefaultAndOverride(t *testing.T) {
 	require.True(t, *cfg.Security.WebGUILoginTokenBindUA)
 }
 
+func TestLoadConfigGitAllowedPrivateHosts(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	err := os.WriteFile(configPath, []byte(`git:
+  allowed-private-hosts:
+    - gitea.internal
+    - 10.20.0.0/16
+    - 192.168.1.20
+`), 0644)
+	require.NoError(t, err)
+
+	cfg, _, err := LoadConfig(configPath)
+	require.NoError(t, err)
+	require.Equal(t, []string{"gitea.internal", "10.20.0.0/16", "192.168.1.20"}, cfg.Git.AllowedPrivateHosts)
+
+	require.NoError(t, os.WriteFile(configPath, []byte("git: {}\n"), 0644))
+	cfg, _, err = LoadConfig(configPath)
+	require.NoError(t, err)
+	require.Empty(t, cfg.Git.AllowedPrivateHosts)
+}
+
 func TestLoadConfigMCPDisableLocalhostProtection(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	err := os.WriteFile(configPath, []byte(`

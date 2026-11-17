@@ -9,4 +9,7 @@ type GitConfig struct {
 	// Email author email for git commit
 	// Email git 提交的作者邮箱
 	Email string `yaml:"email" default:"fns@email.com"`
+	// AllowedPrivateHosts allows specific private Git hosts by hostname, IP or CIDR
+	// AllowedPrivateHosts 按主机名、IP 或 CIDR 放行特定私网 Git 主机
+	AllowedPrivateHosts []string `yaml:"allowed-private-hosts"`
 }
