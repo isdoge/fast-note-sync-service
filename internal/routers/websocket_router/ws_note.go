@@ -833,6 +833,8 @@ func (h *NoteWSHandler) NoteSync(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocke
 // doNoteSync 执行笔记差量同步核心逻辑（原 NoteSync 函数体）
 // doNoteSync runs the core note differential sync logic (original NoteSync body)
 func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSyncRequest) {
+	// 新一轮同步取代本连接该类型的旧轮：清理旧轮残留的下行分页条目
+	syncDownloadDropStale(connDone(c), "note", params.Context)
 	ctx := c.Context()
 
 	noteSvc := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion())

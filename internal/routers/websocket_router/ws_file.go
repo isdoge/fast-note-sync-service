@@ -738,6 +738,8 @@ func (h *FileWSHandler) FileSync(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocke
 }
 
 func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSyncRequest) {
+	// 新一轮同步取代本连接该类型的旧轮：清理旧轮残留的下行分页条目
+	syncDownloadDropStale(connDone(c), "file", params.Context)
 	ctx := c.Context()
 
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "FileSync", "", params.Vault)

@@ -108,6 +108,8 @@ func (h *FolderWSHandler) FolderSync(c *pkgapp.WebsocketClient, msg *pkgapp.WebS
 // doFolderSync 执行文件夹差量同步核心逻辑（原 FolderSync 函数体）
 // doFolderSync runs the core folder differential sync logic
 func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.FolderSyncRequest) {
+	// 新一轮同步取代本连接该类型的旧轮：清理旧轮残留的下行分页条目
+	syncDownloadDropStale(connDone(c), "folder", params.Context)
 	ctx := c.Context()
 	uid := c.User.UID
 

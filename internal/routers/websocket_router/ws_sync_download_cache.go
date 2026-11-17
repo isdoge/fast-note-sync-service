@@ -145,6 +145,25 @@ func syncDownloadDelete(context, typeName string) {
 	syncDownloadCacheMap.Delete(key)
 }
 
+// syncDownloadDropStale 在同一连接发起同一类型的新一轮同步时，删除该连接该类型其他 context 的
+// 旧下行条目：新一轮已取代旧轮，旧条目的后续页不会再被 ACK，只会驻留到连接关闭或 24h 上限。
+// 连接身份按 ConnDone（连接的 WsCtx.Done()）比较；done 为 nil 时无法识别连接，不做清理。
+// syncDownloadDropStale drops this connection's older download entries of the same type (other
+// contexts) when a new sync round starts: the new round supersedes them, so their remaining pages
+// will never be ACKed and would otherwise linger until the connection closes or the 24h cap.
+func syncDownloadDropStale(done <-chan struct{}, typeName, context string) {
+	if done == nil {
+		return
+	}
+	syncDownloadCacheMap.Range(func(k, v interface{}) bool {
+		e := v.(*syncDownloadEntry)
+		if e.ConnDone == done && e.TypeName == typeName && e.Context != context {
+			syncDownloadCacheMap.Delete(k)
+		}
+		return true
+	})
+}
+
 // pump 推进下行窗口（同步流水线设计 §4.2）：在窗口允许的范围内尽量多发送尚未发出的页。
 // Window=0（stop-and-wait）时 max(Window,1)=1，循环每次调用最多发一页，与 3.5.x 前逐页行为
 // 逐消息等价。isLast 页发送完成后立即销毁 entry 并返回，不再继续推进。
