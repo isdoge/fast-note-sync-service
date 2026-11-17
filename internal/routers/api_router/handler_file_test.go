@@ -1,6 +1,8 @@
 package api_router
 
 import (
+	"bytes"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 // newFileTestContext creates a gin.Context suitable for FileHandler tests.
@@ -107,4 +110,51 @@ func TestFileHandler_Delete_Success(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assertResponseCode(t, w, code.Success.Code())
+}
+
+// TestFileHandler_Upload_NormalizesSecondTimestamps verifies #461 for the attachment write
+// path: seconds-scale ctime/mtime form fields are normalized to milliseconds before the file
+// metadata is written.
+// TestFileHandler_Upload_NormalizesSecondTimestamps 验证附件写入路径的 #461：秒级
+// ctime/mtime 表单字段在写入文件元数据前被归一化为毫秒。
+func TestFileHandler_Upload_NormalizesSecondTimestamps(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mockFileSvc := new(svcmocks.MockFileService)
+
+	var writeParams *dto.FileUpdateRequest
+	mockFileSvc.On("UpdateOrCreate", mock.Anything, int64(1), mock.AnythingOfType("*dto.FileUpdateRequest"), false).
+		Run(func(args mock.Arguments) {
+			writeParams = args.Get(2).(*dto.FileUpdateRequest)
+		}).
+		Return(true, &dto.FileDTO{ID: 1, Path: "a.png"}, nil)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	require.NoError(t, writer.WriteField("vault", "main"))
+	require.NoError(t, writer.WriteField("path", "a.png"))
+	require.NoError(t, writer.WriteField("ctime", "1651719914"))
+	require.NoError(t, writer.WriteField("mtime", "1651719914"))
+	part, err := writer.CreateFormFile("file", "a.png")
+	require.NoError(t, err)
+	_, err = part.Write([]byte("fake-png-bytes"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	handler := newTestFileHandler(mockFileSvc)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/file/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Client", "Web")
+	c, _ := gin.CreateTestContext(w)
+	c.Request = req
+	c.Set("user_token", &pkgapp.UserEntity{UID: 1})
+
+	handler.Upload(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assertResponseCode(t, w, code.Success.Code())
+	if assert.NotNil(t, writeParams) {
+		assert.Equal(t, int64(1651719914000), writeParams.Mtime, "seconds mtime must be normalized to milliseconds before writing")
+		assert.Equal(t, int64(1651719914000), writeParams.Ctime, "seconds ctime must be normalized to milliseconds before writing")
+	}
 }

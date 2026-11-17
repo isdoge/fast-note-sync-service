@@ -15,6 +15,7 @@ import (
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	apperrors "github.com/haierkeys/fast-note-sync-service/pkg/errors"
+	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
@@ -506,8 +507,9 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 
 	// Default timestamps if not provided
-	ctime := input.Ctime
-	mtime := input.Mtime
+	// 部分第三方客户端传秒级时间戳，归一化为毫秒（#461）
+	ctime := timex.NormalizeMilli(input.Ctime)
+	mtime := timex.NormalizeMilli(input.Mtime)
 	if ctime == 0 {
 		ctime = time.Now().UnixMilli()
 	}

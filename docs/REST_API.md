@@ -1441,7 +1441,7 @@ Schema: `app.Res`
 
 ## Timestamp Format
 
-All timestamp fields (`ctime`, `mtime`, `updatedTimestamp`, `lastTime`) are **Unix timestamps in milliseconds**.
+All timestamp fields (`ctime`, `mtime`, `updatedTimestamp`, `lastTime`) are **Unix timestamps in milliseconds**. When writing notes or attachments, the server tolerates second-scale values: any `ctime`/`mtime` in the range (0, 1e11) is treated as seconds and normalized to milliseconds before storage (#461).
 
 ---
 

@@ -122,6 +122,8 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 	var cFoldersKeys map[string]struct{} = make(map[string]struct{}, 0)
 	if len(params.Folders) > 0 {
 		for _, f := range params.Folders {
+			// 客户端可能传秒级时间戳，归一化为毫秒再参与墓碑闸门比较（#461）
+			f.Mtime = timex.NormalizeMilli(f.Mtime)
 			cFolders[f.PathHash] = f
 		}
 		for _, folder := range params.Folders {

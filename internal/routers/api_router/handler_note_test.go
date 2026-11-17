@@ -149,3 +149,75 @@ func TestNoteHandler_Delete_Success(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assertResponseCode(t, w, code.Success.Code())
 }
+
+// TestNoteHandler_CreateOrUpdate_NormalizesSecondTimestamps verifies #461: when a third-party
+// client sends ctime/mtime in seconds, the handler normalizes them to milliseconds before the
+// values reach the update check and the write path, so stored notes no longer display as 1970.
+// TestNoteHandler_CreateOrUpdate_NormalizesSecondTimestamps 验证 #461：第三方客户端传秒级
+// ctime/mtime 时，handler 在进入更新检查与写入路径前归一化为毫秒，避免笔记时间显示为 1970 年。
+func TestNoteHandler_CreateOrUpdate_NormalizesSecondTimestamps(t *testing.T) {
+	mockNoteSvc := new(svcmocks.MockNoteService)
+
+	var checkParams *dto.NoteUpdateCheckRequest
+	mockNoteSvc.On("UpdateCheckWithNote", mock.Anything, int64(1), mock.AnythingOfType("*dto.NoteUpdateCheckRequest")).
+		Run(func(args mock.Arguments) {
+			checkParams = args.Get(2).(*dto.NoteUpdateCheckRequest)
+		}).
+		Return("", (*domain.Note)(nil), (*dto.NoteDTO)(nil), nil)
+
+	var writeParams *dto.NoteModifyOrCreateRequest
+	createdNote := &dto.NoteDTO{ID: 2, Path: "create.md"}
+	mockNoteSvc.On("ModifyOrCreate", mock.Anything, int64(1), mock.AnythingOfType("*dto.NoteModifyOrCreateRequest"), false, mock.Anything).
+		Run(func(args mock.Arguments) {
+			writeParams = args.Get(2).(*dto.NoteModifyOrCreateRequest)
+		}).
+		Return(true, createdNote, nil)
+
+	handler := newTestNoteHandler(mockNoteSvc, nil)
+	body := `{"vault":"main", "path":"create.md", "content":"hello", "ctime":1651719914, "mtime":1651719914}`
+	c, w := newNoteTestContext("POST", "/api/note", body, 1)
+
+	handler.CreateOrUpdate(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assertResponseCode(t, w, code.Success.Code())
+	if assert.NotNil(t, writeParams) {
+		assert.Equal(t, int64(1651719914000), writeParams.Mtime, "seconds mtime must be normalized to milliseconds before writing")
+		assert.Equal(t, int64(1651719914000), writeParams.Ctime, "seconds ctime must be normalized to milliseconds before writing")
+	}
+	if assert.NotNil(t, checkParams) {
+		assert.Equal(t, int64(1651719914000), checkParams.Mtime, "seconds mtime must be normalized before the update check comparison")
+	}
+}
+
+// TestNoteHandler_CreateOrUpdate_KeepsMillisecondTimestamps verifies millisecond values pass
+// through unchanged, so existing clients (plugin, CLI) are unaffected by the #461 fix.
+// TestNoteHandler_CreateOrUpdate_KeepsMillisecondTimestamps 验证毫秒值原样透传，既有客户端
+// （插件、CLI）不受 #461 修复影响。
+func TestNoteHandler_CreateOrUpdate_KeepsMillisecondTimestamps(t *testing.T) {
+	mockNoteSvc := new(svcmocks.MockNoteService)
+
+	mockNoteSvc.On("UpdateCheckWithNote", mock.Anything, int64(1), mock.AnythingOfType("*dto.NoteUpdateCheckRequest")).
+		Return("", (*domain.Note)(nil), (*dto.NoteDTO)(nil), nil)
+
+	var writeParams *dto.NoteModifyOrCreateRequest
+	createdNote := &dto.NoteDTO{ID: 2, Path: "create.md"}
+	mockNoteSvc.On("ModifyOrCreate", mock.Anything, int64(1), mock.AnythingOfType("*dto.NoteModifyOrCreateRequest"), false, mock.Anything).
+		Run(func(args mock.Arguments) {
+			writeParams = args.Get(2).(*dto.NoteModifyOrCreateRequest)
+		}).
+		Return(true, createdNote, nil)
+
+	handler := newTestNoteHandler(mockNoteSvc, nil)
+	body := `{"vault":"main", "path":"create.md", "content":"hello", "ctime":1651719914000, "mtime":1651719914000}`
+	c, w := newNoteTestContext("POST", "/api/note", body, 1)
+
+	handler.CreateOrUpdate(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assertResponseCode(t, w, code.Success.Code())
+	if assert.NotNil(t, writeParams) {
+		assert.Equal(t, int64(1651719914000), writeParams.Mtime)
+		assert.Equal(t, int64(1651719914000), writeParams.Ctime)
+	}
+}
