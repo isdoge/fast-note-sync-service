@@ -44,6 +44,18 @@ var methodLimiters = limiter.NewMethodLimiter().AddBuckets(
 	},
 )
 
+// globalLimiters 全局兜底桶：不区分客户端，限制登录接口总速率（每秒 50 次），
+// 防止大量来源地址各自不超单客户端限额时的分布式撞库。在 methodLimiters 之后检查，
+// 已被单客户端桶拒绝的请求不消耗全局额度。
+var globalLimiters = limiter.NewMethodLimiter().AddBuckets(
+	limiter.BucketRule{
+		Key:          "/api/user/login",
+		FillInterval: time.Second,
+		Capacity:     50,
+		Quantum:      50,
+	},
+)
+
 func NewRouter(frontendFiles embed.FS, appContainer *app.App, uni *ut.UniversalTranslator) *gin.Engine {
 
 	// Get configuration

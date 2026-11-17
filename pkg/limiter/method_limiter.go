@@ -2,6 +2,7 @@ package limiter
 
 import (
 	"container/list"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -47,9 +48,19 @@ func (l *MethodLimiter) Key(c *gin.Context) string {
 	perClient := l.rules[path].PerClient
 	l.mu.Unlock()
 	if perClient {
-		return path + "\x00" + c.ClientIP()
+		return path + "\x00" + clientKey(c.ClientIP())
 	}
 	return path
+}
+
+// clientKey 返回按客户端限流的 key：IPv4 按单个地址；IPv6 按 /64 前缀聚合，
+// 防止攻击者在同一 /64（通常是一个用户/站点的分配单位）内轮换地址绕过单 IP 限流。
+func clientKey(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil {
+		return ip
+	}
+	return parsed.Mask(net.CIDRMask(64, 128)).String() + "/64"
 }
 
 func (l *MethodLimiter) GetBucket(key string) (*ratelimit.Bucket, bool) {
