@@ -1126,7 +1126,12 @@ func (s *gitSyncService) processSettingsBatch(settings []*domain.Setting, conf *
 			continue
 		}
 
-		fullPath := filepath.Join(wsPath, st.Path)
+		fullPath, pathErr := safeWorkspacePath(wsPath, st.Path)
+		if pathErr != nil {
+			s.logger.Warn("Skipping setting whose path escapes the workspace",
+				zap.String("path", st.Path), zap.Error(pathErr))
+			continue
+		}
 
 		if st.Action == domain.SettingActionDelete {
 			if _, err := os.Stat(fullPath); err == nil {
@@ -1170,7 +1175,12 @@ func (s *gitSyncService) processNotesBatch(notes []*domain.Note, wsPath string) 
 		if filepath.Ext(targetPath) == "" {
 			targetPath += ".md"
 		}
-		fullPath := filepath.Join(wsPath, targetPath)
+		fullPath, pathErr := safeWorkspacePath(wsPath, targetPath)
+		if pathErr != nil {
+			s.logger.Warn("Skipping note whose path escapes the workspace",
+				zap.String("path", n.Path), zap.Error(pathErr))
+			continue
+		}
 
 		if n.Action == domain.NoteActionDelete {
 			if _, err := os.Stat(fullPath); err == nil {
@@ -1212,7 +1222,12 @@ func (s *gitSyncService) processFilesBatch(files []*domain.File, conf *domain.Gi
 	var actuallyChanged bool
 
 	for _, f := range files {
-		fullPath := filepath.Join(wsPath, f.Path)
+		fullPath, pathErr := safeWorkspacePath(wsPath, f.Path)
+		if pathErr != nil {
+			s.logger.Warn("Skipping attachment whose path escapes the workspace",
+				zap.String("path", f.Path), zap.Error(pathErr))
+			continue
+		}
 
 		if f.Action == domain.FileActionDelete {
 			if _, err := os.Stat(fullPath); err == nil {
