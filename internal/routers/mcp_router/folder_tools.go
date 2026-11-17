@@ -21,7 +21,7 @@ func registerFolderTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkga
 	toolDeleteFolder := mcp.NewTool("folder_delete",
 		mcp.WithDescription("Recursively delete a folder in a vault. Requires the exact vault-relative folder path. The root folder cannot be deleted."),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Exact vault-relative folder path to delete recursively.")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Exact vault-relative folder path to delete recursively, separated by '/'; a leading '/' is stripped.")),
 		mcp.WithOutputSchema[mcpFolderMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolDeleteFolder, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -38,7 +38,10 @@ func registerFolderTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkga
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path = strings.Trim(path, "/")
+		path, cerr := cleanToolPath(path)
+		if cerr != nil {
+			return mcp.NewToolResultError(cerr.Error()), nil
+		}
 		folder, err := folderSvc.WithClient(getClientInfoFromContext(ctx)).DeleteTree(ctx, uid, &dto.FolderDeleteRequest{
 			Vault:    vault,
 			Path:     path,

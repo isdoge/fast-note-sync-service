@@ -166,7 +166,7 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolDeleteFile := mcp.NewTool("file_delete",
 		mcp.WithDescription("Delete a file"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("File path")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("File path, relative to the vault root, separated by '/'; a leading '/' is stripped")),
 		mcp.WithOutputSchema[mcpFileMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolDeleteFile, cfg, true, "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -183,6 +183,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, err := cleanToolPath(path)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		file, err := fileSvc.WithClient(getClientInfoFromContext(ctx)).Delete(ctx, uid, &dto.FileDeleteRequest{
 			Vault:    vault,
@@ -207,8 +211,8 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolRenameFile := mcp.NewTool("file_rename",
 		mcp.WithDescription("Rename a file"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("oldPath", mcp.Required(), mcp.Description("Old file path")),
-		mcp.WithString("newPath", mcp.Required(), mcp.Description("New file path")),
+		mcp.WithString("oldPath", mcp.Required(), mcp.Description("Old file path, relative to the vault root, separated by '/'; a leading '/' is stripped")),
+		mcp.WithString("newPath", mcp.Required(), mcp.Description("New file path, relative to the vault root, separated by '/'; a leading '/' is stripped")),
 		mcp.WithOutputSchema[mcpFileMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolRenameFile, cfg, true, "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -226,6 +230,14 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		}
 		oldPath, _ := args["oldPath"].(string)
 		newPath, _ := args["newPath"].(string)
+		oldPath, err := cleanToolPath(oldPath)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		newPath, err = cleanToolPath(newPath)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		oldFile, newFile, err := fileSvc.WithClient(getClientInfoFromContext(ctx)).Rename(ctx, uid, &dto.FileRenameRequest{
 			Vault:       vault,
@@ -263,7 +275,7 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolRestoreFile := mcp.NewTool("file_restore",
 		mcp.WithDescription("Restore a deleted file from recycle bin"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("File path")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("File path, relative to the vault root, separated by '/'; a leading '/' is stripped")),
 		mcp.WithOutputSchema[mcpFileMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolRestoreFile, cfg, true, "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -280,6 +292,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, err := cleanToolPath(path)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 
 		file, err := fileSvc.WithClient(getClientInfoFromContext(ctx)).Restore(ctx, uid, &dto.FileRestoreRequest{
 			Vault:    vault,
@@ -304,7 +320,7 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolRecycleClearFile := mcp.NewTool("file_recycle_clear",
 		mcp.WithDescription("Permanently delete a file from recycle bin (or all if path is empty)"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Description("File path. If empty, potentially clear all")),
+		mcp.WithString("path", mcp.Description("File path, relative to the vault root, separated by '/'; a leading '/' is stripped. If empty, potentially clear all")),
 		mcp.WithOutputSchema[mcpFileRecycleClearOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolRecycleClearFile, cfg, true, "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -321,6 +337,13 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		if path != "" {
+			var cerr error
+			path, cerr = cleanToolPath(path)
+			if cerr != nil {
+				return mcp.NewToolResultError(cerr.Error()), nil
+			}
+		}
 
 		err := fileSvc.WithClient(getClientInfoFromContext(ctx)).RecycleClear(ctx, uid, &dto.FileRecycleClearRequest{
 			Vault:    vault,
@@ -343,7 +366,7 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolWriteFile := mcp.NewTool("file_write",
 		mcp.WithDescription("Create or update a file (attachment) in the vault by uploading its base64 encoded content"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Target file path in the vault (e.g. 'images/my_pic.png')")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Target file path in the vault, relative to the vault root, separated by '/'; a leading '/' is stripped (e.g. 'images/my_pic.png')")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Base64 encoded file content")),
 		mcp.WithOutputSchema[mcpFileWriteOutput](),
 	)
@@ -363,8 +386,9 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		path, _ := args["path"].(string)
 		b64Content, _ := args["content"].(string)
 
-		if !util.ValidatePath(path) {
-			return mcp.NewToolResultError("invalid file path"), nil
+		path, cerr := cleanToolPath(path)
+		if cerr != nil {
+			return mcp.NewToolResultError(cerr.Error()), nil
 		}
 
 		// Decode base64 content // 解码 Base64 内容
