@@ -52,6 +52,25 @@ user-database:
 	require.True(t, *cfg.Storage.MinIO.IsEnabled)
 }
 
+func TestLoadConfigWebGUILoginTokenBindUADefaultAndOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	err := os.WriteFile(configPath, []byte(`security:
+  webgui-login-token-bind-ua: false
+`), 0644)
+	require.NoError(t, err)
+
+	cfg, _, err := LoadConfig(configPath)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Security.WebGUILoginTokenBindUA)
+	require.False(t, *cfg.Security.WebGUILoginTokenBindUA)
+
+	require.NoError(t, os.WriteFile(configPath, []byte("security: {}\n"), 0644))
+	cfg, _, err = LoadConfig(configPath)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Security.WebGUILoginTokenBindUA)
+	require.True(t, *cfg.Security.WebGUILoginTokenBindUA)
+}
+
 func TestLoadConfigMCPDisableLocalhostProtection(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	err := os.WriteFile(configPath, []byte(`

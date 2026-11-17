@@ -67,6 +67,7 @@
 | `adminUid`                | `integer` | `1`       | 管理员 UID         |
 | `pipelineWindowUp`        | `integer` | `8`       | 上行同步流水线窗口大小（在途批次数） |
 | `pipelineWindowDown`      | `integer` | `4`       | 下行同步流水线窗口大小（在途页数）   |
+| `webguiLoginTokenBindUa`  | `boolean` | `true`    | WebGUI 登录令牌是否绑定 User-Agent |
 
 ---
 
@@ -82,6 +83,7 @@
 | `adminUid`                | `integer` | `0`       | **管理员 UID**：指定特定的用户 UID 作为管理员。`0` 表示不启用特定的管理员权限校验逻辑（建议在初始化后设置为实际的管理员 UID）。                     |
 | `pipelineWindowUp`        | `integer` | `8`       | **上行同步流水线窗口大小**（3.6.0+）：pv≥2 连接上行分批同步允许同时在途未确认的批次数，读取处钳制到 `[0,32]`。`0` 表示禁用窗口、退回逐批 stop-and-wait（**运行时回滚开关**：出问题时改为 `0` 即可立即生效，无需重启或降级版本）。字段类型为可空整型，仅当请求体显式携带该字段时才会更新，可正确区分"未传"与"显式传 `0`"。 |
 | `pipelineWindowDown`      | `integer` | `4`       | **下行同步流水线窗口大小**（3.6.0+）：pv≥2 连接下行分页同步允许服务端同时预推的在途页数，读取处钳制到 `[0,16]`。`0` 表示禁用窗口、退回逐页 stop-and-wait，同为运行时回滚开关；字段语义与 `pipelineWindowUp` 一致。 |
+| `webguiLoginTokenBindUa`  | `boolean` | `true`    | **WebGUI 登录令牌 UA 绑定**：默认绑定签发时的 User-Agent。反向代理改写 UA 导致 313 时可设为 `false`；新签发及轮转的令牌不再保存和校验 UA，已有绑定 UA 的令牌需重新登录或轮转。 |
 
 ---
 

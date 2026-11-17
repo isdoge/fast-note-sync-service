@@ -192,6 +192,11 @@ security:
   # Whether to bind client IP for WebGUI login tokens.
   # Set to false when using Cloudflare Tunnel to avoid disconnection due to IP changes.
   webgui-login-token-bind-ip: true
+  # WebGUI 登录 Token 是否绑定浏览器 User-Agent，默认 true。
+  # 反向代理或远程访问网关改写 User-Agent、导致附件下载报 313 时可设为 false；关闭后不再校验 UA。
+  # Whether to bind the browser User-Agent for WebGUI login tokens. Defaults to true.
+  # Set to false if a reverse proxy or remote access gateway rewrites User-Agent and causes error 313; UA checks are then disabled.
+  webgui-login-token-bind-ua: true
 
 # 主数据库配置
 # Main database configuration

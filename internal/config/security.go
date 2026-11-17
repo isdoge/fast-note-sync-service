@@ -21,6 +21,9 @@ type SecurityConfig struct {
 	// WebGUILoginTokenBindIP whether to bind the client IP when issuing WebGUI login tokens
 	// WebGUILoginTokenBindIP 签发 WebGUI 登录 Token 时是否绑定客户端 IP
 	WebGUILoginTokenBindIP *bool `yaml:"webgui-login-token-bind-ip" default:"true"`
+	// WebGUILoginTokenBindUA whether to bind the User-Agent when issuing WebGUI login tokens
+	// WebGUILoginTokenBindUA 签发 WebGUI 登录 Token 时是否绑定 User-Agent
+	WebGUILoginTokenBindUA *bool `yaml:"webgui-login-token-bind-ua" default:"true"`
 }
 
 // Validate rejects token lifetimes that are nonpositive or overflow time.Duration.

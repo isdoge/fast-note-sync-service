@@ -36,6 +36,7 @@ func initServices(cfg *AppConfig, infra *Infra, repos *Repositories, logger *zap
 		Token: service.TokenServiceConfig{
 			WebGUILoginTokenExpiry: cfg.Security.WebGUILoginTokenExpiry,
 			WebGUILoginTokenBindIP: *cfg.Security.WebGUILoginTokenBindIP,
+			WebGUILoginTokenBindUA: *cfg.Security.WebGUILoginTokenBindUA,
 		},
 		App: service.AppServiceConfig{
 			SoftDeleteRetentionTime: cfg.App.SoftDeleteRetentionTime,

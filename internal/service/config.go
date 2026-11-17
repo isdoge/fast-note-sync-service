@@ -22,6 +22,7 @@ type UserServiceConfig struct {
 type TokenServiceConfig struct {
 	WebGUILoginTokenExpiry string // Expiry duration of WebGUI login tokens (e.g. 7d, 24h) // WebGUI 登录 Token 有效期（如 7d、24h）
 	WebGUILoginTokenBindIP bool   // Whether to bind client IP on WebGUI login token issuance // WebGUI 登录 Token 是否绑定客户端 IP
+	WebGUILoginTokenBindUA bool   // Whether to bind User-Agent on WebGUI login token issuance // WebGUI 登录 Token 是否绑定 User-Agent
 }
 
 // AppServiceConfig app service configuration
@@ -42,4 +43,3 @@ type ShortLinkServiceConfig struct {
 	Password string // Password // 密码
 	Cloaking bool   // Cloaking // 遮盖
 }
-

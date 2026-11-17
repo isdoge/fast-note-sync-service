@@ -36,6 +36,7 @@ type AdminConfig struct {
 	PullReleaseChannel      *string `json:"pullReleaseChannel,omitempty" form:"pullReleaseChannel"`           // Update version channel: stable | beta // 更新版本通道：stable | beta
 	WebGUILoginTokenExpiry  *string `json:"webguiLoginTokenExpiry,omitempty" form:"webguiLoginTokenExpiry"`   // WebGUI login token expiry // WebGUI 登录 Token 有效期
 	WebGUILoginTokenBindIP  *bool   `json:"webguiLoginTokenBindIp,omitempty" form:"webguiLoginTokenBindIp"`   // WebGUI login token bind IP // WebGUI 登录 Token 是否绑定 IP
+	WebGUILoginTokenBindUA  *bool   `json:"webguiLoginTokenBindUa,omitempty" form:"webguiLoginTokenBindUa"`   // WebGUI login token bind User-Agent // WebGUI 登录 Token 是否绑定 User-Agent
 	CustomResponseHeaders   *map[string]string `json:"customResponseHeaders,omitempty" form:"customResponseHeaders"` // Custom HTTP response headers // 自定义 HTTP 响应头
 	DefaultPageSize               *int               `json:"defaultPageSize,omitempty" form:"defaultPageSize"`                             // Default page size // 默认每页显示数
 	MaxPageSize                   *int               `json:"maxPageSize,omitempty" form:"maxPageSize"`                                     // Max page size // 最大每页显示限制

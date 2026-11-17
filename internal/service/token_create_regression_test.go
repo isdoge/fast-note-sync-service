@@ -24,6 +24,39 @@ func (r *tokenWriteRepository) Create(_ context.Context, token *domain.AuthToken
 func (r *tokenWriteRepository) UpdateTokenString(context.Context, int64, string) error { return nil }
 func (r *tokenWriteRepository) Update(context.Context, *domain.AuthToken) error        { return nil }
 
+func TestTokenService_WebGUILoginTokenBindUA(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bindUA bool
+	}{
+		{name: "default binds UA", bindUA: true},
+		{name: "disabled leaves UA empty", bindUA: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &tokenWriteRepository{}
+			svc := NewTokenService(repo, nil, app.NewTokenManager(app.TokenConfig{SecretKey: "test-secret", Expiry: time.Hour}), nil, TokenServiceConfig{WebGUILoginTokenBindUA: tc.bindUA})
+
+			created, _, err := svc.CreateForLogin(context.Background(), 1, "WebGui", "192.0.2.1", "Browser A")
+			require.NoError(t, err)
+			if tc.bindUA {
+				require.Equal(t, "Browser A", created.UserAgent)
+			} else {
+				require.Empty(t, created.UserAgent)
+			}
+
+			repo.getByIDToken = created
+			created.UserAgent = "Browser A"
+			rotated, _, err := svc.RotateForLogin(context.Background(), 1, created.ID, "192.0.2.1", "Browser B")
+			require.NoError(t, err)
+			if tc.bindUA {
+				require.Equal(t, "Browser B", rotated.UserAgent)
+			} else {
+				require.Empty(t, rotated.UserAgent)
+			}
+		})
+	}
+}
+
 func TestTokenService_Create_ManualLegacyScopeIncludesMCP(t *testing.T) {
 	for _, tc := range []struct{ name, scope, protocol, want string }{
 		{"web-form", "rest,ws", "", "p:rest,ws,mcp c:ObsidianPlugin f:*"},

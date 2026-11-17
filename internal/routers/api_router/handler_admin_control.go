@@ -145,6 +145,7 @@ func (h *AdminControlHandler) GetConfig(c *gin.Context) {
 		PullReleaseChannel:            &cfg.App.PullReleaseChannel,
 		WebGUILoginTokenExpiry:        &cfg.Security.WebGUILoginTokenExpiry,
 		WebGUILoginTokenBindIP:        cfg.Security.WebGUILoginTokenBindIP,
+		WebGUILoginTokenBindUA:        cfg.Security.WebGUILoginTokenBindUA,
 		CustomResponseHeaders:         &cfg.Server.CustomResponseHeaders,
 		DefaultPageSize:               &cfg.App.DefaultPageSize,
 		MaxPageSize:                   &cfg.App.MaxPageSize,
@@ -354,6 +355,9 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 	}
 	if params.WebGUILoginTokenBindIP != nil {
 		cfg.Security.WebGUILoginTokenBindIP = params.WebGUILoginTokenBindIP
+	}
+	if params.WebGUILoginTokenBindUA != nil {
+		cfg.Security.WebGUILoginTokenBindUA = params.WebGUILoginTokenBindUA
 	}
 	if params.CustomResponseHeaders != nil {
 		cfg.Server.CustomResponseHeaders = *params.CustomResponseHeaders
