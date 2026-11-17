@@ -37,6 +37,12 @@ var errNoChanges = errors.New("no changes found")
 
 const gitSyncBatchSize = 100
 
+// gitSyncValidateTimeout 单次 Git 配置验证（ls-remote）的最长耗时。
+// 远端无响应时此前完全依赖 TCP 层默认超时（分钟级），前端表现为永远“检测中”
+// （haierkeys/obsidian-fast-note-sync#231）。显式超时后立刻返回明确错误。
+// gitSyncValidateTimeout bounds a single Git config validation (ls-remote) call.
+const gitSyncValidateTimeout = 20 * time.Second
+
 // GitSyncService defines the Git synchronization business service interface
 // GitSyncService 定义 Git 同步业务服务接口
 type GitSyncService interface {
@@ -293,13 +299,22 @@ func (s *gitSyncService) Validate(ctx context.Context, params *dto.GitSyncValida
 
 	restoreClients := s.repoURLValidator().installHTTPClients()
 	defer restoreClients()
-	refs, err := rem.List(&git.ListOptions{
+
+	// ls-remote 不传 context 时无法被调用方取消也没有超时，远端挂起会让“验证”按钮
+	// 永远停在“检测中”（haierkeys/obsidian-fast-note-sync#231）。显式带超时上下文。
+	listCtx, listCancel := context.WithTimeout(ctx, gitSyncValidateTimeout)
+	defer listCancel()
+
+	refs, err := rem.ListContext(listCtx, &git.ListOptions{
 		Auth: auth,
 	})
 	if err != nil {
 		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
 			// Remote is empty, validation success
 			return nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(listCtx.Err(), context.DeadlineExceeded) {
+			return code.ErrorGitSyncValidateFailed.WithDetails("git ls-remote timed out after " + gitSyncValidateTimeout.String())
 		}
 		return code.ErrorGitSyncValidateFailed.WithDetails(err.Error())
 	}
