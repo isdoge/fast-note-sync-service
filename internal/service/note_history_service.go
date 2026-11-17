@@ -387,6 +387,10 @@ func (s *noteHistoryService) RestoreFromHistory(ctx context.Context, uid int64, 
 	note.Mtime = timex.Now().UnixMilli()
 	note.Action = domain.NoteActionModify
 	note.Rename = 0
+	// 恢复后正文长度已变，Size 必须随内容重算，否则列表/MCP note_list 报告旧值（#360）
+	// The restored body length differs; Size must follow the content or list/MCP note_list
+	// keeps reporting the stale value (#360)
+	note.Size = int64(len(restoredContent))
 
 	// 6. Update note
 	// 6. 更新笔记
