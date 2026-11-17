@@ -151,4 +151,7 @@ type FileDTO struct {
 	UpdatedTimestamp int64      `json:"lastTime" form:"updatedTimestamp"` // Updated timestamp // 更新时间戳
 	UpdatedAt        timex.Time `json:"updatedAt"`                        // Updated at time // 更新时间
 	CreatedAt        timex.Time `json:"createdAt"`                        // Created at time // 创建时间
+	// Unchanged is set by Delete when the record was missing or already deleted (no write happened)
+	// Unchanged 由 Delete 设置：记录不存在或已是删除状态，本次未写库（调用方据此不广播）
+	Unchanged bool `json:"-" form:"-"`
 }

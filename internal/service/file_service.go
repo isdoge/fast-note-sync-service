@@ -417,14 +417,16 @@ func (s *fileService) Delete(ctx context.Context, uid int64, params *dto.FileDel
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 幂等：记录不存在 → 用请求参数构造成功 DTO（客户端按 path 匹配 pending）
-			return &dto.FileDTO{Path: params.Path, PathHash: params.PathHash}, nil
+			return &dto.FileDTO{Path: params.Path, PathHash: params.PathHash, Unchanged: true}, nil
 		}
 		return nil, err
 	}
 
 	if file.Action == domain.FileActionDelete {
 		// 幂等：已是删除状态 → 不重复写库，直接返回
-		return s.domainToDTO(file), nil
+		res := s.domainToDTO(file)
+		res.Unchanged = true
+		return res, nil
 	}
 
 	// Update to deleted status // 更新为删除状态

@@ -623,6 +623,10 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		Path:     note.Path,
 		PathHash: note.PathHash,
 	}).WithVault(params.Vault).WithContext(params.Context), string(NoteDeleteAck))
+	// 记录不存在或已删除（幂等重复删除）：只回 Ack，不广播，避免向其他设备重复下发删除
+	if note.Unchanged {
+		return
+	}
 	c.BroadcastResponse(code.Success.WithData(
 		dto.NoteSyncDeleteMessage{
 			Path:             note.Path,

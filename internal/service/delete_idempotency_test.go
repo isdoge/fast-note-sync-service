@@ -63,6 +63,7 @@ func TestNoteService_Delete_AlreadyDeleted_IsIdempotent(t *testing.T) {
 	assert.Equal(t, "h1", got.PathHash)
 	// 已删除记录不应被重复写库
 	noteRepo.AssertNotCalled(t, "UpdateDelete", mock.Anything, mock.Anything, mock.Anything)
+	assert.True(t, got.Unchanged, "Bug: 已删除记录的重复删除必须标记 Unchanged，WS 调用方据此不广播")
 }
 
 // TestNoteService_Delete_RecordNotFound_IsIdempotent 验证删除不存在的笔记返回成功。
@@ -86,6 +87,7 @@ func TestNoteService_Delete_RecordNotFound_IsIdempotent(t *testing.T) {
 	require.NotNil(t, got, "Bug: 幂等删除应返回用请求参数构造的 DTO")
 	assert.Equal(t, "a.md", got.Path, "幂等返回的 path 必须来自请求参数（客户端按 path 匹配 pending）")
 	assert.Equal(t, "h1", got.PathHash)
+	assert.True(t, got.Unchanged, "Bug: 删除不存在的记录必须标记 Unchanged，WS 调用方据此不广播")
 }
 
 // TestNoteService_Delete_ActiveNote_MarksDeleted 基线：活跃笔记仍走正常删除流程。
@@ -116,6 +118,7 @@ func TestNoteService_Delete_ActiveNote_MarksDeleted(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, string(domain.NoteActionDelete), got.Action, "活跃笔记删除后 action 应为 delete")
+	assert.False(t, got.Unchanged, "真实删除必须广播，不得标记 Unchanged")
 	noteRepo.AssertCalled(t, "UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1))
 }
 
@@ -138,6 +141,7 @@ func TestFileService_Delete_RecordNotFound_IsIdempotent(t *testing.T) {
 	require.NotNil(t, got, "Bug: 幂等删除应返回用请求参数构造的 DTO")
 	assert.Equal(t, "b.png", got.Path)
 	assert.Equal(t, "h2", got.PathHash)
+	assert.True(t, got.Unchanged, "Bug: 删除不存在的文件必须标记 Unchanged，WS 调用方据此不广播")
 }
 
 // TestFileService_Delete_AlreadyDeleted_IsIdempotent 验证重复删除已删除的文件返回成功。
@@ -167,4 +171,29 @@ func TestFileService_Delete_AlreadyDeleted_IsIdempotent(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "b.png", got.Path)
 	fileRepo.AssertNotCalled(t, "Update", mock.Anything, mock.Anything, mock.Anything)
+	assert.True(t, got.Unchanged, "Bug: 已删除文件的重复删除必须标记 Unchanged，WS 调用方据此不广播")
+}
+
+// TestFileService_Delete_ActiveFile_NotUnchanged 基线：活跃文件真实删除不标记 Unchanged（需要广播）。
+func TestFileService_Delete_ActiveFile_NotUnchanged(t *testing.T) {
+	fileRepo := new(domainmocks.MockFileRepository)
+	vaultSvc := new(servicemocks.MockVaultService)
+	vaultSvc.On("MustGetID", mock.Anything, int64(1), "vault").Return(int64(1), nil)
+	vaultSvc.On("UpdateFileStats", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	activeFile := &domain.File{ID: 7, VaultID: 1, Action: domain.FileActionCreate, Path: "b.png", PathHash: "h2"}
+	deleted := *activeFile
+	deleted.Action = domain.FileActionDelete
+	fileRepo.On("GetByPathHash", mock.Anything, "h2", int64(1), int64(1)).Return(activeFile, nil)
+	fileRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.File"), int64(1)).Return(&deleted, nil)
+	fileRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{}, nil).Maybe()
+
+	svc := service.NewFileService(nil, fileRepo, nil, vaultSvc, nil, nil, nil, nil, nil)
+	got, err := svc.Delete(context.Background(), 1, &dto.FileDeleteRequest{
+		Vault: "vault", Path: "b.png", PathHash: "h2",
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.False(t, got.Unchanged, "真实删除必须广播，不得标记 Unchanged")
 }

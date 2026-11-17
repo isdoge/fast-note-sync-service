@@ -483,6 +483,11 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		PathHash: fileSvc.PathHash,
 	}).WithVault(params.Vault).WithContext(params.Context), string(FileDeleteAck))
 
+	// 记录不存在或已删除（幂等重复删除）：只回 Ack，不广播，避免向其他设备重复下发删除
+	if fileSvc.Unchanged {
+		return
+	}
+
 	// Broadcast file deletion message
 	// 广播文件删除消息
 	c.BroadcastResponse(code.Success.WithData(

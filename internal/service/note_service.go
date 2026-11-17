@@ -567,14 +567,16 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 幂等：记录不存在（上传未完成或已物理清理）→ 用请求参数构造成功 DTO，
 			// path 必须来自请求，客户端按 path 匹配 pending 集合并清理 hash
-			return &dto.NoteDTO{Path: params.Path, PathHash: params.PathHash}, nil
+			return &dto.NoteDTO{Path: params.Path, PathHash: params.PathHash, Unchanged: true}, nil
 		}
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
 	if note.Action == domain.NoteActionDelete {
 		// 幂等：已是删除状态 → 不重复写库，直接返回
-		return s.domainToDTO(note), nil
+		res := s.domainToDTO(note)
+		res.Unchanged = true
+		return res, nil
 	}
 
 	// Update to deleted status // 更新为删除状态
