@@ -101,16 +101,18 @@ func (r *noteTagRepository) ListByVault(ctx context.Context, vaultID, uid int64,
 	if p := strings.TrimSpace(prefix); p != "" {
 		q = q.Where("LOWER(note_tag.tag) LIKE ? ESCAPE '!'", escapeLike(strings.ToLower(p))+"%")
 	}
-	// scope: 'frontmatter' keeps frontmatter-only tags, 'inline' keeps inline-only
-	// ones, 'all'/empty keeps every source. A tag seen in both places is counted
-	// under both scopes, so the two lists are not a partition of 'all'.
-	// scope：frontmatter 只看仅在 frontmatter 出现的标签，inline 只看仅内联出现的，
-	// all/空 看全部来源。两处都出现的标签会同时计入两个 scope，因此两者不是 all 的划分。
+	// scope: source is recorded per note, not per tag. 'frontmatter' keeps notes whose tags
+	// come from frontmatter (source frontmatter or both), 'inline' keeps notes with inline
+	// tags (inline or both), 'all'/empty keeps every source. Notes with tags in both places
+	// are counted under both scopes, so the two lists are not a partition of 'all'.
+	// scope：来源按笔记记录而非按标签。frontmatter 保留有 frontmatter 标签的笔记（frontmatter 或 both），
+	// inline 保留有内联标签的笔记（inline 或 both），all/空 看全部来源。两处都有标签的笔记
+	// 会同时计入两个 scope，因此两者不是 all 的划分。
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case "frontmatter":
-		q = q.Where("note_tag.source = ?", TagSourceFrontmatter)
+		q = q.Where("note_tag.source IN ?", []string{TagSourceFrontmatter, TagSourceBoth})
 	case "inline":
-		q = q.Where("note_tag.source = ?", TagSourceInline)
+		q = q.Where("note_tag.source IN ?", []string{TagSourceInline, TagSourceBoth})
 	}
 	q = q.Group("note_tag.tag").Order("count DESC, tag ASC")
 	if limit > 0 {
