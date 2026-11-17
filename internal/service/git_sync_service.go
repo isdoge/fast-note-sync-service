@@ -629,7 +629,11 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 		s.logger.Info("Git sync task success", zap.Int64("configId", conf.ID))
 		finalStatus = domain.GitSyncStatusSuccess
 		message = "Sync completed at " + endTime.Format("2006-01-02 15:04:05")
-		conf.LastSyncTime = &endTime
+		// 游标取本次运行开始时间：运行期间写入的笔记/附件时间戳晚于 startTime，下一轮仍会导出；
+		// 取结束时间会让运行窗口内的写入永久漏导（#474）。重复导出未变内容不产生提交。
+		// Cursor = run start: writes during the run are newer than startTime and get exported next run;
+		// using the end time silently drops writes made while the run was in flight (#474).
+		conf.LastSyncTime = &startTime
 	}
 
 	// Update Config Final Status
