@@ -1068,6 +1068,25 @@ func (w *WebsocketServer) App() AppContainer {
 	return w.app
 }
 
+// NewTestClient builds a minimal WebsocketClient bound to this server without a real
+// connection, for unit tests that drive handler code paths (ToResponse dereferences the
+// private app field, which only Run() would otherwise populate). conn stays nil, so
+// writeMessage returns an error instead of panicking, and UserClients stays empty so
+// BroadcastResponse is a no-op.
+// NewTestClient 构造一个绑定到本 server、无真实连接的最小 WebsocketClient，供单元测试
+// 驱动处理器代码路径（ToResponse 会解引用私有 app 字段，此前只有 Run() 会填充它）。
+// conn 保持 nil，writeMessage 只返回错误不 panic；UserClients 保持为空，BroadcastResponse 为 no-op。
+func (w *WebsocketServer) NewTestClient(uid int64) *WebsocketClient {
+	client := &WebsocketClient{
+		app:    w.app,
+		Server: w,
+		SF:     new(singleflight.Group),
+		User:   &UserEntity{UID: uid},
+	}
+	client.initContext("test-trace")
+	return client
+}
+
 func (w *WebsocketServer) Upgrade() {
 	w.up = gws.NewUpgrader(w, &w.config.GWSOption)
 }
