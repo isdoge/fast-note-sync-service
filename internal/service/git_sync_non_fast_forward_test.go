@@ -31,6 +31,7 @@ func newGitSyncNonFastForwardFixture(t *testing.T, notePages [][]*domain.Note) *
 
 	repo := new(domainmocks.MockGitSyncRepository)
 	f.svc = newTestGitSyncService(repo)
+	enableLocalGitRepoPaths(t, f.svc)
 
 	noteRepo := f.svc.noteRepo.(*domainmocks.MockNoteRepository)
 	noteRepo.On("ListByUpdatedTimestampPage", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).

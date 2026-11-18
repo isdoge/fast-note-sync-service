@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -95,6 +96,9 @@ type gitSyncService struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
+	// Only _test.go enables local remotes, per service instance; production always rejects them.
+	// 仅 _test.go 按实例开启本地远端；生产环境始终拒绝。
+	allowLocalRepoPathsForTest atomic.Bool
 	// enabledCache caches, per (uid, vaultID), whether NotifyUpdated found any enabled git
 	// sync config on its last DB lookup, so writes to vaults without git sync configured
 	// (the common case) skip the ListByVaultID query entirely.
@@ -187,7 +191,7 @@ func (s *gitSyncService) GetConfig(ctx context.Context, uid int64, vaultID int64
 func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dto.GitSyncConfigRequest) (*dto.GitSyncConfigDTO, error) {
 	// Validate Repository URL security and format
 	// 验证仓库 URL 的安全性和格式
-	if err := validateRepoURL(params.RepoURL, s.gitConf.AllowedPrivateHosts); err != nil {
+	if err := s.repoURLValidator().validateRepoURL(params.RepoURL); err != nil {
 		return nil, err
 	}
 
@@ -330,7 +334,7 @@ func (s *gitSyncService) DeleteConfig(ctx context.Context, uid int64, id int64) 
 func (s *gitSyncService) Validate(ctx context.Context, params *dto.GitSyncValidateRequest) error {
 	// Validate Repository URL security and format
 	// 验证仓库 URL 的安全性和格式
-	if err := validateRepoURL(params.RepoURL, s.gitConf.AllowedPrivateHosts); err != nil {
+	if err := s.repoURLValidator().validateRepoURL(params.RepoURL); err != nil {
 		return err
 	}
 
@@ -425,6 +429,12 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) e
 	}
 	if conf == nil {
 		return code.ErrorGitSyncNotFound
+	}
+
+	// Reject invalid stored URLs before cancelling or starting any background task.
+	// 在取消或启动后台任务之前，先拒绝数据库中遗留的非法仓库地址。
+	if err := s.repoURLValidator().validateRepoURL(conf.RepoURL); err != nil {
+		return err
 	}
 
 	// Strategy: For sync/mirror sync, directly cancel the old task and start a new one

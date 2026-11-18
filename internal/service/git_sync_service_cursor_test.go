@@ -25,6 +25,7 @@ func TestGitSyncService_SyncTask_CursorCoversWritesDuringRun(t *testing.T) {
 	repo.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(&domain.GitSyncConfig{}, nil)
 	repo.On("CreateHistory", mock.Anything, mock.Anything, mock.Anything).Return(&domain.GitSyncHistory{}, nil)
 	svc := newTestGitSyncService(repo)
+	enableLocalGitRepoPaths(t, svc)
 
 	var writeDuringRun int64
 	noteRepo := svc.noteRepo.(*domainmocks.MockNoteRepository)
