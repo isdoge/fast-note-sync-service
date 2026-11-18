@@ -111,6 +111,7 @@ func TestMCPNoteCreateOrUpdate_PathCleaning(t *testing.T) {
 		{"leading slash stripped, .md kept", "/notes/todo.md", "notes/todo.md"},
 		{"uppercase .MD kept as-is", "/notes/TODO.MD", "notes/TODO.MD"},
 		{"plain path with .md", "notes/todo.md", "notes/todo.md"},
+		{"backslash normalized", `notes\todo.md`, "notes/todo.md"},
 		{"plain path without .md", "notes/todo", "notes/todo.md"},
 		{"dot-dot inside filename is legal", "a..b.md", "a..b.md"},
 		{"ellipsis filename is legal", "等等...md", "等等...md"},
@@ -139,10 +140,10 @@ func TestMCPNoteCreateOrUpdate_PathCleaning(t *testing.T) {
 // TestMCPNoteCreateOrUpdate_RejectsBadPath：空/越界/NUL 路径必须被拒且不进入服务层
 func TestMCPNoteCreateOrUpdate_RejectsBadPath(t *testing.T) {
 	badPaths := []string{
-		"",               // empty
-		"../etc/passwd",  // traversal
-		"notes/../../x",  // inner traversal
-		"notes\x00.md",   // NUL byte
+		"",              // empty
+		"../etc/passwd", // traversal
+		"notes/../../x", // inner traversal
+		"notes\x00.md",  // NUL byte
 	}
 	for _, bad := range badPaths {
 		t.Run(fmt.Sprintf("reject %q", bad), func(t *testing.T) {

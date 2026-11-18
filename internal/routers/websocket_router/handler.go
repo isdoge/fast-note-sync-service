@@ -87,18 +87,10 @@ func (h *WSHandler) logWarn(c *pkgapp.WebsocketClient, method string, fields ...
 	h.App.Logger().Warn(method, allFields...)
 }
 
-// validWSPath validates a client-reported vault-relative path WITHOUT
-// rewriting it (#342 S-8): the sync protocol requires the server to store the
-// exact path the client reported (clients key their baseline and hashes by
-// their own path), so the WebSocket entry only rejects — never strips the
-// leading "/" nor appends ".md". The check itself is segment-wise: empty,
-// NUL, or any segment (split on "/" and "\") equal to ".." is rejected;
-// ordinary names like "a..b.md", "等等...md", "100%.md" pass.
-// validWSPath 只校验、不改写客户端上报的库相对路径（#342 S-8）：同步协议
-// 要求服务端按客户端上报的原样路径落库（客户端按自己的路径记基线与哈希），
-// 因此 WebSocket 入口只做拒绝——不去前导 "/"、不补 ".md"。校验本身按段进行：
-// 空路径、含 NUL、任一段（"/" 与 "\" 都算分隔符）等于 ".." 拒绝；
-// "a..b.md"、"等等...md"、"100%.md" 等正常笔记名合法。
+// validWSPath validates paths after the shared JSON/Protobuf binder normalizes
+// backslashes and their hashes (#451). Requests without backslashes retain the
+// existing protocol behavior: leading slashes and extensions are unchanged.
+// validWSPath 在公共绑定处规范化路径和哈希后校验，不额外改写路径。
 func validWSPath(path string) bool {
 	if path == "" {
 		return false

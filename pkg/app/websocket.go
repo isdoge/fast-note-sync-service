@@ -536,6 +536,9 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 			return false, errs
 		}
 		if decoded {
+			if verr := normalizeBoundPaths(obj); verr != nil {
+				return false, ValidErrors{verr}
+			}
 			if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
 				return false, ValidErrors{verr}
 			}
@@ -573,6 +576,9 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 		return false, errs
 	}
 
+	if verr := normalizeBoundPaths(obj); verr != nil {
+		return false, ValidErrors{verr}
+	}
 	if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
 		return false, ValidErrors{verr}
 	}

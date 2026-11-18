@@ -97,6 +97,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 		pathHash := util.EncodeHash32(path)
 
 		note, err := noteSvc.WithClient(getClientInfoFromContext(ctx)).Get(ctx, uid, &dto.NoteGetRequest{
@@ -620,6 +624,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 
 		linkSvc := appContainer.NoteLinkService
 		links, err := linkSvc.GetBacklinks(ctx, uid, &dto.NoteLinkQueryRequest{
@@ -665,6 +673,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 
 		linkSvc := appContainer.NoteLinkService
 		links, err := linkSvc.GetOutlinks(ctx, uid, &dto.NoteLinkQueryRequest{

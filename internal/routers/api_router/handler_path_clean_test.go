@@ -50,6 +50,7 @@ func TestNoteHandler_CreateOrUpdate_PathCleaning(t *testing.T) {
 		{"leading slash stripped, ext kept", `{"vault":"v","path":"/notes/todo.md","content":"x"}`, "notes/todo.md"},
 		{"uppercase ext kept", `{"vault":"v","path":"/notes/TODO.MD","content":"x"}`, "notes/TODO.MD"},
 		{"plain + ext", `{"vault":"v","path":"notes/todo.md","content":"x"}`, "notes/todo.md"},
+		{"backslash normalized", `{"vault":"v","path":"notes\\todo.md","content":"x"}`, "notes/todo.md"},
 		{"dot-dot inside filename is legal", `{"vault":"v","path":"a..b.md","content":"x"}`, "a..b.md"},
 		{"ellipsis filename is legal", `{"vault":"v","path":"等等...md","content":"x"}`, "等等...md"},
 		{"percent filename is legal", `{"vault":"v","path":"100%.md","content":"x"}`, "100%.md"},
