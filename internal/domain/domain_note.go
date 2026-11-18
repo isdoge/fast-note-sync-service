@@ -79,20 +79,36 @@ type NoteRepository interface {
 	GetByID(ctx context.Context, id, uid int64) (*Note, error)
 
 	// GetByPathHash 根据路径哈希获取笔记（排除已删除）
+	// 哈希命中多个不同路径时返回 ErrAmbiguousPathHash；有路径时使用下方带路径的方法。
 	GetByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*Note, error)
+
+	// 带完整路径的查询，碰撞路径互不影响。
+	GetByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*Note, error)
 
 	// GetByPathHashIncludeRecycle 根据路径哈希获取笔记（可选包含回收站）
 	GetByPathHashIncludeRecycle(ctx context.Context, pathHash string, vaultID, uid int64, isRecycle bool) (*Note, error)
 
+	// 带完整路径的查询，碰撞路径互不影响。
+	GetByPathHashAndPathIncludeRecycle(ctx context.Context, pathHash, path string, vaultID, uid int64, isRecycle bool) (*Note, error)
+
 	// GetAllByPathHash 根据路径哈希获取笔记（包含所有状态）
 	GetAllByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*Note, error)
+
+	// 带完整路径的查询，碰撞路径互不影响。
+	GetAllByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*Note, error)
 
 	// ListByPathHash 根据路径哈希获取笔记列表（处理重复记录）
 	ListByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) ([]*Note, error)
 
+	// 带完整路径的查询，碰撞路径互不影响。
+	ListByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*Note, error)
+
 	// ListByPathHashesMeta 单次查询批量获取一组路径哈希对应的笔记元数据（不读正文，含所有状态）
 	// 用于批量存在性预检查，避免逐条查询的 N+1
 	ListByPathHashesMeta(ctx context.Context, pathHashes []string, vaultID, uid int64) (map[string]*Note, error)
+
+	// ListByPathsMeta 以路径为键批量获取元数据，不读取正文。
+	ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*Note, error)
 
 	// GetByPath 根据路径获取笔记
 	GetByPath(ctx context.Context, path string, vaultID, uid int64) (*Note, error)

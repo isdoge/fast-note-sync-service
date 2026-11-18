@@ -276,3 +276,43 @@ var _ domain.NoteRepository = (*MockNoteRepository)(nil)
 
 // suppress unused import warning for time
 var _ = time.Now
+
+func (m *MockNoteRepository) GetByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*domain.Note, error) {
+	args := m.Called(ctx, pathHash, path, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.Note), args.Error(1)
+}
+
+func (m *MockNoteRepository) GetByPathHashAndPathIncludeRecycle(ctx context.Context, pathHash, path string, vaultID, uid int64, isRecycle bool) (*domain.Note, error) {
+	args := m.Called(ctx, pathHash, path, vaultID, uid, isRecycle)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.Note), args.Error(1)
+}
+
+func (m *MockNoteRepository) GetAllByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*domain.Note, error) {
+	args := m.Called(ctx, pathHash, path, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.Note), args.Error(1)
+}
+
+func (m *MockNoteRepository) ListByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*domain.Note, error) {
+	args := m.Called(ctx, pathHash, path, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.Note), args.Error(1)
+}
+
+func (m *MockNoteRepository) ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*domain.Note, error) {
+	args := m.Called(ctx, paths, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[string]*domain.Note), args.Error(1)
+}

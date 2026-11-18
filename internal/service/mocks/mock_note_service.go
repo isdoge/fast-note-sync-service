@@ -218,3 +218,11 @@ func (m *MockNoteService) CleanDuplicateNotesAll(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)
 }
+
+func (m *MockNoteService) ExistsPathsBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]bool, error) {
+	args := m.Called(ctx, uid, vault, paths)
+	if v := args.Get(0); v != nil {
+		return v.(map[string]bool), args.Error(1)
+	}
+	return nil, args.Error(1)
+}

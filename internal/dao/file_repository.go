@@ -188,6 +188,9 @@ func (r *fileRepository) GetByID(ctx context.Context, id, uid int64) (*domain.Fi
 // "早已删除"。这里活跃行优先，其次取 id 较新者。
 func (r *fileRepository) GetByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*domain.File, error) {
 	u := r.file(uid).File
+	if err := requireUnambiguousPath(u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash)).UnderlyingDB()); err != nil {
+		return nil, err
+	}
 	var m model.File
 	err := u.WithContext(ctx).Where(
 		u.VaultID.Eq(vaultID),
@@ -772,8 +775,16 @@ func (r *fileRepository) RecycleClear(ctx context.Context, path, pathHash string
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.file(uid).File
 		q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0))
+		if path != "" {
+			q = q.Where(u.Path.Eq(path))
+		}
 		if pathHash != "" {
 			q = q.Where(u.PathHash.Eq(pathHash))
+		}
+		if path == "" && pathHash != "" {
+			if err := requireUnambiguousPath(q.UnderlyingDB()); err != nil {
+				return err
+			}
 		}
 		_, err := q.UpdateSimple(
 			u.Rename.Value(2),
@@ -891,4 +902,44 @@ func (r *fileRepository) DeleteByVaultID(ctx context.Context, vaultID, uid int64
 
 		return nil
 	})
+}
+
+// GetByPathHashAndPath restricts the hash lookup to the requested path.
+// GetByPathHashAndPath 将哈希查询限定到请求路径，保留原有状态与墓碑语义。
+func (r *fileRepository) GetByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*domain.File, error) {
+	if path == "" {
+		return r.GetByPathHash(ctx, pathHash, vaultID, uid)
+	}
+	u := r.file(uid).File
+	var m model.File
+	err := u.WithContext(ctx).Where(
+		u.VaultID.Eq(vaultID),
+		u.PathHash.Eq(pathHash),
+		u.Path.Eq(path),
+	).UnderlyingDB().
+		Order("CASE WHEN action = 'delete' THEN 1 ELSE 0 END ASC, id DESC").
+		First(&m).Error
+	if err != nil {
+		return nil, err
+	}
+	return r.toDomain(&m, uid), nil
+}
+
+// ListByPathHashAndPath restricts the hash lookup to the requested path.
+// ListByPathHashAndPath 将哈希查询限定到请求路径，保留原有状态与墓碑语义。
+func (r *fileRepository) ListByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*domain.File, error) {
+	u := r.file(uid).File
+	mList, err := u.WithContext(ctx).Where(
+		u.VaultID.Eq(vaultID),
+		u.PathHash.Eq(pathHash),
+		u.Path.Eq(path),
+	).Find()
+	if err != nil {
+		return nil, err
+	}
+	var list []*domain.File
+	for _, m := range mList {
+		list = append(list, r.toDomain(m, uid))
+	}
+	return list, nil
 }

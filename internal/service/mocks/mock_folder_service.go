@@ -112,8 +112,12 @@ func (m *MockFolderService) SyncResourceFID(ctx context.Context, uid int64, vaul
 	return args.Error(0)
 }
 
-func (m *MockFolderService) IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64) (bool, error) {
-	args := m.Called(ctx, uid, vault, pathHash, mtime)
+func (m *MockFolderService) IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64, paths ...string) (bool, error) {
+	callArgs := []interface{}{ctx, uid, vault, pathHash, mtime}
+	for _, path := range paths {
+		callArgs = append(callArgs, path)
+	}
+	args := m.Called(callArgs...)
 	return args.Bool(0), args.Error(1)
 }
 

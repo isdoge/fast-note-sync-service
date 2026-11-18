@@ -174,7 +174,7 @@ func TestSyncNewEntries_PathValidationAndTimes(t *testing.T) {
 				require.Zero(t, zero.Mtime)
 			case "folder":
 				d.On("ListByUpdatedTimestamp", mock.Anything, int64(1), "v", int64(0)).Return([]*dto.FolderDTO{}, nil)
-				d.On("IsStaleRevive", mock.Anything, int64(1), "v", "good", int64(1700000000000)).Return(false, nil).Once()
+				d.On("IsStaleRevive", mock.Anything, int64(1), "v", "good", int64(1700000000000), "normal/x").Return(false, nil).Once()
 				d.On("UpdateOrCreate", mock.Anything, int64(1), mock.MatchedBy(func(p *dto.FolderCreateRequest) bool { return p.Path == "normal/x" })).Return(&dto.FolderDTO{}, nil).Once()
 				NewFolderWSHandler(a).doFolderSync(c, &dto.FolderSyncRequest{Vault: "v", Context: ctx, Folders: []dto.FolderSyncCheckRequest{{Path: "../x", PathHash: "bad", Mtime: 1700000000}, {Path: "normal/x", PathHash: "good", Mtime: 1700000000}}})
 				endAction = FolderSyncEnd

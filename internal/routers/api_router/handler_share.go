@@ -215,7 +215,7 @@ func (h *ShareHandler) Query(c *gin.Context) {
 	uid := pkgapp.GetUID(c)
 	ctx := c.Request.Context()
 
-	share, err := h.App.ShareService.GetShareByPath(ctx, uid, params.Vault, params.PathHash)
+	share, err := h.App.ShareService.GetShareByPath(ctx, uid, params.Vault, params.PathHash, params.Path)
 	if err != nil {
 		if cObj, ok := err.(*code.Code); ok {
 			response.ToResponse(cObj)
@@ -299,7 +299,7 @@ func (h *ShareHandler) Cancel(c *gin.Context) {
 		}
 		err = h.App.ShareService.StopShare(ctx, uid, params.ID)
 	} else if params.Vault != "" && params.PathHash != "" {
-		err = h.App.ShareService.StopShareByPath(ctx, uid, params.Vault, params.PathHash)
+		err = h.App.ShareService.StopShareByPath(ctx, uid, params.Vault, params.PathHash, params.Path)
 	} else {
 		response.ToResponse(code.ErrorInvalidParams.WithDetails("Either ID or Vault + PathHash must be provided"))
 		return

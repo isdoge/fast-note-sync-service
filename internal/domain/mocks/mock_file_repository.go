@@ -209,3 +209,19 @@ func (m *MockFileRepository) RecycleClear(ctx context.Context, path, pathHash st
 // Compile-time check: MockFileRepository must implement domain.FileRepository.
 // 编译时检查：MockFileRepository 必须实现 domain.FileRepository 接口。
 var _ domain.FileRepository = (*MockFileRepository)(nil)
+
+func (m *MockFileRepository) GetByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*domain.File, error) {
+	args := m.Called(ctx, pathHash, path, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.File), args.Error(1)
+}
+
+func (m *MockFileRepository) ListByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*domain.File, error) {
+	args := m.Called(ctx, pathHash, path, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.File), args.Error(1)
+}

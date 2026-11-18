@@ -88,7 +88,7 @@ func TestFolderService_DeleteTree_MissingAttachmentStorage(t *testing.T) {
 	vaultRepo.On("GetByName", mock.Anything, "vault", int64(1)).Return(&domain.Vault{ID: 1, Name: "vault"}, nil)
 	vaultSvc := NewVaultService(vaultRepo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, zap.NewNop())
 	root := &domain.Folder{ID: 1, VaultID: 1, Path: "assets", Action: domain.FolderActionCreate}
-	folderRepo.On("GetAllByPathHash", mock.Anything, mock.Anything, int64(1), int64(1)).
+	folderRepo.On("GetAllByPathHashAndPath", mock.Anything, mock.Anything, mock.Anything, int64(1), int64(1)).
 		Return([]*domain.Folder{root}, nil)
 	folderRepo.On("ListByPathPrefix", mock.Anything, "assets", int64(1), int64(1)).
 		Return([]*domain.Folder{}, nil)
