@@ -18,7 +18,7 @@ const (
 )
 
 var (
-	DefaultOAuthScopesSupported = []string{"notes:read", "notes:write", "files:read", "files:write", "vaults:read"}
+	DefaultOAuthScopesSupported = []string{"notes:read", "notes:write", "notes:purge", "files:read", "files:write", "files:purge", "vaults:read", "vaults:write"}
 	DefaultOAuthRequiredScopes  = []string{"notes:read", "files:read", "vaults:read"}
 )
 
@@ -55,6 +55,12 @@ type OAuthConfig struct {
 	DefaultClientName    string                    `yaml:"default-client-name"`
 	DefaultClientVersion string                    `yaml:"default-client-version"`
 	DefaultVaultName     string                    `yaml:"default-vault-name"`
+	// Vaults restricts OAuth-authenticated MCP access to the listed vaults.
+	// Empty means unrestricted (all vaults of the mapped user), which keeps
+	// existing connectors working; configure to tighten.
+	// Vaults 限制 OAuth 鉴权的 MCP 只能访问列出的笔记库。
+	// 默认空 = 不限制（映射用户的所有库），现有连接器不受影响；配置后收紧。
+	Vaults []string `yaml:"vaults"`
 	SubjectMapping       OAuthSubjectMappingConfig `yaml:"subject-mapping"`
 	DefaultFNSScope      string                    `yaml:"default-fns-scope"`
 	Stytch               StytchOAuthConfig         `yaml:"stytch"`

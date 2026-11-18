@@ -41,7 +41,7 @@ func TestLoadConfig_OAuthDefaults(t *testing.T) {
 	if cfg.OAuth.SubjectMapping.Claim != "email" {
 		t.Fatalf("OAuth.SubjectMapping.Claim = %q, want email", cfg.OAuth.SubjectMapping.Claim)
 	}
-	if got, want := strings.Join(cfg.OAuth.ScopesSupported, " "), "notes:read notes:write files:read files:write vaults:read"; got != want {
+	if got, want := strings.Join(cfg.OAuth.ScopesSupported, " "), "notes:read notes:write notes:purge files:read files:write files:purge vaults:read vaults:write"; got != want {
 		t.Fatalf("OAuth.ScopesSupported = %q, want %q", got, want)
 	}
 	if got, want := strings.Join(cfg.OAuth.RequiredScopes, " "), "notes:read files:read vaults:read"; got != want {

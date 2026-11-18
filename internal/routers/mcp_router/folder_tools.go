@@ -24,11 +24,20 @@ func registerFolderTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkga
 		mcp.WithString("path", mcp.Required(), mcp.Description("Exact vault-relative folder path to delete recursively, separated by '/'; a leading '/' is stripped.")),
 		mcp.WithOutputSchema[mcpFolderMutationOutput](),
 	)
-	srv.AddTool(writeMCPTool(toolDeleteFolder, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	srv.AddTool(writeMCPTool(toolDeleteFolder, cfg, true, "notes:write", "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// DeleteTree soft-deletes every note AND attachment under the folder,
+		// so both note_w and file_w are required.
+		// DeleteTree 会软删除目录下全部笔记与附件，因此需要 note_w 与 file_w。
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		if err := checkPermission(ctx, "file_w"); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {

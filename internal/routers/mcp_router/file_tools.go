@@ -37,7 +37,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "file_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -88,7 +91,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "file_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -131,7 +137,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "file_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -181,7 +190,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "file_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -227,7 +239,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "file_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -290,7 +305,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "file_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -331,11 +349,11 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		mcp.WithString("path", mcp.Description("File path, relative to the vault root, separated by '/'; a leading '/' is stripped. If empty, potentially clear all")),
 		mcp.WithOutputSchema[mcpFileRecycleClearOutput](),
 	)
-	srv.AddTool(writeMCPTool(toolRecycleClearFile, cfg, true, "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := checkPermission(ctx, "file_w"); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+	srv.AddTool(writeMCPTool(toolRecycleClearFile, cfg, true, "files:write", "files:purge"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -345,6 +363,18 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		// Clearing the whole recycle bin requires the dedicated file_purge
+		// capability; a single-path clear stays file_w.
+		// 清空整个回收站需要专属的 file_purge 能力；指定路径的清理维持 file_w。
+		if path == "" {
+			if err := checkPermission(ctx, "file_purge"); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+		} else {
+			if err := checkPermission(ctx, "file_w"); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+		}
 		if path != "" {
 			var cerr error
 			path, cerr = cleanToolPath(path)
@@ -382,7 +412,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "file_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
