@@ -1631,19 +1631,37 @@ func (w *WebsocketServer) GetSession(uid string, sessionID string) any {
 // GetSessionByPathHash 通过路径哈希获取全局二进制上传会话
 //
 //go:noinline
-func (w *WebsocketServer) GetSessionByPathHash(uid string, pathHash string) any {
+func (w *WebsocketServer) GetSessionByPathHash(uid string, pathHash string, identity ...string) any {
 	w.sessionsMu.RLock()
 	defer w.sessionsMu.RUnlock()
-	if userSessions, ok := w.binaryChunkSessions[uid]; ok {
-		for _, session := range userSessions {
-			if getter, ok := session.(PathHashGetter); ok {
-				if getter.GetPathHash() == pathHash {
-					return session
-				}
+	var found any
+	for _, session := range w.binaryChunkSessions[uid] {
+		if sessionMatchesPath(session, pathHash, identity) {
+			if found != nil {
+				return nil
 			}
+			found = session
 		}
 	}
-	return nil
+	return found
+}
+
+// sessionMatchesPath scopes upload sessions by vault and full path when available.
+// sessionMatchesPath 在路径可用时以库名和完整路径限定上传会话。
+func sessionMatchesPath(session any, pathHash string, identity []string) bool {
+	getter, ok := session.(PathHashGetter)
+	if !ok || getter.GetPathHash() != pathHash {
+		return false
+	}
+	if len(identity) == 0 {
+		return true
+	}
+	scoped, ok := session.(interface{ GetPathIdentity() (string, string) })
+	if !ok || len(identity) != 2 {
+		return false
+	}
+	vault, path := scoped.GetPathIdentity()
+	return vault == identity[0] && (identity[1] == "" || path == identity[1])
 }
 
 // RemoveSession removes global binary upload session
@@ -1661,7 +1679,7 @@ func (w *WebsocketServer) RemoveSession(uid string, sessionID string) {
 
 // CleanSessionsByPathHash cleans up existing sessions for a specific path hash of a user
 // CleanSessionsByPathHash 清理用户特定路径哈希的现有会话
-func (w *WebsocketServer) CleanSessionsByPathHash(uid string, pathHash string) {
+func (w *WebsocketServer) CleanSessionsByPathHash(uid string, pathHash string, identity ...string) {
 	w.sessionsMu.Lock()
 	defer w.sessionsMu.Unlock()
 
@@ -1672,11 +1690,14 @@ func (w *WebsocketServer) CleanSessionsByPathHash(uid string, pathHash string) {
 
 	var sessionIDsToRemove []string
 	for sessionID, session := range userSessions {
-		if getter, ok := session.(PathHashGetter); ok {
-			if getter.GetPathHash() == pathHash {
-				sessionIDsToRemove = append(sessionIDsToRemove, sessionID)
-			}
+		if sessionMatchesPath(session, pathHash, identity) {
+			sessionIDsToRemove = append(sessionIDsToRemove, sessionID)
 		}
+	}
+	// A legacy hash-only cleanup must not choose between multiple uploads.
+	// 旧的纯哈希清理不能在多个上传之间任选目标。
+	if (len(identity) == 0 || len(identity) == 2 && identity[1] == "") && len(sessionIDsToRemove) > 1 {
+		return
 	}
 
 	for _, sessionID := range sessionIDsToRemove {

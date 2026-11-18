@@ -131,8 +131,8 @@ func TestNoteService_Rename_MigratesNoteHistory(t *testing.T) {
 
 	// Rename 主流程依赖
 	vaultSvc.On("MustGetID", mock.Anything, int64(1), "obsidian-vault").Return(int64(1), nil)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "newpathhash", int64(1), int64(1)).Return(nil, nil)
-	noteRepo.On("GetByPathHash", mock.Anything, "oldpathhash", int64(1), int64(1)).Return(oldNote, nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "newpathhash", mock.Anything, int64(1), int64(1)).Return(nil, nil)
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "oldpathhash", mock.Anything, int64(1), int64(1)).Return(oldNote, nil)
 	noteRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(oldNote, nil)
 	folderSvc.On("EnsurePathFID", mock.Anything, int64(1), int64(1), "").Return(int64(10), nil)
 	noteRepo.On("Create", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(newNote, nil)
@@ -208,8 +208,8 @@ func TestNoteService_Rename_NewRecordKeepsSize(t *testing.T) {
 	var created *domain.Note
 
 	vaultSvc.On("MustGetID", mock.Anything, int64(1), "obsidian-vault").Return(int64(1), nil)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "newpathhash", int64(1), int64(1)).Return(nil, nil)
-	noteRepo.On("GetByPathHash", mock.Anything, "oldpathhash", int64(1), int64(1)).Return(oldNote, nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "newpathhash", mock.Anything, int64(1), int64(1)).Return(nil, nil)
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "oldpathhash", mock.Anything, int64(1), int64(1)).Return(oldNote, nil)
 	noteRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(oldNote, nil)
 	folderSvc.On("EnsurePathFID", mock.Anything, int64(1), int64(1), "目录").Return(int64(11), nil)
 	noteRepo.On("Create", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).
@@ -260,8 +260,8 @@ func TestNoteService_Rename_ReusedRecordTakesSizeAndCtime(t *testing.T) {
 	var updated []domain.Note
 
 	vaultSvc.On("MustGetID", mock.Anything, int64(1), "obsidian-vault").Return(int64(1), nil)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "newpathhash", int64(1), int64(1)).Return(deletedAtTarget, nil)
-	noteRepo.On("GetByPathHash", mock.Anything, "oldpathhash", int64(1), int64(1)).Return(oldNote, nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "newpathhash", mock.Anything, int64(1), int64(1)).Return(deletedAtTarget, nil)
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "oldpathhash", mock.Anything, int64(1), int64(1)).Return(oldNote, nil)
 	noteRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).
 		Run(func(args mock.Arguments) {
 			updated = append(updated, *args.Get(1).(*domain.Note))

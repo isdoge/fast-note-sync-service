@@ -29,12 +29,12 @@ func TestCleanDuplicateFolders(t *testing.T) {
 		wantDeletedIDs []int64          // expected deleted IDs (order-insensitive) / 期望被删除的 ID（顺序无关）
 	}{
 		{
-			// When a hash has both delete and create records, the active ones should be deleted.
-			// 当同一 hash 既有 delete 也有 create 记录时，应删除 active 记录。
+			// When a path has both delete and create records, the active ones should be deleted.
+			// 当同一路径 既有 delete 也有 create 记录时，应删除 active 记录。
 			name: "mixed deleted and active - delete active",
 			folders: []*domain.Folder{
-				{ID: 1, PathHash: "h1", Action: domain.FolderActionDelete},
-				{ID: 2, PathHash: "h1", Action: domain.FolderActionCreate},
+				{ID: 1, Path: "h1", PathHash: "h1", Action: domain.FolderActionDelete},
+				{ID: 2, Path: "h1", PathHash: "h1", Action: domain.FolderActionCreate},
 			},
 			wantDeletedIDs: []int64{2},
 		},
@@ -43,19 +43,19 @@ func TestCleanDuplicateFolders(t *testing.T) {
 			// 当所有记录都是 active 时，保留最大 ID，删除其余记录。
 			name: "all active - keep max ID",
 			folders: []*domain.Folder{
-				{ID: 3, PathHash: "h2", Action: domain.FolderActionCreate},
-				{ID: 4, PathHash: "h2", Action: domain.FolderActionCreate},
-				{ID: 5, PathHash: "h2", Action: domain.FolderActionCreate},
+				{ID: 3, Path: "h2", PathHash: "h2", Action: domain.FolderActionCreate},
+				{ID: 4, Path: "h2", PathHash: "h2", Action: domain.FolderActionCreate},
+				{ID: 5, Path: "h2", PathHash: "h2", Action: domain.FolderActionCreate},
 			},
 			wantDeletedIDs: []int64{3, 4},
 		},
 		{
-			// When each hash has only one record, nothing should be deleted.
-			// 当每个 hash 只有一条记录时，不应删除任何内容。
+			// When each path has only one record, nothing should be deleted.
+			// 当每个路径 只有一条记录时，不应删除任何内容。
 			name: "no duplicates - delete nothing",
 			folders: []*domain.Folder{
-				{ID: 6, PathHash: "h3", Action: domain.FolderActionCreate},
-				{ID: 7, PathHash: "h4", Action: domain.FolderActionCreate},
+				{ID: 6, Path: "h3", PathHash: "h3", Action: domain.FolderActionCreate},
+				{ID: 7, Path: "h4", PathHash: "h4", Action: domain.FolderActionCreate},
 			},
 			wantDeletedIDs: nil,
 		},
@@ -102,7 +102,7 @@ func TestFolderService_DeleteTree_RecursivelySoftDeletesChildrenAndResources(t *
 	file := &domain.File{ID: 30, VaultID: vaultID, Action: domain.FileActionCreate, Path: "Projects/assets/image.png", PathHash: util.EncodeHash32("Projects/assets/image.png")}
 
 	vaultRepo.On("GetByName", mock.Anything, vaultName, uid).Return(&domain.Vault{ID: vaultID, Name: vaultName}, nil)
-	folderRepo.On("GetAllByPathHash", mock.Anything, root.PathHash, vaultID, uid).Return([]*domain.Folder{root}, nil)
+	folderRepo.On("GetAllByPathHashAndPath", mock.Anything, root.PathHash, mock.Anything, vaultID, uid).Return([]*domain.Folder{root}, nil)
 	folderRepo.On("ListByPathPrefix", mock.Anything, "Projects", vaultID, uid).Return([]*domain.Folder{child}, nil)
 	noteRepo.On("ListByPathPrefix", mock.Anything, "Projects", vaultID, uid).Return([]*domain.Note{note}, nil)
 	fileRepo.On("ListByPathPrefix", mock.Anything, "Projects", vaultID, uid).Return([]*domain.File{file}, nil)
@@ -158,7 +158,7 @@ func TestFolderService_DeleteTree_RejectsRootPath(t *testing.T) {
 
 	assert.Nil(t, got)
 	assert.Error(t, err)
-	folderRepo.AssertNotCalled(t, "GetAllByPathHash", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	folderRepo.AssertNotCalled(t, "GetAllByPathHashAndPath", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	vaultRepo.AssertExpectations(t)
 }
 
@@ -174,7 +174,7 @@ func TestFolderService_CleanupEmptyAncestors_StopsAtFirstNonEmptyFolder(t *testi
 	emptyChild := &domain.Folder{ID: 11, VaultID: vaultID, Action: domain.FolderActionCreate, Path: "Projects/Archive", PathHash: util.EncodeHash32("Projects/Archive")}
 	nonEmptyParent := &domain.Folder{ID: 10, VaultID: vaultID, Action: domain.FolderActionCreate, Path: "Projects", PathHash: util.EncodeHash32("Projects")}
 
-	folderRepo.On("GetAllByPathHash", mock.Anything, emptyChild.PathHash, vaultID, uid).Return([]*domain.Folder{emptyChild}, nil)
+	folderRepo.On("GetAllByPathHashAndPath", mock.Anything, emptyChild.PathHash, mock.Anything, vaultID, uid).Return([]*domain.Folder{emptyChild}, nil)
 	folderRepo.On("GetByFID", mock.Anything, emptyChild.ID, vaultID, uid).Return([]*domain.Folder{}, nil)
 	noteRepo.On("ListByFIDsCount", mock.Anything, []int64{emptyChild.ID}, vaultID, uid).Return(int64(0), nil)
 	fileRepo.On("ListByFIDsCount", mock.Anything, []int64{emptyChild.ID}, vaultID, uid).Return(int64(0), nil)
@@ -182,7 +182,7 @@ func TestFolderService_CleanupEmptyAncestors_StopsAtFirstNonEmptyFolder(t *testi
 		return f.ID == emptyChild.ID && f.Action == domain.FolderActionDelete
 	}), uid).Return(emptyChild, nil)
 
-	folderRepo.On("GetAllByPathHash", mock.Anything, nonEmptyParent.PathHash, vaultID, uid).Return([]*domain.Folder{nonEmptyParent}, nil)
+	folderRepo.On("GetAllByPathHashAndPath", mock.Anything, nonEmptyParent.PathHash, mock.Anything, vaultID, uid).Return([]*domain.Folder{nonEmptyParent}, nil)
 	folderRepo.On("GetByFID", mock.Anything, nonEmptyParent.ID, vaultID, uid).Return([]*domain.Folder{}, nil)
 	noteRepo.On("ListByFIDsCount", mock.Anything, []int64{nonEmptyParent.ID}, vaultID, uid).Return(int64(1), nil)
 

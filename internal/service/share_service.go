@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"mime"
@@ -131,11 +132,11 @@ type ShareService interface {
 
 	// GetShareByPath retrieves share info by path
 	// GetShareByPath 根据路径获取分享信息
-	GetShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string) (*domain.UserShare, error)
+	GetShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string, paths ...string) (*domain.UserShare, error)
 
 	// StopShareByPath revokes a share by path
 	// StopShareByPath 根据路径撤销分享
-	StopShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string) error
+	StopShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string, paths ...string) error
 
 	// GetActiveNotePathsByVault returns active shared note paths for a vault
 	// GetActiveNotePathsByVault 返回指定 vault 下所有有效分享的笔记路径列表
@@ -218,7 +219,7 @@ func (s *shareService) ShareGenerate(ctx context.Context, uid int64, vaultName s
 	if isNote {
 		// Try looking up as Note
 		// 尝试作为 Note 查找
-		note, err := s.noteRepo.GetByPathHash(ctx, pathHash, vaultID, uid)
+		note, err := s.noteRepo.GetByPathHashAndPath(ctx, pathHash, path, vaultID, uid)
 		if err == nil && note != nil && note.Action != domain.NoteActionDelete {
 			mainID = note.ID
 			mainType = "note"
@@ -243,7 +244,7 @@ func (s *shareService) ShareGenerate(ctx context.Context, uid int64, vaultName s
 	} else {
 		// Try looking up as File
 		// 尝试作为 File 查找
-		file, err := s.fileRepo.GetByPathHash(ctx, pathHash, vaultID, uid)
+		file, err := s.fileRepo.GetByPathHashAndPath(ctx, pathHash, path, vaultID, uid)
 		if err == nil && file != nil && file.Action != domain.FileActionDelete {
 			mainID = file.ID
 			mainType = "file"
@@ -472,7 +473,7 @@ func (s *shareService) UpdateSharePassword(ctx context.Context, uid int64, vault
 	}
 
 	// 2. Get UserShare by resource
-	share, err := s.repo.GetByPath(ctx, uid, vault.ID, pathHash)
+	share, err := s.repo.GetByPathAndHash(ctx, uid, vault.ID, path, pathHash)
 	if err != nil {
 		return err
 	}
@@ -697,7 +698,11 @@ func (s *shareService) shareVaultName(ctx context.Context, uid int64, share *dom
 
 // GetShareByPath retrieves share info by path
 // GetShareByPath 根据路径获取分享信息
-func (s *shareService) GetShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string) (*domain.UserShare, error) {
+func (s *shareService) GetShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string, paths ...string) (*domain.UserShare, error) {
+	path := ""
+	if len(paths) > 0 {
+		path = paths[0]
+	}
 	vault, err := s.vaultRepo.GetByName(ctx, vaultName, uid)
 	if err != nil {
 		return nil, err
@@ -707,12 +712,18 @@ func (s *shareService) GetShareByPath(ctx context.Context, uid int64, vaultName 
 	resType := ""
 
 	// Check if it's a note or file
-	note, err := s.noteRepo.GetByPathHash(ctx, pathHash, vault.ID, uid)
+	note, err := s.noteRepo.GetByPathHashAndPath(ctx, pathHash, path, vault.ID, uid)
+	if errors.Is(err, domain.ErrAmbiguousPathHash) {
+		return nil, err
+	}
 	if err == nil && note != nil {
 		resID = note.ID
 		resType = "note"
 	} else {
-		file, err := s.fileRepo.GetByPathHash(ctx, pathHash, vault.ID, uid)
+		file, err := s.fileRepo.GetByPathHashAndPath(ctx, pathHash, path, vault.ID, uid)
+		if errors.Is(err, domain.ErrAmbiguousPathHash) {
+			return nil, err
+		}
 		if err == nil && file != nil {
 			resID = file.ID
 			resType = "file"
@@ -746,7 +757,7 @@ func (s *shareService) CreateShortLink(ctx context.Context, uid int64, vaultName
 	}
 
 	// Find existing share record by path using vault.ID
-	share, err := s.repo.GetByPath(ctx, uid, vault.ID, pathHash)
+	share, err := s.repo.GetByPathAndHash(ctx, uid, vault.ID, path, pathHash)
 	if err != nil {
 		return "", err
 	}
@@ -809,8 +820,8 @@ func (s *shareService) CreateShortLink(ctx context.Context, uid int64, vaultName
 
 // StopShareByPath revokes a share by path
 // StopShareByPath 根据路径撤销分享
-func (s *shareService) StopShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string) error {
-	share, err := s.GetShareByPath(ctx, uid, vaultName, pathHash)
+func (s *shareService) StopShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string, paths ...string) error {
+	share, err := s.GetShareByPath(ctx, uid, vaultName, pathHash, paths...)
 	if err != nil {
 		return err
 	}

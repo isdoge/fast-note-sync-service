@@ -108,3 +108,19 @@ func (m *MockFolderRepository) DeleteByVaultID(ctx context.Context, vaultID, uid
 // Compile-time check: MockFolderRepository must implement domain.FolderRepository.
 // 编译时检查：MockFolderRepository 必须实现 domain.FolderRepository 接口。
 var _ domain.FolderRepository = (*MockFolderRepository)(nil)
+
+func (m *MockFolderRepository) GetByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*domain.Folder, error) {
+	args := m.Called(ctx, pathHash, path, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.Folder), args.Error(1)
+}
+
+func (m *MockFolderRepository) GetAllByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*domain.Folder, error) {
+	args := m.Called(ctx, pathHash, path, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.Folder), args.Error(1)
+}
