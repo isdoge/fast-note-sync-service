@@ -17,6 +17,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/gin-gonic/gin"
@@ -280,6 +281,8 @@ type WebsocketClient struct {
 	UserClients         ConnStorage               // User connection pool // 用户连接池，支持多设备在线时广播或单点通信
 	SF                  *singleflight.Group       // Concurrency control // 并发控制：相同 key 的请求只执行一次，其余等待结果
 	BinaryMu            sync.Mutex                // Synchronization lock when reading and writing data // 用于读写数据时的同步锁 (不再保护 map 存储)
+	broadcastVaultsMu   sync.RWMutex              // Guards declaredVaults independently of Server.mu // 独立保护 declaredVaults，不依赖 Server.mu
+	declaredVaults      map[string]struct{}       // Vaults successfully declared by requests on this connection // 本连接通过请求成功声明的笔记库
 	infoMu              sync.RWMutex              // Guards the client-reported connection metadata below (written once by ClientInfo, read concurrently under gws ParallelEnabled) // 保护下方客户端上报的连接元数据（由 ClientInfo 写入一次，gws ParallelEnabled 下会被并发读取）
 	clientName          string                    // Client name (e.g., "Mac", "Windows", "iPhone"); access via ClientName() // 客户端名称 (例如 "Mac", "Windows", "iPhone")；请通过 ClientName() 访问
 	clientType          string                    // Client type "web" | "desktop" | "mobile" | "obsidianPlugin"; access via ClientType() // 客户端类型；请通过 ClientType() 访问
@@ -356,6 +359,37 @@ func (c *WebsocketClient) UseProtobuf() bool {
 	c.infoMu.RLock()
 	defer c.infoMu.RUnlock()
 	return c.useProtobuf
+}
+
+// acceptsBroadcast checks both the token's vault allowlist and the vaults declared on this connection.
+// Empty declaredVaults preserves the legacy behavior for connections that have not declared a vault yet.
+// acceptsBroadcast 同时检查令牌的笔记库白名单和本连接已声明的笔记库。
+// declaredVaults 为空时保留旧行为，供尚未声明笔记库的连接接收广播。
+func (c *WebsocketClient) acceptsBroadcast(vault string) bool {
+	if c.Vaults != "" && !util.VerifyVaultAccess(c.Vaults, vault) {
+		return false
+	}
+	if vault == "" {
+		return true
+	}
+	c.broadcastVaultsMu.RLock()
+	_, declared := c.declaredVaults[vault]
+	hasDeclarations := len(c.declaredVaults) > 0
+	c.broadcastVaultsMu.RUnlock()
+	return !hasDeclarations || declared
+}
+
+// recordBoundVault records a vault only after its request was bound and validated successfully.
+// recordBoundVault 仅在请求绑定及参数校验全部成功后记录其笔记库。
+func (c *WebsocketClient) recordBoundVault(obj any) {
+	if vault, ok := boundStringField(obj, "Vault"); ok && vault != "" {
+		c.broadcastVaultsMu.Lock()
+		if c.declaredVaults == nil {
+			c.declaredVaults = make(map[string]struct{})
+		}
+		c.declaredVaults[vault] = struct{}{}
+		c.broadcastVaultsMu.Unlock()
+	}
 }
 
 // acceptsProtobuf also accepts the legacy ClientInfo upgrade's outbound state.
@@ -536,34 +570,9 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 			return false, errs
 		}
 		if decoded {
-			if verr := normalizeBoundPaths(obj); verr != nil {
-				return false, ValidErrors{verr}
-			}
-			if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
-				return false, ValidErrors{verr}
-			}
-			validator := c.app.Validator()
-			if validator == nil {
-				return true, nil
-			}
-			if err := validator.ValidateStruct(obj); err != nil {
-				if validationErrors, ok := err.(validatorV10.ValidationErrors); ok {
-					v := c.Ctx.Value("trans")
-					trans := v.(ut.Translator)
-					for _, validationErr := range validationErrors {
-						translatedMsg := validationErr.Translate(trans)
-						errs = append(errs, &ValidError{
-							Key:     validationErr.Field(),
-							Message: translatedMsg,
-						})
-					}
-				}
-				return false, errs
-			}
-			return true, nil
+			return c.validateBoundObject(obj)
 		}
 	}
-
 	// Step 1: JSON deserialization (can be replaced by other formats)
 	// BindAndValid Step 1: JSON 反序列化（可替换成其他格式）
 	if err := json.Unmarshal(data, obj); err != nil {
@@ -575,44 +584,48 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 		})
 		return false, errs
 	}
+	return c.validateBoundObject(obj)
+}
 
+// validateBoundObject normalizes, verifies and validates a decoded request before recording its vault.
+// validateBoundObject 在记录库名前规范化、校验库权限并验证已解码的请求参数。
+func (c *WebsocketClient) validateBoundObject(obj any) (bool, ValidErrors) {
+	var errs ValidErrors
 	if verr := normalizeBoundPaths(obj); verr != nil {
 		return false, ValidErrors{verr}
 	}
 	if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
 		return false, ValidErrors{verr}
 	}
-
 	// Step 2: Parameter validation
 	// Step 2: 参数验证
 	validator := c.app.Validator()
-	if validator == nil {
-		return true, nil
-	}
-	if err := validator.ValidateStruct(obj); err != nil {
-		// If verification fails, check error type
-		// 如果验证失败，检查错误类型
-		if validationErrors, ok := err.(validatorV10.ValidationErrors); ok {
-			// Get translator
-			// 获取翻译器
-			v := c.Ctx.Value("trans")
-			trans := v.(ut.Translator)
-
-			// Iterate through validation errors and translate them
-			// 遍历验证错误并进行翻译
-			for _, validationErr := range validationErrors {
-				translatedMsg := validationErr.Translate(trans) // Translate error message
-				// Translate error message
-				// 翻译错误消息
-				errs = append(errs, &ValidError{
-					Key:     validationErr.Field(),
-					Message: translatedMsg,
-				})
+	if validator != nil {
+		if err := validator.ValidateStruct(obj); err != nil {
+			// If verification fails, check error type
+			// 如果验证失败，检查错误类型
+			if validationErrors, ok := err.(validatorV10.ValidationErrors); ok {
+				// Get translator
+				// 获取翻译器
+				v := c.Ctx.Value("trans")
+				trans := v.(ut.Translator)
+				// Iterate through validation errors and translate them
+				// 遍历验证错误并进行翻译
+				for _, validationErr := range validationErrors {
+					translatedMsg := validationErr.Translate(trans) // Translate error message
+					// Translate error message
+					// 翻译错误消息
+					errs = append(errs, &ValidError{
+						Key:     validationErr.Field(),
+						Message: translatedMsg,
+					})
+				}
 			}
+			return false, errs // Return validation error
+			// 返回验证错误
 		}
-		return false, errs // Return validation error
-		// 返回验证错误
 	}
+	c.recordBoundVault(obj)
 	return true, nil
 }
 
@@ -796,7 +809,7 @@ func (c *WebsocketClient) BroadcastResponse(code *code.Code, options ...any) {
 		content.Context = code.Context()
 	}
 
-	c.sendBroadcast(&content, actionType, options[0].(bool))
+	c.sendBroadcast(&content, code.Vault(), actionType, options[0].(bool))
 }
 
 func (c *WebsocketClient) send(responseBytes []byte, isBroadcast bool, isExcludeSelf bool) {
@@ -829,7 +842,7 @@ func (c *WebsocketClient) writeMessage(opcode gws.Opcode, payload []byte) error 
 	return err
 }
 
-func (c *WebsocketClient) sendBroadcast(content *Res, actionType string, isExcludeSelf bool) {
+func (c *WebsocketClient) sendBroadcast(content *Res, vault string, actionType string, isExcludeSelf bool) {
 	// 持锁期间只拷贝目标连接列表，随后立即释放锁——WriteMessage 本身可能阻塞（慢设备/网络抖动），
 	// 不应该在持有 c.Server.mu 期间发生，否则会拖慢该用户下所有其他并发操作。
 	// Only copy the target connection list while holding the lock, then release it right
@@ -842,6 +855,9 @@ func (c *WebsocketClient) sendBroadcast(content *Res, actionType string, isExclu
 			continue
 		}
 		if isExcludeSelf && uc.conn == c.conn {
+			continue
+		}
+		if !uc.acceptsBroadcast(vault) {
 			continue
 		}
 		targets = append(targets, uc)
@@ -1800,7 +1816,10 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 			zap.String("traceID", c.TraceID))
 	}
 
-	log(LogInfo, "WS Client Leave", zap.Int("Count", len(w.clients)), zap.String("traceID", c.TraceID))
+	w.mu.RLock()
+	clientCount := len(w.clients)
+	w.mu.RUnlock()
+	log(LogInfo, "WS Client Leave", zap.Int("Count", clientCount), zap.String("traceID", c.TraceID))
 
 }
 
@@ -2035,6 +2054,9 @@ func (w *WebsocketServer) BroadcastToUser(uid int64, code *code.Code, action str
 
 	for _, uc := range userClients {
 		if uc.conn == nil {
+			continue
+		}
+		if !uc.acceptsBroadcast(code.Vault()) {
 			continue
 		}
 		if err := b.Broadcast(uc.conn); err != nil {
