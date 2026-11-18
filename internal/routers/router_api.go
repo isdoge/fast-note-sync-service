@@ -19,7 +19,11 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 	api := r.Group("/api")
 	{
 		api.Use(middleware.AppInfoWithConfig(app.Name, appContainer.Version().Version))
-		api.Use(gin.Logger())
+		// #342 S-18：gin.Logger() 会打印完整查询串，鉴权又支持 ?token=，
+		// 会把令牌明文写入访问日志。脱敏的 AccessLogWithLogger 在下方统一记录，此处移除。
+		// #342 S-18: gin.Logger() prints the full query string, and auth accepts ?token=,
+		// leaking plaintext tokens into access logs. The sanitized AccessLogWithLogger
+		// below already covers logging; remove it here.
 		api.Use(middleware.TraceMiddlewareWithConfig(*cfg.Tracer.Enabled, cfg.Tracer.Header)) // Trace ID middleware
 		// Trace ID 中间件
 		api.Use(middleware.RateLimiter(methodLimiters))

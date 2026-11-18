@@ -405,6 +405,12 @@ func (h *FolderWSHandler) FolderModify(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		return
 	}
 
+	// 只校验、不改写路径（#342 S-8）：不去前导 "/"，仅按段拒绝越界与 NUL
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
+		return
+	}
+
 	uid := c.User.UID
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).UpdateOrCreate(c.Context(), uid, params)
 	if err != nil {
@@ -438,6 +444,12 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		return
 	}
 
+	// 只校验、不改写路径（#342 S-8）：不去前导 "/"，仅按段拒绝越界与 NUL
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
+		return
+	}
+
 	uid := c.User.UID
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).Delete(c.Context(), uid, params)
 	if err != nil {
@@ -468,6 +480,12 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	valid, errs := c.BindAndValidWithAction(msg.Type, msg.Data, params)
 	if !valid {
 		h.respondErrorWithData(c, code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()), errs, errs.MapsToString(), "websocket_router.folder.FolderRename.BindAndValid", msg)
+		return
+	}
+
+	// 只校验、不改写新旧两个路径（#342 S-8）
+	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
 		return
 	}
 

@@ -87,6 +87,43 @@ func checkVaultAccess(ctx context.Context, vault string) error {
 	return nil
 }
 
+// cleanToolPath normalizes a vault-relative path for MCP write tools:
+// it strips leading "/" and rejects empty paths, absolute paths, ".."-segment
+// and NUL paths, segment-wise with no URL decoding (#342 S-8). Backslashes are
+// not converted.
+// cleanToolPath 为 MCP 写入工具规范化库相对路径：去掉前导 "/"，按路径段拒绝
+// 空路径、绝对路径、整段 ".." 与 NUL（不做 URL 解码；#342 S-8）。
+// 反斜杠不做转换。
+func cleanToolPath(path string) (string, error) {
+	cleaned, ok := util.CleanVaultPath(path)
+	if !ok {
+		return "", fmt.Errorf("invalid vault-relative path %q: must be relative to the vault root, separated by '/', and must not be empty, absolute, or contain a '..' segment", path)
+	}
+	return cleaned, nil
+}
+
+// cleanNewNotePath is for MCP tools that create a NEW note path
+// (note_create_or_update's path, note_rename's newPath): it additionally
+// ensures the resulting path ends in ".md" (case-insensitive) so notes synced
+// to Obsidian are visible markdown files instead of extension-less files that
+// later sync treats as attachments (#244). Tools operating on notes that may
+// already exist (delete/restore/append/prepend/replace/frontmatter/rename's
+// oldPath) must NOT append ".md": records written by older versions without
+// the suffix would become unreachable for deletion or renaming.
+// cleanNewNotePath 只用于会产生"新路径"的 MCP 工具（note_create_or_update 的
+// path、note_rename 的 newPath）：额外保证路径以 ".md" 结尾（大小写不敏感），
+// 避免无扩展名笔记同步到 Obsidian 后不可见、再同步被当成附件（#244）。
+// 对"已有笔记"操作的工具（删除/恢复/追加/前插/替换/改 frontmatter/改名的旧路径）
+// 不得补后缀：旧版本遗留的无扩展名记录（正是 #244 产生的坏数据）会因此无法
+// 删除、无法改名修正。
+func cleanNewNotePath(path string) (string, error) {
+	cleaned, err := cleanToolPath(path)
+	if err != nil {
+		return "", err
+	}
+	return util.EnsureMDExt(cleaned), nil
+}
+
 func NewMCPServer(appContainer *app.App, wss *pkgapp.WebsocketServer) *mcpsrv.MCPServer {
 	// Create MCP server
 	srv := mcpsrv.NewMCPServer(

@@ -90,7 +90,12 @@ type ShareService interface {
 
 	// GetSharedFileInfo retrieves shared file metadata and path for zero-copy download
 	// GetSharedFileInfo 获取分享文件的元数据和路径，用于零拷贝下载
-	GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (savePath string, contentType string, mtime int64, etag string, fileName string, err error)
+	// GetSharedFileInfo retrieves shared file metadata and path for zero-copy download.
+	// isPasswordProtected reports whether the share requires a password, so the caller
+	// can choose cache directives accordingly (#342 S-22).
+	// GetSharedFileInfo 获取分享文件的元数据和路径，用于零拷贝下载。
+	// isPasswordProtected 报告该分享是否设置了访问密码，调用方据此决定缓存策略（#342 S-22）。
+	GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (savePath string, contentType string, mtime int64, etag string, fileName string, isPasswordProtected bool, err error)
 
 	// RecordView aggregates access statistics in memory
 	// RecordView 在内存中聚合访问统计
@@ -1475,14 +1480,25 @@ func (s *shareService) GetSharedFile(ctx context.Context, shareToken string, fil
 
 // GetSharedFileInfo retrieves shared file metadata and path for zero-copy download
 // GetSharedFileInfo 获取分享文件的元数据和路径，用于零拷贝下载
-func (s *shareService) GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (savePath string, contentType string, mtime int64, etag string, fileName string, err error) {
+func (s *shareService) GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (savePath string, contentType string, mtime int64, etag string, fileName string, isPasswordProtected bool, err error) {
 	ridStr := strconv.FormatInt(fileID, 10)
+	// 提前判定分享是否带密码：VerifyShare 只在带密码时校验，这里单独查一次分享记录，
+	// 供调用方决定缓存策略（#342 S-22）。VerifyShare 内部也会查同一记录，代价可接受。
+	// Determine whether the share requires a password up front: VerifyShare only
+	// checks it when set; query the share record here so the caller can pick cache
+	// directives (#342 S-22). VerifyShare fetches the same row; the cost is acceptable.
+	if entity, perr := s.tokenManager.ShareParse(shareToken); perr == nil {
+		if share, serr := s.repo.GetByID(ctx, entity.UID, entity.SID); serr == nil {
+			isPasswordProtected = share.Password != ""
+		}
+	}
+
 	shareEntity, err := s.VerifyShare(ctx, shareToken, ridStr, "file", password)
 	if err != nil {
 		if cObj, ok := err.(*code.Code); ok {
-			return "", "", 0, "", "", cObj
+			return "", "", 0, "", "", isPasswordProtected, cObj
 		}
-		return "", "", 0, "", "", code.ErrorInvalidAuthToken.WithDetails(err.Error())
+		return "", "", 0, "", "", isPasswordProtected, code.ErrorInvalidAuthToken.WithDetails(err.Error())
 	}
 
 	// 1. Get resource owner's UID
@@ -1491,11 +1507,11 @@ func (s *shareService) GetSharedFileInfo(ctx context.Context, shareToken string,
 	// 2. Confirm path hash (get file metadata from fileRepo)
 	file, err := s.fileRepo.GetByID(ctx, fileID, ownerUID)
 	if err != nil {
-		return "", "", 0, "", "", code.ErrorFileNotFound
+		return "", "", 0, "", "", isPasswordProtected, code.ErrorFileNotFound
 	}
 
 	if file.Action == domain.FileActionDelete {
-		return "", "", 0, "", "", code.ErrorFileNotFound
+		return "", "", 0, "", "", isPasswordProtected, code.ErrorFileNotFound
 	}
 
 	// Identify file MIME type
@@ -1511,7 +1527,7 @@ func (s *shareService) GetSharedFileInfo(ctx context.Context, shareToken string,
 		etag = file.PathHash
 	}
 
-	return file.SavePath, contentType, file.Mtime, etag, filepath.Base(file.Path), nil
+	return file.SavePath, contentType, file.Mtime, etag, filepath.Base(file.Path), isPasswordProtected, nil
 }
 
 // Shutdown shuts down the service and flushes remaining data

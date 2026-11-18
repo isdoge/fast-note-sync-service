@@ -55,9 +55,9 @@ func (m *MockShareService) GetSharedFile(ctx context.Context, shareToken string,
 	return content, args.String(1), args.Get(2).(int64), args.String(3), args.String(4), args.Error(5)
 }
 
-func (m *MockShareService) GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (string, string, int64, string, string, error) {
+func (m *MockShareService) GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (string, string, int64, string, string, bool, error) {
 	args := m.Called(ctx, shareToken, fileID, password)
-	return args.String(0), args.String(1), args.Get(2).(int64), args.String(3), args.String(4), args.Error(5)
+	return args.String(0), args.String(1), args.Get(2).(int64), args.String(3), args.String(4), args.Bool(5), args.Error(6)
 }
 
 func (m *MockShareService) RecordView(uid int64, id int64) {

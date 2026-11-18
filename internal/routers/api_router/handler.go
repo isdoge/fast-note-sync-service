@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 )
 
 // Handler basic Handler struct, encapsulates App Container
@@ -47,4 +48,15 @@ func (h *Handler) getClientInfo(c *gin.Context) (string, string, string) {
 	}
 
 	return clientType, clientName, clientVersion
+}
+
+// cleanAPIPath normalizes a vault-relative path for REST write entry points:
+// strips leading "/" and rejects empty, absolute, ".."-segment and NUL paths
+// (segment-wise, no URL decoding; #342 S-8). It never appends ".md" — REST is
+// also used by third-party clients writing non-note files (e.g. x.canvas).
+// cleanAPIPath 为 REST 写入口规范化库相对路径：去掉前导 "/"，按路径段拒绝
+// 空路径、绝对路径、整段 ".." 与 NUL（不做 URL 解码；#342 S-8）。
+// 一律不补 ".md"——REST 也被第三方客户端用于写非笔记文件（如 x.canvas）。
+func cleanAPIPath(path string) (string, bool) {
+	return util.CleanVaultPath(path)
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/routers/websocket_router"
@@ -151,7 +152,7 @@ func (h *ShareHandler) FileGet(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	savePath, contentType, mtime, etag, fileName, err := h.App.ShareService.GetSharedFileInfo(ctx, shareToken, params.ID, params.Password)
+	savePath, contentType, mtime, etag, fileName, isPasswordProtected, err := h.App.ShareService.GetSharedFileInfo(ctx, shareToken, params.ID, params.Password)
 
 	if err != nil {
 		if cObj, ok := err.(*code.Code); ok {
@@ -176,7 +177,17 @@ func (h *ShareHandler) FileGet(c *gin.Context) {
 	if contentType != "" {
 		c.Header("Content-Type", contentType)
 	}
-	c.Header("Cache-Control", "public, s-maxage=31536000, max-age=31536000, must-revalidate")
+	// #342 S-22：带密码的分享是私有资源，禁止共享缓存（CDN/代理）存储；
+	// 浏览器本地缓存保留一年，分享页刷新无需重下附件。公开分享维持一年的强缓存。
+	// #342 S-22: password-protected shares are private resources; shared caches
+	// (CDN/proxies) must not store them. Keep a year of browser-local caching so the
+	// share page can refresh without re-downloading attachments. Public shares keep
+	// the original year-long strong cache.
+	if isPasswordProtected {
+		c.Header("Cache-Control", "private, max-age=31536000, must-revalidate")
+	} else {
+		c.Header("Cache-Control", "public, s-maxage=31536000, max-age=31536000, must-revalidate")
+	}
 	if etag != "" {
 		c.Header("ETag", etag)
 	}
@@ -483,6 +494,23 @@ func (h *ShareHandler) getShareBaseUrl(c *gin.Context) string {
 	scheme := "http"
 	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
 		scheme = "https"
+	}
+
+	// haierkeys/obsidian-fast-note-sync#252：配了独立 share-port 而未配 share-base-url
+	// 时，之前回落到 c.Request.Host（主服务端口），生成的分享链接打的是主端口而非
+	// 分享端口。此时用请求主机名拼上 share-port。SharePort 形如 ":9100" 或 "9100"，
+	// 统一成 host:port。
+	// haierkeys/obsidian-fast-note-sync#252: when an independent share-port is
+	// configured without share-base-url, the old fallback used c.Request.Host
+	// (the main service port), so generated share links pointed at the main port
+	// instead of the share port. Rebuild host with the configured share port.
+	if cfg.SharePort != "" {
+		host := c.Request.Host
+		if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host[i:], "]") {
+			host = host[:i] // strip existing port (keep IPv6 brackets intact)
+		}
+		sharePort := strings.TrimPrefix(cfg.SharePort, ":")
+		return fmt.Sprintf("%s://%s:%s", scheme, host, sharePort)
 	}
 
 	return fmt.Sprintf("%s://%s", scheme, c.Request.Host)

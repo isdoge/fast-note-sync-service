@@ -1025,6 +1025,7 @@ func (w *WebsocketServer) clientsByTraceID(traceID string) (*WebsocketClient, bo
 // NewWebsocketServer 创建 WebSocket 服务器实例
 // c: WebSocket config // c: WebSocket 配置
 // app: App Container (Required) // app: App Container（必须）
+
 func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 	if app == nil {
 		panic("AppContainer is required for WebsocketServer")
