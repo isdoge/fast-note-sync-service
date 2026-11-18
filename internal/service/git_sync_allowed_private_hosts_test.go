@@ -176,3 +176,109 @@ func TestGitRepoAllowedPrivateAddressValidation(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, errGitRepoPrivateNetwork))
 }
+
+func TestGitSyncPrivateOrLocalIP(t *testing.T) {
+	for _, tc := range []struct {
+		ip   string
+		want bool
+	}{
+		// CGNAT 100.64.0.0/10 (RFC 6598 / Tailscale / Aliyun metadata 100.100.100.200)
+		{ip: "100.64.0.1", want: true},
+		{ip: "100.100.100.200", want: true},
+		{ip: "100.127.255.254", want: true},
+		{ip: "100.63.255.255", want: false},
+		{ip: "100.128.0.0", want: false},
+
+		// Unspecified 0.0.0.0/8 and ::
+		{ip: "0.0.0.0", want: true},
+		{ip: "0.1.2.3", want: true},
+		{ip: "::", want: true},
+
+		// IPv4-mapped IPv6
+		{ip: "::ffff:10.0.0.1", want: true},
+		{ip: "::ffff:127.0.0.1", want: true},
+		{ip: "::ffff:169.254.169.254", want: true},
+		{ip: "::ffff:100.64.0.1", want: true},
+		{ip: "::ffff:0.0.0.0", want: true},
+		{ip: "::ffff:0.1.2.3", want: true},
+		{ip: "::ffff:93.184.216.34", want: false},
+
+		// Link-local / cloud metadata & multicast
+		{ip: "169.254.169.254", want: true},
+		{ip: "224.0.0.1", want: true},
+		{ip: "239.255.255.250", want: true},
+		{ip: "ff02::1", want: true},
+		{ip: "ff05::1", want: true},
+
+		// Public IPs remain non-private
+		{ip: "93.184.216.34", want: false},
+		{ip: "2001:4860:4860::8888", want: false},
+	} {
+		t.Run(tc.ip, func(t *testing.T) {
+			parsed := net.ParseIP(tc.ip)
+			require.NotNil(t, parsed)
+			require.Equal(t, tc.want, isPrivateOrLocalIP(parsed))
+		})
+	}
+}
+
+func TestGitSyncAllowedPrivateHosts_CGNATAndSpecialRanges(t *testing.T) {
+	tailscaleDNS := gitRepoTestLookup(map[string][]string{"tailscale.internal": {"100.64.0.10"}})
+
+	for _, tc := range []struct {
+		name      string
+		rawURL    string
+		allowlist []string
+		lookup    gitRepoLookupFunc
+		wantAllow bool
+	}{
+		{name: "default blocks CGNAT", rawURL: "http://100.64.0.1/repo.git", wantAllow: false},
+		{name: "default blocks aliyun metadata", rawURL: "http://100.100.100.200/latest/meta-data", wantAllow: false},
+		{name: "default blocks unspecified IPv4", rawURL: "http://0.0.0.0/repo.git", wantAllow: false},
+		{name: "default blocks 0.0.0.0/8", rawURL: "http://0.1.2.3/repo.git", wantAllow: false},
+		{name: "default blocks unspecified IPv6", rawURL: "http://[::]/repo.git", wantAllow: false},
+		{name: "default blocks IPv4-mapped CGNAT", rawURL: "http://[::ffff:100.64.0.1]/repo.git", wantAllow: false},
+		{name: "default blocks multicast", rawURL: "http://239.255.255.250/repo.git", wantAllow: false},
+		{name: "CGNAT CIDR allowlist permits Tailscale IP", rawURL: "http://100.64.0.10/repo.git", allowlist: []string{"100.64.0.0/10"}, wantAllow: true},
+		{name: "CGNAT exact IP allowlist permits exact IP", rawURL: "http://100.64.0.10/repo.git", allowlist: []string{"100.64.0.10"}, wantAllow: true},
+		{name: "CGNAT exact IP allowlist blocks sibling IP", rawURL: "http://100.64.0.11/repo.git", allowlist: []string{"100.64.0.10"}, wantAllow: false},
+		{name: "hostname + CGNAT CIDR allowlist permits Tailscale host", rawURL: "http://tailscale.internal/repo.git", allowlist: []string{"tailscale.internal", "100.64.0.0/10"}, lookup: tailscaleDNS, wantAllow: true},
+		{name: "hostname + CGNAT exact IP blocks mismatched CGNAT IP", rawURL: "http://tailscale.internal/repo.git", allowlist: []string{"tailscale.internal", "100.64.0.99"}, lookup: tailscaleDNS, wantAllow: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validator := newGitRepoURLValidator(tc.allowlist, tc.lookup)
+			err := validator.validateRepoURL(tc.rawURL)
+			if tc.wantAllow {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "private network")
+			}
+		})
+	}
+}
+
+func TestGitSyncAllowedPrivateHosts_DialBlocksCGNATRebinding(t *testing.T) {
+	for _, rebindIP := range []string{"100.100.100.200", "100.64.0.1", "0.1.2.3", "::ffff:100.64.0.1", "::"} {
+		t.Run(rebindIP, func(t *testing.T) {
+			lookups := 0
+			lookup := gitRepoLookupFunc(func(_ context.Context, _, host string) ([]net.IP, error) {
+				lookups++
+				if lookups == 1 {
+					return []net.IP{net.ParseIP("93.184.216.34")}, nil
+				}
+				return []net.IP{net.ParseIP(rebindIP)}, nil
+			})
+			validator := newGitRepoURLValidator(nil, lookup)
+			require.NoError(t, validator.validateRepoURL("http://rebind.example/repo.git"))
+
+			dial := validator.dialContext(func(context.Context, string, string) (net.Conn, error) {
+				return nil, errors.New("unexpected real dial")
+			})
+			_, err := dial(context.Background(), "tcp", "rebind.example:80")
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "private network")
+			require.Equal(t, 2, lookups)
+		})
+	}
+}
