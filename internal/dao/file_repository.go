@@ -313,9 +313,11 @@ func (r *fileRepository) Update(ctx context.Context, file *domain.File, uid int6
 		tempSavePath := m.SavePath
 		m.SavePath = "" // 不在数据库中更新路径
 
-		// If a new temporary path is provided, move it to the fixed file.dat
-		// 如果提供了新的临时路径，则移动到固定的 file.dat
-		if tempSavePath != "" {
+		// Deletion only writes a tombstone; the filled SavePath may point to a missing file.
+		// 删除只写墓碑；回填的 SavePath 对应的存储文件可能已丢失，不应尝试移动。
+		// Otherwise, move the provided temporary file into place and propagate any error.
+		// 其他更新仍将传入的临时文件移动到标准位置，并保留落盘错误。
+		if tempSavePath != "" && file.Action != domain.FileActionDelete {
 			folderPath := r.dao.GetFileFolderPath(uid, m.ID)
 			_ = os.MkdirAll(folderPath, 0755)
 			finalPath := filepath.Join(folderPath, "file.dat")
