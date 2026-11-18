@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/config"
@@ -36,9 +37,22 @@ import (
 // DatabaseConfig is now imported from internal/config
 
 type dbEntry struct {
-	db       *gorm.DB
-	lastUsed time.Time
+	db *gorm.DB
+	// lastUsed is the UnixNano of the last checkout. It is refreshed while only the read
+	// lock is held, so it must be atomic.
+	// lastUsed 为最近一次取出连接的 UnixNano。刷新时只持有读锁，必须用原子类型。
+	lastUsed atomic.Int64
 }
+
+func newDBEntry(db *gorm.DB) *dbEntry {
+	e := &dbEntry{db: db}
+	e.touch()
+	return e
+}
+
+func (e *dbEntry) touch() { e.lastUsed.Store(time.Now().UnixNano()) }
+
+func (e *dbEntry) lastUsedTime() time.Time { return time.Unix(0, e.lastUsed.Load()) }
 
 // defaultMaxCachedDBConns is the default cap on how many tenant *gorm.DB instances
 // GetOrCreateDB will keep cached simultaneously before evicting the least-recently-used one.
@@ -67,11 +81,11 @@ type Dao struct {
 	onceKeys sync.Map
 	mu       sync.RWMutex // protects concurrent access to KeyDb // 保护 KeyDb 的并发访问
 
-	poolSemaphores sync.Map          // map[string]*semaphore.Weighted 针对不同配置的并发控制
-	poolCreate     singleflight.Group // 按缓存键合并并发建池请求
-	poolCreator    func(config.DatabaseConfig, *zap.Logger) (*gorm.DB, error) // 可测试替换的建池函数
-	schemaEnsurer  func(string) error                                    // 可测试替换的 PostgreSQL schema 初始化
-	databaseEnsurer func(string) error                                   // 可测试替换的 MySQL 库初始化
+	poolSemaphores  sync.Map                                                   // map[string]*semaphore.Weighted 针对不同配置的并发控制
+	poolCreate      singleflight.Group                                         // 按缓存键合并并发建池请求
+	poolCreator     func(config.DatabaseConfig, *zap.Logger) (*gorm.DB, error) // 可测试替换的建池函数
+	schemaEnsurer   func(string) error                                         // 可测试替换的 PostgreSQL schema 初始化
+	databaseEnsurer func(string) error                                         // 可测试替换的 MySQL 库初始化
 
 	maxCachedDBConns         int           // KeyDb 缓存的租户 DB 实例数量上限，0 表示使用默认值
 	dbConnMinIdleBeforeEvict time.Duration // 缓存 DB 连接被 LRU 淘汰前必须已空闲的最短时间，0 表示使用默认值
@@ -81,7 +95,7 @@ type Dao struct {
 	userConfig    *config.DatabaseConfig
 	logger        *zap.Logger
 	writeQueueMgr *writequeue.Manager
-	BleveMgr      *BleveManager       // Bleve index manager instance // Bleve 索引管理器实例
+	BleveMgr      *BleveManager // Bleve index manager instance // Bleve 索引管理器实例
 }
 
 // DaoOption option function for configuring Dao
@@ -282,7 +296,7 @@ func (d *Dao) CleanupConnections(maxIdle time.Duration) {
 	defer d.mu.Unlock()
 	now := time.Now()
 	for k, v := range d.KeyDb {
-		if now.Sub(v.lastUsed) > maxIdle {
+		if now.Sub(v.lastUsedTime()) > maxIdle {
 			delete(d.KeyDb, k)
 			if sqlDB, err := v.db.DB(); err == nil {
 				sqlDB.Close()
@@ -331,7 +345,7 @@ func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 	// 使用读锁检查是否已存在
 	d.mu.RLock()
 	if entry, ok := d.KeyDb[cacheKey]; ok {
-		entry.lastUsed = time.Now()
+		entry.touch()
 		d.mu.RUnlock()
 		return entry.db
 	}
@@ -342,7 +356,7 @@ func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 		// singleflight 内再次检查，避免已有池时做网络或 schema 初始化。
 		d.mu.RLock()
 		if entry, ok := d.KeyDb[cacheKey]; ok {
-			entry.lastUsed = time.Now()
+			entry.touch()
 			d.mu.RUnlock()
 			return entry.db, nil
 		}
@@ -406,7 +420,7 @@ func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 			if sqlDB, err := dbNew.DB(); err == nil {
 				sqlDB.Close()
 			}
-			existingEntry.lastUsed = time.Now()
+			existingEntry.touch()
 			return existingEntry.db, nil
 		}
 
@@ -423,12 +437,13 @@ func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 			var oldestKey string
 			var oldestTime time.Time
 			for k, v := range d.KeyDb {
-				if now.Sub(v.lastUsed) < minIdle {
+				used := v.lastUsedTime()
+				if now.Sub(used) < minIdle {
 					continue
 				}
-				if oldestKey == "" || v.lastUsed.Before(oldestTime) {
+				if oldestKey == "" || used.Before(oldestTime) {
 					oldestKey = k
-					oldestTime = v.lastUsed
+					oldestTime = used
 				}
 			}
 			if oldestKey != "" {
@@ -446,7 +461,7 @@ func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 			}
 		}
 
-		d.KeyDb[cacheKey] = &dbEntry{db: dbNew, lastUsed: time.Now()}
+		d.KeyDb[cacheKey] = newDBEntry(dbNew)
 		return dbNew, nil
 	})
 	if err != nil {

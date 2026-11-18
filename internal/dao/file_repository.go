@@ -177,18 +177,28 @@ func (r *fileRepository) GetByID(ctx context.Context, id, uid int64) (*domain.Fi
 	return r.toDomain(m, uid), nil
 }
 
-// GetByPathHash retrieves file by path hash
-// GetByPathHash 根据路径哈希获取文件
+// GetByPathHash retrieves file by path hash, preferring a live row over a tombstone.
+// The same (vault_id, path_hash) can hold both a rename tombstone (action='delete') and a
+// later live row (a.png renamed to b.png, then a.png re-created). A plain First() orders by
+// primary key and returns the stale tombstone, so deleting the live file was treated as
+// "already deleted". Live rows come first, then the newest id.
+// GetByPathHash 根据路径哈希获取文件，活跃行优先于墓碑行。
+// 同一 (vault_id, path_hash) 可能并存一条改名留下的墓碑行与一条后建的活跃行（a.png 改名为
+// b.png 后又新建 a.png）。直接 First() 按主键升序会拿到旧墓碑行，删除活跃文件时被当成
+// "早已删除"。这里活跃行优先，其次取 id 较新者。
 func (r *fileRepository) GetByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*domain.File, error) {
 	u := r.file(uid).File
-	m, err := u.WithContext(ctx).Where(
+	var m model.File
+	err := u.WithContext(ctx).Where(
 		u.VaultID.Eq(vaultID),
 		u.PathHash.Eq(pathHash),
-	).First()
+	).UnderlyingDB().
+		Order("CASE WHEN action = 'delete' THEN 1 ELSE 0 END ASC, id DESC").
+		First(&m).Error
 	if err != nil {
 		return nil, err
 	}
-	return r.toDomain(m, uid), nil
+	return r.toDomain(&m, uid), nil
 }
 
 // ListByPathHash retrieves file list by path hash (handling duplicate records)
