@@ -52,7 +52,7 @@ var timestampMigrationTables = []struct {
 	keyPrefix string
 	table     string
 }{
-	{"user_note_", "note"},
+	{"user_", "note"},
 	{"user_file_", "file"},
 	{"user_folder_", "folder"},
 }
