@@ -188,6 +188,15 @@ func (h *FileHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	params.Path = cleaned
+
 	// Calculate PathHash
 	// 计算 PathHash
 	if params.PathHash == "" {
@@ -309,6 +318,15 @@ func (h *FileHandler) Restore(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	params.Path = cleaned
+
 	// Calculate PathHash
 	// 计算 PathHash
 	if params.PathHash == "" {
@@ -371,6 +389,17 @@ func (h *FileHandler) RecycleClear(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path when targeting a single file (#342 S-8)
+	// 指定单个文件时校验并清洗路径（#342 S-8）
+	if params.Path != "" {
+		cleaned, ok := cleanAPIPath(params.Path)
+		if !ok {
+			response.ToResponse(code.ErrorInvalidPath)
+			return
+		}
+		params.Path = cleaned
+	}
+
 	ctx := c.Request.Context()
 	fileSvc := h.App.GetFileService(h.getClientInfo(c))
 	if err := fileSvc.RecycleClear(ctx, uid, params); err != nil {
@@ -414,11 +443,16 @@ func (h *FileHandler) Rename(c *gin.Context) {
 		return
 	}
 
-	// Validate paths
-	if !util.ValidatePath(params.Path) || !util.ValidatePath(params.OldPath) {
+	// Validate and clean both paths (#342 S-8)
+	// 校验并清洗新旧两个路径（#342 S-8）
+	newPath, ok := cleanAPIPath(params.Path)
+	oldPath, okOld := cleanAPIPath(params.OldPath)
+	if !ok || !okOld {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	params.Path = newPath
+	params.OldPath = oldPath
 
 	// Calculate PathHash
 	if params.PathHash == "" {
@@ -493,6 +527,15 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidUserAuthToken)
 		return
 	}
+
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(input.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	input.Path = cleaned
 
 	// Calculate PathHash
 	if input.PathHash == "" {

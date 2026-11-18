@@ -93,6 +93,15 @@ func (h *FolderHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	params.Path = cleaned
+
 	uid := pkgapp.GetUID(c)
 	res, err := h.App.GetFolderService(h.getClientInfo(c)).UpdateOrCreate(c.Request.Context(), uid, params)
 	if err != nil {
@@ -121,6 +130,15 @@ func (h *FolderHandler) Delete(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
 		return
 	}
+
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	params.Path = cleaned
 
 	uid := pkgapp.GetUID(c)
 	_, err := h.App.GetFolderService(h.getClientInfo(c)).Delete(c.Request.Context(), uid, params)

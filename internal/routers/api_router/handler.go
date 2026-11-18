@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 )
 
 // Handler basic Handler struct, encapsulates App Container
@@ -47,4 +48,26 @@ func (h *Handler) getClientInfo(c *gin.Context) (string, string, string) {
 	}
 
 	return clientType, clientName, clientVersion
+}
+
+// cleanAPIPath normalizes a vault-relative path for REST/WS-facing write entry
+// points: strips leading "/" and rejects empty, absolute, ".." and NUL paths
+// via util.ValidatePath (#342 S-8). Backslashes are not converted.
+// cleanAPIPath 为 REST 写入口规范化库相对路径：去掉前导 "/"，并用
+// util.ValidatePath 拒绝空路径、绝对路径、".." 与 NUL（#342 S-8）。
+// 反斜杠不做转换。
+func cleanAPIPath(path string) (string, bool) {
+	return util.CleanVaultPath(path)
+}
+
+// cleanAPINotePath additionally appends ".md" (case-insensitive) to note paths
+// so notes synced to Obsidian are visible markdown files (#244).
+// cleanAPINotePath 额外给笔记路径补 ".md" 后缀（大小写不敏感），
+// 避免无扩展名笔记同步到 Obsidian 后不可见、再同步被当成附件（#244）。
+func cleanAPINotePath(path string) (string, bool) {
+	cleaned, ok := util.CleanVaultPath(path)
+	if !ok {
+		return "", false
+	}
+	return util.EnsureMDExt(cleaned), true
 }
