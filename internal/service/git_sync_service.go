@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -395,21 +396,24 @@ func validateRepoURL(rawURL string, allowedPrivateHosts []string) error {
 	return newGitRepoURLValidator(allowedPrivateHosts, nil).validateRepoURL(rawURL)
 }
 
-// isPrivateOrLocalIP checks if net.IP is loopback, link-local, or private
-// isPrivateOrLocalIP 检查 net.IP 是否属于回环、链路本地或私网 IP
+var (
+	cgnatPrefix       = netip.MustParsePrefix("100.64.0.0/10")
+	thisNetworkPrefix = netip.MustParsePrefix("0.0.0.0/8")
+)
+
+// isPrivateOrLocalIP checks if net.IP is loopback, link-local, private, CGNAT (100.64.0.0/10),
+// unspecified (0.0.0.0/8, ::), or multicast.
+// isPrivateOrLocalIP 检查 net.IP 是否属于回环、链路本地、私网、CGNAT (100.64.0.0/10)、
+// 未指定地址 (0.0.0.0/8, ::) 或多播地址。
 func isPrivateOrLocalIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsPrivate() || ip.IsUnspecified() {
 		return true
 	}
 
-	if ip4 := ip.To4(); ip4 != nil {
-		return ip4[0] == 10 ||
-			(ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31) ||
-			(ip4[0] == 192 && ip4[1] == 168)
-	}
-
-	if ip6 := ip.To16(); ip6 != nil {
-		return (ip6[0] & 0xfe) == 0xfc
+	if addr, ok := netip.AddrFromSlice(ip); ok {
+		addr = addr.Unmap()
+		return cgnatPrefix.Contains(addr) || thisNetworkPrefix.Contains(addr)
 	}
 	return false
 }

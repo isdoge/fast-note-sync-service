@@ -414,10 +414,12 @@ git:
   # 主机名条目要求 DNS 解析结果为私网地址，且每个私网地址还须被某个 IP/CIDR 条目覆盖，防止 DNS rebinding。
   # 例如 ["gitea.internal", "192.168.1.20"] 仅允许该主机名解析到 192.168.1.20；
   # 内网测试/仅有 IP 仓库可只写 "192.168.1.0/24"，此时 URL 中的主机名不受限。
+  # 100.64.0.0/10（含 Tailscale 地址）也按内网处理，需要时请加入白名单。
   # Private network allowlist for HTTP(S) Git repositories: hostnames, exact IPs or CIDRs. Empty [] blocks all private networks (default).
   # A hostname entry requires private DNS results, and every private result must also match an IP/CIDR entry to prevent DNS rebinding.
   # Example ["gitea.internal", "192.168.1.20"] permits only that hostname resolving to 192.168.1.20.
   # A CIDR-only list such as "192.168.1.0/24" allows matching resolved IPs regardless of hostname.
+  # 100.64.0.0/10 (including Tailscale addresses) is also treated as private; add it to the allowlist when needed.
   allowed-private-hosts: []
 
 webgui:
