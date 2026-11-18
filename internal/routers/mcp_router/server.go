@@ -120,10 +120,10 @@ func checkVaultAccess(ctx context.Context, vault string) error {
 // cleanToolPath normalizes a vault-relative path for MCP write tools:
 // it strips leading "/" and rejects empty paths, absolute paths, ".."-segment
 // and NUL paths, segment-wise with no URL decoding (#342 S-8). Backslashes are
-// not converted.
+// converted to forward slashes (#451).
 // cleanToolPath 为 MCP 写入工具规范化库相对路径：去掉前导 "/"，按路径段拒绝
 // 空路径、绝对路径、整段 ".." 与 NUL（不做 URL 解码；#342 S-8）。
-// 反斜杠不做转换。
+// 反斜杠统一转换为正斜杠。
 func cleanToolPath(path string) (string, error) {
 	cleaned, ok := util.CleanVaultPath(path)
 	if !ok {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ApplyDefaultFolder applies default folder prefix
@@ -84,7 +85,7 @@ func ValidatePath(path string) bool {
 	return !strings.Contains(cleaned, "..") && !strings.HasPrefix(cleaned, "/")
 }
 
-// CleanVaultPath strips leading "/" separators from a vault-relative path and
+// CleanVaultPath normalizes backslashes, strips leading "/" separators and
 // validates it segment-wise. It returns the cleaned path and true, or "" and
 // false when the path is empty, absolute (after trimming), contains NUL bytes,
 // or any of its path segments (split on both "/" and "\") equals "..".
@@ -95,7 +96,7 @@ func ValidatePath(path string) bool {
 // ("../x", "a/../../x", `a\..\x`, ".."). "a+b.md" passes too since no
 // QueryUnescape is applied.
 //
-// CleanVaultPath 去掉库相对路径的前导 "/"，并按路径段做校验。返回清洗后的
+// CleanVaultPath 规范化反斜杠、去掉库相对路径的前导 "/"，并按路径段做校验。返回清洗后的
 // 路径和 true；路径为空、去前导斜杠后仍是绝对路径、含 NUL，或任一路径段
 // （按 "/" 与 "\" 两种分隔符切分）等于 ".." 时返回 "" 和 false。
 //
@@ -103,11 +104,34 @@ func ValidatePath(path string) bool {
 // "a..b.md"、"等等...md"、"100%.md"、"./a.md"、"a+b.md" 等正常笔记名都合法；
 // 只有整段等于 ".." 才拒绝（"../x"、"a/../../x"、"a\..\x"、".."）。
 func CleanVaultPath(path string) (string, bool) {
+	// 先校验再折叠，避免 a/../b 被清理后绕过路径穿越检查。
+	if strings.Contains(path, `\`) {
+		var ok bool
+		path, ok = NormalizeBackslashPath(path)
+		if !ok {
+			return "", false
+		}
+	}
 	path = strings.TrimLeft(path, "/")
 	if !validVaultPath(path) {
 		return "", false
 	}
 	return path, true
+}
+
+// NormalizeBackslashPath only changes paths containing Windows separators.
+// 不含反斜杠时保留既有协议行为（包括客户端提供的哈希）。
+func NormalizeBackslashPath(value string) (string, bool) {
+	if !strings.Contains(value, `\`) {
+		return value, true
+	}
+	value = strings.ReplaceAll(value, `\`, "/")
+	if !validVaultPath(strings.TrimLeft(value, "/")) {
+		return "", false
+	}
+	// 不清理 . 段；只折叠连续分隔符并去掉首尾分隔符。
+	parts := strings.FieldsFunc(value, func(r rune) bool { return r == '/' })
+	return strings.Join(parts, "/"), len(parts) > 0
 }
 
 // validVaultPath performs the segment-wise vault path check described in
@@ -206,4 +230,10 @@ func MoveFile(src, dst string) error {
 	}
 
 	return err
+}
+
+// ConflictPath shares the conflict-copy naming convention with data upgrades.
+func ConflictPath(originalPath string, at time.Time) string {
+	ext := filepath.Ext(originalPath)
+	return strings.TrimSuffix(originalPath, ext) + ".conflict." + at.Format("20060102150405") + ext
 }

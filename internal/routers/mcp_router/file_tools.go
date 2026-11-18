@@ -104,6 +104,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 
 		file, err := fileSvc.WithClient(getClientInfoFromContext(ctx)).Get(ctx, uid, &dto.FileGetRequest{
 			Vault:    vault,
@@ -146,6 +150,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 
 		reader, _, _, _, err := fileSvc.WithClient(getClientInfoFromContext(ctx)).GetContent(ctx, uid, &dto.FileGetRequest{
 			Vault:    vault,
@@ -417,6 +425,10 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 		b64Content, _ := args["content"].(string)
 
 		path, cerr := cleanToolPath(path)

@@ -326,6 +326,13 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		prefix, _ := args["prefix"].(string)
+		if strings.Contains(prefix, `\`) {
+			var ok bool
+			prefix, ok = util.NormalizeBackslashPath(prefix)
+			if !ok {
+				return mcp.NewToolResultError("invalid vault-relative prefix"), nil
+			}
+		}
 		prefix = strings.Trim(prefix, "/")
 
 		vaultID, err := appContainer.VaultService.MustGetID(ctx, uid, vault)

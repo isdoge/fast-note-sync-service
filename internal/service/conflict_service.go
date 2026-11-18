@@ -4,9 +4,6 @@ package service
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/dao"
@@ -128,10 +125,7 @@ func (s *conflictService) CreateConflictFile(ctx context.Context, uid int64, par
 // 格式: {baseName}.conflict.{timestamp}{ext}
 // 例如: notes/test.md -> notes/test.conflict.20060102150405.md
 func (s *conflictService) generateConflictPath(originalPath string) string {
-	timestamp := time.Now().Format("20060102150405")
-	ext := filepath.Ext(originalPath)
-	baseName := strings.TrimSuffix(originalPath, ext)
-	return fmt.Sprintf("%s.conflict.%s%s", baseName, timestamp, ext)
+	return util.ConflictPath(originalPath, time.Now())
 }
 
 // 确保 conflictService 实现了 ConflictService 接口

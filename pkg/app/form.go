@@ -143,6 +143,10 @@ func BindAndValid(c *gin.Context, obj interface{}) (bool, ValidErrors) {
 		return false, errs // Return validation error // 返回验证错误
 	}
 
+	if verr := normalizeBoundPaths(obj); verr != nil {
+		return false, ValidErrors{verr}
+	}
+
 	allowedVaults, _ := c.Get("vaults")
 	vaults, _ := allowedVaults.(string)
 	if verr := verifyBoundVault(vaults, obj); verr != nil {
