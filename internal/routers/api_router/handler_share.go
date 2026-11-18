@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/routers/websocket_router"
@@ -493,6 +494,23 @@ func (h *ShareHandler) getShareBaseUrl(c *gin.Context) string {
 	scheme := "http"
 	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
 		scheme = "https"
+	}
+
+	// haierkeys/obsidian-fast-note-sync#252：配了独立 share-port 而未配 share-base-url
+	// 时，之前回落到 c.Request.Host（主服务端口），生成的分享链接打的是主端口而非
+	// 分享端口。此时用请求主机名拼上 share-port。SharePort 形如 ":9100" 或 "9100"，
+	// 统一成 host:port。
+	// haierkeys/obsidian-fast-note-sync#252: when an independent share-port is
+	// configured without share-base-url, the old fallback used c.Request.Host
+	// (the main service port), so generated share links pointed at the main port
+	// instead of the share port. Rebuild host with the configured share port.
+	if cfg.SharePort != "" {
+		host := c.Request.Host
+		if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host[i:], "]") {
+			host = host[:i] // strip existing port (keep IPv6 brackets intact)
+		}
+		sharePort := strings.TrimPrefix(cfg.SharePort, ":")
+		return fmt.Sprintf("%s://%s:%s", scheme, host, sharePort)
 	}
 
 	return fmt.Sprintf("%s://%s", scheme, c.Request.Host)
