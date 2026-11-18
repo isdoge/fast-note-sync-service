@@ -1,20 +1,11 @@
-# Docker 登录示例
-# docker login --username=xxxxxx registry.cn-shanghai.aliyuncs.com
-
 # 环境变量（可选）
 # include .env
 # export $(shell sed 's/=.*//' .env)
 
 # -------------------------
-# 项目 / 镜像 配置
+# 项目配置
 # -------------------------
 REPO = $(eval REPO := $$(shell go list -f '{{.ImportPath}}' .))$(value REPO)
-
-DockerHubUser   = haierkeys
-DockerHubName   = fast-note-sync-service
-
-ReleaseTagPre   = release-v
-DevelopTagPre   = develop-v
 
 P_NAME          = fast-note-sync
 P_BIN           = fast-note-sync-service
@@ -22,7 +13,7 @@ P_BIN           = fast-note-sync-service
 # -------------------------
 # Git / 构建信息
 # -------------------------
-GitTag          = $(shell git describe --tags --abbrev=0)
+Version         ?= $(shell sed -nE 's/^[[:space:]]*Version[[:space:]]+string[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' internal/app/version.go)
 GitVersion      = $(shell git log -1 --format=%h)
 GitVersionDesc  = $(shell git log -1 --format=%s)
 BuildTime       = $(shell date +%FT%T%z)
@@ -31,7 +22,7 @@ BuildTime       = $(shell date +%FT%T%z)
 # 获取提交信息，并处理掉换行符（用 @@@ 占位）以便安全地注入到 ldflags
 COMMIT_MSG_CLEAN = $(shell echo "$(COMMIT_MSG)" | tr '\n' '^' | sed 's/\^/@@@/g' | sed 's/"/\\"/g' | sed "s/'/’/g")
 Changelog       ?= $(COMMIT_MSG_CLEAN)
-LDFLAGS = -ldflags '-s -w -X ${REPO}/internal/app.Version=$(GitTag) -X "${REPO}/internal/app.GitTag=$(GitVersion)" -X ${REPO}/internal/app.BuildTime=$(BuildTime) -X "${REPO}/internal/app.Changelog=$(Changelog)"'
+LDFLAGS = -ldflags '-s -w -X ${REPO}/internal/app.Version=$(Version) -X "${REPO}/internal/app.GitTag=$(GitVersion)" -X ${REPO}/internal/app.BuildTime=$(BuildTime) -X "${REPO}/internal/app.Changelog=$(Changelog)"'
 
 # go 命令封装
 gob = go build ${LDFLAGS}
@@ -47,7 +38,6 @@ buildDir = $(rootDir)/build
 # PHONY 目标
 # -------------------------
 .PHONY: all  build-all run test clean \
-        push-online push-dev \
         build-macos-amd64 build-macos-arm64 build-linux-amd64 \
         build-linux-arm64 build-linux-arm build-windows-amd64 gox-linux gox-all \
 		docs fmt update air dev ver gen sup proto
@@ -62,7 +52,6 @@ sup:
 	node scripts/process_support_csv.js
 	node scripts/process_support.mjs --model Qwen/Qwen3.6-35B-A3B
 
-sup-md:
 test:
 	go test $$(go list ./... | grep -v -E 'internal/service/mocks|internal/domain/mocks|internal/dto|internal/model|internal/query|internal/config|internal/app|/docs|internal/middleware|cmd')
 
@@ -149,30 +138,8 @@ gox-all:
 
 
 # -------------------------
-# Docker 发布
-# -------------------------
-push-online: build-linux
-	$(call dockerImageClean)
-	docker build --platform linux/amd64 -t $(DockerHubUser)/$(DockerHubName):latest -f docker/Dockerfile .
-	docker tag  $(DockerHubUser)/$(DockerHubName):latest $(DockerHubUser)/$(DockerHubName):$(ReleaseTagPre)$(GitTag)
-	docker push $(DockerHubUser)/$(DockerHubName):$(ReleaseTagPre)$(GitTag)
-	docker push $(DockerHubUser)/$(DockerHubName):latest
-
-push-dev: build-linux
-	$(call dockerImageClean)
-	docker build --platform linux/amd64 -t $(DockerHubUser)/$(DockerHubName):dev-latest -f docker/Dockerfile .
-	docker tag $(DockerHubUser)/$(DockerHubName):dev-latest $(DockerHubUser)/$(DockerHubName):$(DevelopTagPre)$(GitTag)
-	docker push $(DockerHubUser)/$(DockerHubName):$(DevelopTagPre)$(GitTag)
-	docker push $(DockerHubUser)/$(DockerHubName):dev-latest
-
-# -------------------------
 # 代码片段（定义）
 # -------------------------
-define dockerImageClean
-	@echo "docker Image Clean"
-	bash docker_image_clean.sh
-endef
-
 define init
 	@echo "Build Init"
 endef

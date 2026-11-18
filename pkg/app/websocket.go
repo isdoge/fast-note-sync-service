@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	stdjson "encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -28,13 +29,13 @@ import (
 type LogType string
 
 const (
-	WSPingInterval         = 25
-	WSPingWait             = 60
-	WSPingWriteTimeout     = 10      // WritePing write timeout (seconds), must < PingInterval // WritePing 写超时（秒），需小于 PingInterval
-	LogInfo        LogType = "info"
-	LogError       LogType = "error"
-	LogWarn        LogType = "warn"
-	LogDebug       LogType = "debug"
+	WSPingInterval             = 25
+	WSPingWait                 = 60
+	WSPingWriteTimeout         = 10 // Maximum WritePing timeout (seconds) // WritePing 最大写超时（秒）
+	LogInfo            LogType = "info"
+	LogError           LogType = "error"
+	LogWarn            LogType = "warn"
+	LogDebug           LogType = "debug"
 )
 
 // traceIDKeyType used to store Trace ID in context
@@ -224,7 +225,8 @@ type ClientInfoMessage struct {
 }
 
 type WSConfig struct {
-	GWSOption    gws.ServerOption
+	GWSOption gws.ServerOption
+	// PingInterval and PingWait are expressed in seconds (legacy WSConfig contract).
 	PingInterval time.Duration
 	PingWait     time.Duration
 	// WriteTimeout application-layer write deadline for outbound messages (ToResponse/
@@ -284,13 +286,14 @@ type WebsocketClient struct {
 	clientPlatform      map[string]bool           // Client platform details; access via ClientPlatform() // 客户端平台详情；请通过 ClientPlatform() 访问
 	clientVersion       string                    // Client version number (e.g., "1.2.4"); access via ClientVersion() // 客户端版本号；请通过 ClientVersion() 访问
 	offlineSyncStrategy string                    // Offline device sync strategy "newTimeMerge" | "ignoreTimeMerge"; access via OfflineSyncStrategy() // 离线设备同步策略；请通过 OfflineSyncStrategy() 访问
+	acceptProtobuf      bool                      // pv2 inbound negotiation, guarded by infoMu // pv2 入站协商结果，由 infoMu 保护
 	useProtobuf         bool                      // Whether to use protobuf protocol; access via UseProtobuf() // 是否使用 protobuf 协议；请通过 UseProtobuf() 访问
 	StartTime           timex.Time                // Connection start time // 连接开始时间
 	IsFirstSync         bool                      // Whether it's the first sync // 是否是第一次同步过
 	DiffMergePaths      map[string]DiffMergeEntry // File paths needing merging // 需要合并的文件路径，包含创建时间用于超时清理
 	DiffMergePathsMu    sync.RWMutex              // Mutex lock to prevent concurrency conflicts // 互斥锁，防止并发冲突
 	failCount           atomic.Int32              // Consecutive broadcast failure counter; connection closed when exceeding threshold // 连续广播失败计数器，超过阈值时主动关闭连接
-	lastPongAt          atomic.Int64                    // Unix timestamp of last received pong; used to detect zombie connections // 最后一次收到 pong 的 Unix 时间戳，用于检测僵尸连接
+	lastPongAt          atomic.Int64              // Unix nanosecond timestamp of last received pong; used to detect zombie connections // 最后一次收到 pong 的 Unix 纳秒时间戳，用于检测僵尸连接
 	TokenID             int64                     // Bound Token ID // 绑定的令牌 ID
 	Scope               string                    // Token Scope // 令牌权限范围
 	Vaults              string                    // Restrict Vaults // 限制笔记库
@@ -347,12 +350,26 @@ func (c *WebsocketClient) OfflineSyncStrategy() string {
 	return c.offlineSyncStrategy
 }
 
-// UseProtobuf reports whether this connection negotiated the protobuf protocol.
-// UseProtobuf 返回该连接是否已协商使用 protobuf 协议。
+// UseProtobuf reports whether outbound messages use the protobuf protocol.
+// UseProtobuf 返回出站消息是否使用 protobuf 协议。
 func (c *WebsocketClient) UseProtobuf() bool {
 	c.infoMu.RLock()
 	defer c.infoMu.RUnlock()
 	return c.useProtobuf
+}
+
+// acceptsProtobuf also accepts the legacy ClientInfo upgrade's outbound state.
+// acceptsProtobuf 同时兼容旧客户端通过 ClientInfo 设置的协议状态。
+func (c *WebsocketClient) acceptsProtobuf() bool {
+	c.infoMu.RLock()
+	defer c.infoMu.RUnlock()
+	return c.acceptProtobuf || c.useProtobuf
+}
+
+func (c *WebsocketClient) setAcceptProtobuf(accept bool) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	c.acceptProtobuf = accept
 }
 
 // setClientInfo atomically updates all client-reported connection metadata under infoMu,
@@ -368,8 +385,25 @@ func (c *WebsocketClient) setClientInfo(name, clientType, version string, platfo
 	c.clientType = clientType
 	c.clientVersion = version
 	c.clientPlatform = platform
-	c.offlineSyncStrategy = offlineSyncStrategy
+	c.offlineSyncStrategy = knownOfflineSyncStrategy(offlineSyncStrategy)
 	c.useProtobuf = useProtobuf
+	// ClientInfo completes negotiation; subsequent inbound frames follow its final state.
+	// ClientInfo 完成协商，后续入站帧遵循它最终设置的协议状态。
+	c.acceptProtobuf = false
+}
+
+// knownOfflineSyncStrategy returns the strategy if it is one the sync handlers recognize, and
+// "" (the default strategy) otherwise. Handlers only test for exact known values, so an
+// unrecognized one (e.g. a client sending "auto") matched no branch: the client was never told
+// the server had newer content and its pushes skipped merge/conflict handling (#440).
+// knownOfflineSyncStrategy 对同步处理器认识的策略原样返回，否则返回 ""（默认策略）。处理器只按已知值做精确判断，
+// 未知值（如客户端发送 "auto"）不命中任何分支：服务端有更新时不会通知客户端拉取，客户端上传也跳过合并与冲突处理（#440）。
+func knownOfflineSyncStrategy(strategy string) string {
+	switch strategy {
+	case "", "newTimeMerge", "ignoreTimeMerge", "manualMerge":
+		return strategy
+	}
+	return ""
 }
 
 // setUseProtobuf sets only the useProtobuf field, guarded by the same infoMu as setClientInfo.
@@ -465,6 +499,16 @@ func (c *WebsocketClient) ClearAllDiffMergePaths() int {
 	return count
 }
 
+// isJSONObjectPayload reports whether a message payload is a JSON object rather than Protobuf.
+// A proto3 message never starts with '{' (0x7B is the tag of a field-15 start-group, which
+// proto3 does not emit), so a leading '{' plus valid JSON identifies a text-frame payload.
+// isJSONObjectPayload 判断载荷是 JSON 对象而不是 Protobuf。proto3 消息不会以 '{' 开头
+// （0x7B 是 15 号字段的 start-group 标签，proto3 不产生），首字节为 '{' 且整体是合法 JSON
+// 即可认定为文本帧载荷。
+func isJSONObjectPayload(data []byte) bool {
+	return len(data) > 0 && data[0] == '{' && stdjson.Valid(data)
+}
+
 // WebSocket version of parameter binding and validation utility functions based on global validator
 // 基于全局验证器的 WebSocket 版本参数绑定和验证工具函数
 func (c *WebsocketClient) BindAndValid(data []byte, obj any) (bool, ValidErrors) {
@@ -476,7 +520,13 @@ func (c *WebsocketClient) BindAndValid(data []byte, obj any) (bool, ValidErrors)
 func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj any) (bool, ValidErrors) {
 	var errs ValidErrors
 
-	if c.UseProtobuf() && c.Server.ProtobufDecoder != nil {
+	// A Protobuf connection may still receive JSON text frames: the client's fallback after a
+	// decode failure and its ClientInfo(protobuf=false) downgrade are sent as "Action|{json}".
+	// Handlers only see the payload, so tell the two apart here instead of forcing Protobuf.
+	// 已协商 Protobuf 的连接仍会收到 JSON 文本帧：客户端解码失败后的降级、关闭 Protobuf 时发的
+	// ClientInfo(protobuf=false) 都是 "Action|{json}"。处理函数只拿到载荷，这里按内容区分，
+	// 不能一律按 Protobuf 解码（否则降级帧被拒绝，连接卡死）。
+	if c.acceptsProtobuf() && c.Server.ProtobufDecoder != nil && !isJSONObjectPayload(data) {
 		decoded, err := c.Server.ProtobufDecoder(action, data, obj)
 		if err != nil {
 			errs = append(errs, &ValidError{
@@ -486,6 +536,9 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 			return false, errs
 		}
 		if decoded {
+			if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
+				return false, ValidErrors{verr}
+			}
 			validator := c.app.Validator()
 			if validator == nil {
 				return true, nil
@@ -518,6 +571,10 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 			Message: "Invalid message format",
 		})
 		return false, errs
+	}
+
+	if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
+		return false, ValidErrors{verr}
 	}
 
 	// Step 2: Parameter validation
@@ -556,7 +613,7 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 // Send Ping message regularly
 // 定期发送 Ping 消息
 func (c *WebsocketClient) PingLoop(PingInterval time.Duration) {
-	ticker := time.NewTicker(PingInterval * time.Second) // Send Ping every 25 seconds // 每 25 秒发送一次 Ping
+	ticker := time.NewTicker(PingInterval * time.Second)
 	defer ticker.Stop()
 
 	// Periodic cleanup of expired conflict merge paths
@@ -566,10 +623,12 @@ func (c *WebsocketClient) PingLoop(PingInterval time.Duration) {
 
 	// Initialize last pong time to now (connection just established)
 	// 初始化最后 pong 时间为当前（连接刚建立）
-	c.lastPongAt.Store(time.Now().Unix())
+	c.lastPongAt.Store(time.Now().UnixNano())
+	_ = c.conn.NetConn().SetReadDeadline(c.Server.heartbeatReadDeadline())
 	// Track whether we've sent a ping and are waiting for a pong
 	// 跟踪是否已发送 ping 并等待 pong
 	pingSent := false
+	var heartbeat wsHeartbeat
 
 	for {
 		select {
@@ -580,13 +639,11 @@ func (c *WebsocketClient) PingLoop(PingInterval time.Duration) {
 			if c.conn == nil {
 				return
 			}
-			// If we sent a ping last cycle but never received a pong, the connection is likely dead.
-			// If we sent a ping last cycle but never received a pong, force close.
-			// 如果上一轮发了 ping 但没收到 pong，连接可能已死，强制关闭。
+			// 超时后再发一次 ping，并等待一个完整的 ping 周期；仍无上行响应才关闭。
 			if pingSent {
 				lastPong := c.lastPongAt.Load()
-				elapsed := time.Since(time.Unix(lastPong, 0))
-				if elapsed > time.Duration(WSPingWait)*time.Second {
+				elapsed := time.Since(time.Unix(0, lastPong))
+				if heartbeat.expired(time.Now(), time.Unix(0, lastPong), c.Server.config.PingWait*time.Second, PingInterval*time.Second) {
 					log(LogWarn, "WS Client: no pong received within deadline, force closing",
 						zap.Duration("sinceLastPong", elapsed),
 						zap.String("traceID", c.TraceID))
@@ -596,7 +653,7 @@ func (c *WebsocketClient) PingLoop(PingInterval time.Duration) {
 			}
 			// Set write deadline to prevent WritePing from blocking indefinitely on dead connections.
 			// 设置写超时，防止 WritePing 在死连接上永久阻塞
-			_ = c.conn.NetConn().SetWriteDeadline(time.Now().Add(WSPingWriteTimeout * time.Second))
+			_ = c.conn.NetConn().SetWriteDeadline(time.Now().Add(min(WSPingWriteTimeout*time.Second, PingInterval*time.Second)))
 			if err := c.conn.WritePing(nil); err != nil {
 				// Normal error when the connection is closed, lower log level
 				// 连接关闭时的正常错误，降低日志级别
@@ -665,7 +722,9 @@ func (c *WebsocketClient) ToResponse(code *code.Code, action ...string) {
 	}
 
 	if c.app.IsReturnSuccess() || actionType != "" || code.Code() > 200 || code.HaveData() || code.HaveDetails() {
-		if c.UseProtobuf() && c.Server.ProtobufEncoder != nil && actionType != "" {
+		// Authorization must stay JSON even if parallel ClientInfo has enabled outbound pb.
+		// 即使并行 ClientInfo 已开启出站 pb，鉴权应答也必须保持 JSON 文本帧。
+		if actionType != "Authorization" && c.UseProtobuf() && c.Server.ProtobufEncoder != nil && actionType != "" {
 			pbBytes, err := c.Server.ProtobufEncoder(actionType, &content)
 			if err == nil {
 				c.writeMessage(gws.OpcodeBinary, pbBytes)
@@ -909,19 +968,19 @@ type ValidatorInterface interface {
 }
 
 type WebsocketServer struct {
-	app               AppContainer // App Container (Required) // App Container（必须）
+	app                AppContainer // App Container (Required) // App Container（必须）
 	handlers           map[string]func(*WebsocketClient, *WebSocketMessage)
 	noAuthHandlers     map[string]func(*WebsocketClient, *WebSocketMessage) // Handlers that do not require user authentication // 免登录鉴权消息处理器集合
 	interceptors       []func(*WebsocketClient, *WebSocketMessage) bool     // Pre-handler interceptor chain // 消息前置拦截器链
 	userVerifyHandler  func(*WebsocketClient, int64) (*UserSelectEntity, error)
 	tokenVerifyHandler func(ctx context.Context, uid int64, tokenID int64, nonce string, reqClientType, reqClientName, reqClientVersion, reqUserAgent, reqIP string) (string, string, error)
-	binaryHandlers    map[string]func(*WebsocketClient, []byte) // Binary message handler map: prefix -> handler // 二进制消息处理器映射 prefix -> handler
-	clients           ConnStorage
-	userClients       map[string]ConnStorage
-	connWg            sync.WaitGroup
-	mu                sync.RWMutex
-	up                *gws.Upgrader
-	config            *WSConfig
+	binaryHandlers     map[string]func(*WebsocketClient, []byte) // Binary message handler map: prefix -> handler // 二进制消息处理器映射 prefix -> handler
+	clients            ConnStorage
+	userClients        map[string]ConnStorage
+	connWg             sync.WaitGroup
+	mu                 sync.RWMutex
+	up                 *gws.Upgrader
+	config             *WSConfig
 	// Global session management (UID -> SessionID -> Session)
 	// 全局会话管理 (UID -> SessionID -> Session)
 	binaryChunkSessions map[string]map[string]any
@@ -1003,14 +1062,15 @@ func (w *WebsocketServer) clientsByTraceID(traceID string) (*WebsocketClient, bo
 // NewWebsocketServer 创建 WebSocket 服务器实例
 // c: WebSocket config // c: WebSocket 配置
 // app: App Container (Required) // app: App Container（必须）
+
 func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 	if app == nil {
 		panic("AppContainer is required for WebsocketServer")
 	}
-	if c.PingInterval == 0 {
+	if c.PingInterval <= 0 {
 		c.PingInterval = WSPingInterval
 	}
-	if c.PingWait == 0 {
+	if c.PingWait <= 0 {
 		c.PingWait = WSPingWait
 	}
 
@@ -1045,6 +1105,25 @@ func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 // App 获取 App Container
 func (w *WebsocketServer) App() AppContainer {
 	return w.app
+}
+
+// NewTestClient builds a minimal WebsocketClient bound to this server without a real
+// connection, for unit tests that drive handler code paths (ToResponse dereferences the
+// private app field, which only Run() would otherwise populate). conn stays nil, so
+// writeMessage returns an error instead of panicking, and UserClients stays empty so
+// BroadcastResponse is a no-op.
+// NewTestClient 构造一个绑定到本 server、无真实连接的最小 WebsocketClient，供单元测试
+// 驱动处理器代码路径（ToResponse 会解引用私有 app 字段，此前只有 Run() 会填充它）。
+// conn 保持 nil，writeMessage 只返回错误不 panic；UserClients 保持为空，BroadcastResponse 为 no-op。
+func (w *WebsocketServer) NewTestClient(uid int64) *WebsocketClient {
+	client := &WebsocketClient{
+		app:    w.app,
+		Server: w,
+		SF:     new(singleflight.Group),
+		User:   &UserEntity{UID: uid},
+	}
+	client.initContext("test-trace")
+	return client
 }
 
 func (w *WebsocketServer) Upgrade() {
@@ -1233,15 +1312,15 @@ func (w *WebsocketServer) Authorization(c *WebsocketClient, msg *WebSocketMessag
 
 		versionInfo := w.app.Version()
 
-		// Handshake merge (§2.3/§5.1): auth response is always JSON text (useProtobuf is only
-		// ever set by ClientInfo/pv2-early-upgrade, never before this point), so adding keys
-		// here is a plain JSON-object addition — old clients (no pv or pv<2) JSON.parse and
-		// ignore the unknown keys, producing byte-identical output to pre-3.6.0 since the base
-		// four keys never change. Only pv>=2 connections get the negotiation block.
-		// 握手合并（§2.3/§5.1）：auth 响应恒为 JSON 文本（useProtobuf 只会被 ClientInfo/pv2 提前升级设置，
-		// 在此之前绝不会被设置），因此这里加 key 只是普通的 JSON object 加字段——旧客户端（无 pv 或
-		// pv<2）JSON.parse 后忽略未知 key，因为基础四个 key 从不变化，输出与 3.6.0 前逐字节相同。
-		// 只有 pv>=2 的连接才会拿到协商块。
+		// Handshake merge (§2.3/§5.1): auth response is always JSON text (ToResponse keeps the
+		// Authorization frame as JSON even when a parallel ClientInfo already enabled outbound pb),
+		// so adding keys here is a plain JSON-object addition — old clients (no pv or pv<2)
+		// JSON.parse and ignore the unknown keys, producing byte-identical output to pre-3.6.0
+		// since the base four keys never change. Only pv>=2 connections get the negotiation block.
+		// 握手合并（§2.3/§5.1）：auth 响应恒为 JSON 文本（即使并行处理的 ClientInfo 已开启出站 pb，
+		// ToResponse 也保证鉴权帧为 JSON），因此这里加 key 只是普通的 JSON object 加字段——旧客户端
+		// （无 pv 或 pv<2）JSON.parse 后忽略未知 key，因为基础四个 key 从不变化，输出与 3.6.0 前
+		// 逐字节相同。只有 pv>=2 的连接才会拿到协商块。
 		authData := map[string]interface{}{
 			"version":   versionInfo.Version,
 			"gitTag":    versionInfo.GitTag,
@@ -1259,13 +1338,17 @@ func (w *WebsocketServer) Authorization(c *WebsocketClient, msg *WebSocketMessag
 			authData["pipelineWindowUp"] = pipelineWindowUp
 			authData["pipelineWindowDown"] = pipelineWindowDown
 			authData["protobufAck"] = protobufAck
+			// Publish inbound acceptance before the peer can see protobufAck.
+			// 在客户端能看到 protobufAck 前发布入站接受状态，关闭并行处理窗口。
+			c.setAcceptProtobuf(protobufAck)
 		}
 
 		c.ToResponse(code.Success.WithData(authData), "Authorization")
 
-		// pb 提前升级：必须在 auth 响应发出之后才切换，确保该响应本身仍以 JSON 文本帧发送
-		// (early pb upgrade must happen strictly after the auth response is sent, so that
-		// response itself is always transmitted as a JSON text frame).
+		// Auth's outbound switch follows the response write; parallel ClientInfo may already
+		// have enabled pb. ToResponse explicitly keeps the auth frame as JSON in either case.
+		// 鉴权流程在应答写完后切换出站协议；并行 ClientInfo 可能已开启 pb，
+		// 两种情况下 ToResponse 都显式保证鉴权帧为 JSON。
 		if c.ProtoVersion >= 2 {
 			c.setUseProtobuf(protobufAck)
 		}
@@ -1298,7 +1381,15 @@ func (w *WebsocketServer) ClientInfo(c *WebsocketClient, msg *WebSocketMessage) 
 	// 原子更新全部连接元数据，避免并发读方看到只更新了一部分字段的中间状态
 	// Atomically update all connection metadata, avoiding concurrent readers observing a partially-updated state
 	c.setClientInfo(info.Name, info.Type, info.Version, platform, info.OfflineSyncStrategy, useProtobuf)
+	c.DiffMergePathsMu.Lock()
 	c.DiffMergePaths = make(map[string]DiffMergeEntry)
+	c.DiffMergePathsMu.Unlock()
+	if c.OfflineSyncStrategy() != info.OfflineSyncStrategy {
+		log(LogWarn, "WS ClientInfo unknown offlineSyncStrategy, falling back to default strategy",
+			zap.String("offlineSyncStrategy", info.OfflineSyncStrategy),
+			zap.String("name", info.Name),
+			zap.String("version", info.Version))
+	}
 
 	if useProtobuf {
 		log(LogInfo, "WS Client upgraded to Protobuf successfully", zap.String("uid", func() string {
@@ -1538,6 +1629,7 @@ func (w *WebsocketServer) GetSession(uid string, sessionID string) any {
 
 // GetSessionByPathHash gets global binary upload session by path hash
 // GetSessionByPathHash 通过路径哈希获取全局二进制上传会话
+//
 //go:noinline
 func (w *WebsocketServer) GetSessionByPathHash(uid string, pathHash string) any {
 	w.sessionsMu.RLock()
@@ -1686,14 +1778,19 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 }
 
 func (w *WebsocketServer) OnPing(socket *gws.Conn, payload []byte) {
-	_ = socket.SetDeadline(time.Now().Add(w.config.PingWait * time.Second))
+	if c := w.GetClient(socket); c != nil {
+		c.lastPongAt.Store(time.Now().UnixNano())
+	}
+	_ = socket.NetConn().SetReadDeadline(w.heartbeatReadDeadline())
+	_ = socket.NetConn().SetWriteDeadline(time.Now().Add(min(WSPingWriteTimeout*time.Second, w.config.PingInterval*time.Second)))
 	_ = socket.WritePong(nil)
+	_ = socket.NetConn().SetWriteDeadline(time.Time{})
 }
 
 func (w *WebsocketServer) OnPong(socket *gws.Conn, payload []byte) {
-	_ = socket.SetDeadline(time.Now().Add(w.config.PingWait * time.Second))
+	_ = socket.NetConn().SetReadDeadline(w.heartbeatReadDeadline())
 	if c := w.GetClient(socket); c != nil {
-		c.lastPongAt.Store(time.Now().Unix())
+		c.lastPongAt.Store(time.Now().UnixNano())
 	}
 }
 
@@ -1712,14 +1809,26 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 		return
 	}
 
+	// Any inbound frame proves the peer is alive. On a slow uplink the browser's pong
+	// queues behind buffered upload chunks and can arrive later than WSPingWait, which made
+	// PingLoop kill clients that were actively streaming attachments. Treat data as liveness.
+	// 收到任何数据帧都说明对端活着。慢上行时浏览器的 pong 会排在待发送的附件分片后面，
+	// 晚于 WSPingWait 才到，导致 PingLoop 误杀正在上传附件的客户端。数据帧同样刷新存活时间。
+	c.lastPongAt.Store(time.Now().UnixNano())
+
+	uid := "Guest"
+	if c.User != nil {
+		uid = c.User.ID
+	}
+
 	// Set deadline
 	// 设置延时
-	_ = conn.SetDeadline(time.Now().Add(w.config.PingWait * time.Second))
+	_ = conn.NetConn().SetReadDeadline(w.heartbeatReadDeadline())
 
 	if message.Opcode == gws.OpcodeBinary {
 		data := message.Data.Bytes()
 		if len(data) < 2 {
-			log(LogError, "WS OnMessage Binary too short", zap.String("uid", c.User.ID))
+			log(LogError, "WS OnMessage Binary too short", zap.String("uid", uid))
 			return
 		}
 		prefix := string(data[:2])
@@ -1731,6 +1840,11 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 		copy(payloadCopy, payload)
 
 		if handler, ok := w.binaryHandlers[prefix]; ok {
+			// Binary upload handlers bypass the text/protobuf authentication interceptor.
+			if c.User == nil {
+				c.ToResponse(code.ErrorNotUserAuthToken)
+				return
+			}
 			// Submit task through Worker Pool
 			// 通过 Worker Pool 提交任务
 			err := w.app.SubmitTaskAsync(c.Context(), func(ctx context.Context) error {
@@ -1743,7 +1857,7 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 				}
 				// Verify binary message permission (currently only "00" for file chunk upload)
 				if !VerifyPermissions(c.Scope, "ws", c.ClientType(), "file_w") {
-					log(LogWarn, "WS OnMessage Binary Permission Denied", zap.String("prefix", prefix), zap.String("uid", c.User.ID))
+					log(LogWarn, "WS OnMessage Binary Permission Denied", zap.String("prefix", prefix), zap.String("uid", uid))
 					c.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Permission denied: binary " + prefix))
 					return nil
 				}
@@ -1755,24 +1869,24 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 				// Worker Pool 满载或已关闭，记录错误并返回错误响应
 				log(LogError, "WS OnMessage Worker Pool error",
 					zap.String("prefix", prefix),
-					zap.String("uid", c.User.ID),
+					zap.String("uid", uid),
 					zap.Error(err))
 				c.ToResponse(code.ErrorServerBusy)
 				return
 			}
 		} else if prefix == "pb" {
-			if !c.UseProtobuf() {
-				log(LogWarn, "WS OnMessage received Protobuf but UseProtobuf is false", zap.String("uid", c.User.ID))
+			if c.User == nil || !c.acceptsProtobuf() {
+				log(LogWarn, "WS OnMessage received Protobuf without authenticated negotiation", zap.String("uid", uid))
 				return
 			}
 			if w.EnvelopeDecoder == nil {
-				log(LogError, "WS OnMessage EnvelopeDecoder is nil", zap.String("uid", c.User.ID))
+				log(LogError, "WS OnMessage EnvelopeDecoder is nil", zap.String("uid", uid))
 				return
 			}
 
 			action, innerPayload, err := w.EnvelopeDecoder(payloadCopy)
 			if err != nil {
-				log(LogError, "WS OnMessage Protobuf Envelope decode failed", zap.Error(err), zap.String("uid", c.User.ID))
+				log(LogError, "WS OnMessage Protobuf Envelope decode failed", zap.Error(err), zap.String("uid", uid))
 				return
 			}
 
@@ -1821,7 +1935,7 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 		msg.Type = messageStr[:index]           // Extract the part before the separator // 提取分隔符之前的部分
 		msg.Data = []byte(messageStr[index+1:]) // Extract the part after the separator // 提取分隔符之后的部分
 	} else {
-		log(LogError, "WS OnMessage", zap.String("type", "Illegal message type"), zap.String("uid", c.User.ID))
+		log(LogError, "WS OnMessage", zap.String("type", "Illegal message type"), zap.String("uid", uid))
 		return
 	}
 
@@ -1943,4 +2057,3 @@ func (w *WebsocketServer) cleanupStaleSessions(uid string, maxAge time.Duration)
 		delete(w.binaryChunkSessions, uid)
 	}
 }
-

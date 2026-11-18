@@ -11,6 +11,7 @@ import (
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	apperrors "github.com/haierkeys/fast-note-sync-service/pkg/errors"
+	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
@@ -195,11 +196,18 @@ func (h *NoteHandler) CreateOrUpdate(c *gin.Context) {
 		return
 	}
 
-	// Validate paths for directory traversal attacks
-	if !util.ValidatePath(params.Path) {
+	// Validate and clean the path: strip leading "/", reject traversal/NUL,
+	// ensure notes end in .md (#342 S-8, #244)
+	// 校验并清洗路径：去前导 "/"、拒绝越界与 NUL、保证笔记以 .md 结尾（#342 S-8, #244）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
 
 	// Apply default folder if configured
 	// if defaultFolder := h.App.Config().App.DefaultAPIFolder; defaultFolder != "" {
@@ -214,6 +222,9 @@ func (h *NoteHandler) CreateOrUpdate(c *gin.Context) {
 	if params.ContentHash == "" {
 		params.ContentHash = util.EncodeHash32(params.Content)
 	}
+	// 部分第三方客户端传秒级时间戳，归一化为毫秒，避免显示为 1970 年且新旧比较永远偏旧（#461）
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
 	if params.Mtime == 0 {
 		params.Mtime = time.Now().UnixMilli()
 	}
@@ -294,6 +305,18 @@ func (h *NoteHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path (#342 S-8, #244)
+	// 校验并清洗路径（#342 S-8, #244）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
+
 	// Calculate PathHash
 	// 计算 PathHash
 	if params.PathHash == "" {
@@ -366,6 +389,18 @@ func (h *NoteHandler) Restore(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidUserAuthToken)
 		return
 	}
+
+	// Validate and clean the path (#342 S-8, #244)
+	// 校验并清洗路径（#342 S-8, #244）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
 
 	// Calculate PathHash
 	// 计算 PathHash
@@ -442,6 +477,18 @@ func (h *NoteHandler) PatchFrontmatter(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path (#342 S-8, #244)
+	// 校验并清洗路径（#342 S-8, #244）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
+
 	// Apply default folder if configured
 	// if defaultFolder := h.App.Config().App.DefaultAPIFolder; defaultFolder != "" {
 	// 	params.Path = util.ApplyDefaultFolder(params.Path, defaultFolder)
@@ -500,6 +547,18 @@ func (h *NoteHandler) Append(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidUserAuthToken)
 		return
 	}
+
+	// Validate and clean the path (#342 S-8, #244)
+	// 校验并清洗路径（#342 S-8, #244）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
 
 	// Apply default folder if configured
 	// if defaultFolder := h.App.Config().App.DefaultAPIFolder; defaultFolder != "" {
@@ -560,6 +619,18 @@ func (h *NoteHandler) Prepend(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path (#342 S-8, #244)
+	// 校验并清洗路径（#342 S-8, #244）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
+
 	// Apply default folder if configured
 	// if defaultFolder := h.App.Config().App.DefaultAPIFolder; defaultFolder != "" {
 	// 	params.Path = util.ApplyDefaultFolder(params.Path, defaultFolder)
@@ -618,6 +689,18 @@ func (h *NoteHandler) Replace(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidUserAuthToken)
 		return
 	}
+
+	// Validate and clean the path (#342 S-8, #244)
+	// 校验并清洗路径（#342 S-8, #244）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
 
 	// Apply default folder if configured
 	// if defaultFolder := h.App.Config().App.DefaultAPIFolder; defaultFolder != "" {
@@ -680,11 +763,23 @@ func (h *NoteHandler) Rename(c *gin.Context) {
 		return
 	}
 
-	// Validate paths
-	if !util.ValidatePath(params.Path) || !util.ValidatePath(params.OldPath) {
+	// Validate and clean both paths: strip leading "/", reject traversal/NUL,
+	// ensure notes end in .md (#342 S-8, #244)
+	// 校验并清洗新旧两个路径：去前导 "/"、拒绝越界与 NUL、保证笔记以 .md 结尾（#342 S-8, #244）
+	newPath, ok := cleanAPIPath(params.Path)
+	oldPath, okOld := cleanAPIPath(params.OldPath)
+	if !ok || !okOld {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != newPath {
+		params.PathHash = util.EncodeHash32(newPath)
+	}
+	params.Path = newPath
+	if params.OldPath != oldPath {
+		params.OldPathHash = util.EncodeHash32(oldPath)
+	}
+	params.OldPath = oldPath
 
 	// Calculate PathHash
 	if params.PathHash == "" {

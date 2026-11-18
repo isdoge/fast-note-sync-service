@@ -1,5 +1,0 @@
-# Built artifacts — never commit the binary, fnpack tool, or .fpk output.
-app/fast-note-sync-service
-fnpack
-*.fpk
-*.fpk.sha256

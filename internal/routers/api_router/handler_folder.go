@@ -7,6 +7,7 @@ import (
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	apperrors "github.com/haierkeys/fast-note-sync-service/pkg/errors"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -93,6 +94,18 @@ func (h *FolderHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
+
 	uid := pkgapp.GetUID(c)
 	res, err := h.App.GetFolderService(h.getClientInfo(c)).UpdateOrCreate(c.Request.Context(), uid, params)
 	if err != nil {
@@ -121,6 +134,18 @@ func (h *FolderHandler) Delete(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
 		return
 	}
+
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
 
 	uid := pkgapp.GetUID(c)
 	_, err := h.App.GetFolderService(h.getClientInfo(c)).Delete(c.Request.Context(), uid, params)

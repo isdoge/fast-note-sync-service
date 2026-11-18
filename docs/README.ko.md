@@ -1,16 +1,17 @@
-[简体中文](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/haierkeys/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
+[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
 
-문제가 발생하면 [issue](https://github.com/haierkeys/fast-note-sync-service/issues/new)를 생성하거나 텔레그램 그룹에 가입하여 도움을 요청하세요: [https://t.me/obsidian_users](https://t.me/obsidian_users)
+> [!IMPORTANT]
+> **이 저장소는 독립적으로 유지 관리되는 수정판입니다.** 업스트림 [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service)는 2026년 8월 이후 업데이트되지 않고 있습니다. 이 저장소는 [isdoge](https://github.com/isdoge)가 업스트림 v3.6.1에서 포크하여, 밀려 있던 PR을 병합하고 알려진 문제를 수정한 것으로, 이후에는 독립적으로 발전하며 버전 번호는 업스트림을 따르지 않습니다. 이미지와 다운로드 주소도 변경되었습니다. 자세한 내용은 아래의 '이 저장소에 대해'를 참고하세요.
 
-중국 본토 사용자의 경우 Tencent cnb.cool 미러 저장소를 사용하는 것을 권장합니다: [https://cnb.cool/haierkeys/fast-note-sync-service](https://cnb.cool/haierkeys/fast-note-sync-service)
+문제나 요청 사항이 있으면 이 저장소에 [issue](https://github.com/isdoge/fast-note-sync-service/issues/new)를 생성해 주세요.
 
 
 <h1 align="center">Fast Note Sync Service</h1>
 
 <p align="center">
-    <a href="https://github.com/haierkeys/fast-note-sync-service/releases"><img src="https://img.shields.io/github/release/haierkeys/fast-note-sync-service?style=flat-square" alt="release"></a>
-    <a href="https://github.com/haierkeys/fast-note-sync-service/releases"><img src="https://img.shields.io/github/v/tag/haierkeys/fast-note-sync-service?label=release-alpha&style=flat-square" alt="alpha-release"></a>
-    <a href="https://github.com/haierkeys/fast-note-sync-service/blob/master/LICENSE"><img src="https://img.shields.io/github/license/haierkeys/fast-note-sync-service?style=flat-square" alt="license"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/releases"><img src="https://img.shields.io/github/release/isdoge/fast-note-sync-service?style=flat-square" alt="release"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/releases"><img src="https://img.shields.io/github/v/tag/isdoge/fast-note-sync-service?label=release-alpha&style=flat-square" alt="alpha-release"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/blob/master/LICENSE"><img src="https://img.shields.io/github/license/isdoge/fast-note-sync-service?style=flat-square" alt="license"></a>
     <img src="https://img.shields.io/badge/Language-Go-00ADD8?style=flat-square" alt="Go">
 </p>
 
@@ -21,7 +22,7 @@
 </p>
 
 <p align="center">
-  데이터 제공은 클라이언트 플러그인과 함께 사용해야 합니다: <a href="https://github.com/haierkeys/obsidian-fast-note-sync">Obsidian Fast Note Sync Plugin</a>
+  데이터 제공은 클라이언트 플러그인과 함께 사용해야 합니다: <a href="https://github.com/isdoge/obsidian-fast-note-sync">Obsidian Fast Note Sync Plugin</a>
 </p>
 
 <div align="center">
@@ -37,15 +38,53 @@
 
 ---
 
+## 📌 이 저장소에 대해
+
+이 저장소는 [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service)의 독립 유지 관리 버전이며, 관리자는 [isdoge](https://github.com/isdoge)입니다. 이 프로젝트를 만들어 준 원작자 HaierKeys에게 감사드립니다.
+
+- **유래**: 업스트림 v3.6.1에서 포크하여 당시 처리되지 않던 13개의 PR을 병합하고 알려진 문제들을 수정했습니다. 전체 목록은 [업데이트 로그](/docs/CHANGELOG.ko.md)를 참고하세요.
+- **버전 번호**: v3.7.0부터 독립적으로 증가하며 업스트림을 따르지 않습니다.
+- **배포 채널**: 바이너리는 이 저장소의 [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases)에만, 컨테이너 이미지는 `ghcr.io/isdoge/fast-note-sync-service`에만 게시됩니다. 프로그램 내 업데이트 확인 및 다운로드 주소도 이 저장소를 가리키도록 변경되었습니다.
+- **함께 사용할 플러그인**: 마찬가지로 독립적으로 유지 관리되는 [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)(v2.5.0 이상)와 함께 사용하세요. 일부 수정 사항은 서버와 플러그인을 모두 업그레이드해야 적용됩니다.
+- **변경되지 않는 것**: 원작자의 저작권 표시와 후원 정보, Go module 경로(`github.com/haierkeys/fast-note-sync-service`). 기존 구성 파일과 데이터 디렉터리는 그대로 사용할 수 있습니다.
+- **피드백**: 문제와 요청 사항은 이 저장소의 [Issues](https://github.com/isdoge/fast-note-sync-service/issues)에 올려 주세요. 업스트림 저장소에는 올리지 마세요.
+
+### 제거된 내용
+
+다음 항목들은 독립 유지 관리 버전에서 제거되었습니다. **이 중 필요한 것이 있다면 [issue](https://github.com/isdoge/fast-note-sync-service/issues/new)를 열어 사용 사례를 알려주세요.** 복원 여부를 검토하겠습니다.
+
+| 제거됨 | 설명 | 대신 사용 |
+| --- | --- | --- |
+| Docker Hub 이미지 `haierkeys/fast-note-sync-service` | 이 저장소는 Docker Hub에 게시하지 않습니다. 해당 주소에는 여전히 이전 업스트림 버전이 있습니다 | `ghcr.io/isdoge/fast-note-sync-service` |
+| Tencent `cnb.cool` 이미지 저장소 및 다운로드 소스 | cnb에 더 이상 동기화하지 않습니다. 원클릭 스크립트의 `--cnb` 옵션과 이미지 전환 메뉴, 관리 패널의 cnb 항목도 함께 제거되었습니다 | GitHub |
+| 페이니우 fnOS `.fpk` 설치 패키지 | 더 이상 빌드하지 않습니다 | Docker 또는 바이너리 배포 |
+| Git 동기화의 `ssh://`, `git://`, `user@host:path` 저장소 주소 | 이러한 형식은 이전부터 동기화가 실제로 불가능했으며, 이제 저장 및 검증 시 명확히 안내합니다 | `http` / `https` 주소 |
+
+또한, **MySQL / MariaDB 백엔드는 현재 버전에서 권장되지 않습니다**(해결되지 않은 테이블 생성 문제가 남아 있습니다). SQLite 또는 PostgreSQL을 사용하세요.
+
+### 업스트림 버전에서 업그레이드
+
+- 먼저 데이터 디렉터리와 구성을 **백업**하세요. v3.7.0 첫 실행 시 일회성 데이터 마이그레이션 3건(태그 인덱스 백필, 노트 크기 백필, 초 단위 타임스탬프 → 밀리초 변환)이 실행됩니다.
+- **Docker 배포**: 이미지 주소를 `ghcr.io/isdoge/fast-note-sync-service:latest`로 변경하세요. 볼륨과 구성은 그대로 두어도 됩니다.
+- **바이너리 배포**: 이 저장소의 Releases에서 해당 플랫폼의 패키지를 내려받아 프로그램을 교체하거나, 아래의 원클릭 스크립트를 다시 실행하세요.
+- **동작 변화**(발췌, 전체 내용은 업데이트 로그의 '변경' 및 '보안' 섹션 참조):
+  - `trusted-proxies`는 기본적으로 루프백 주소만 신뢰합니다. 동일 호스트 Docker + Nginx 배포에서 토큰을 IP에 바인딩한 경우, 게이트웨이 주소를 `trusted-proxies`에 추가해야 합니다.
+  - 노트 보관소가 제한된 API 토큰은 요청에 반드시 보관소 매개변수를 포함해야 합니다.
+  - Git 동기화 저장소가 사설망 또는 `100.64.0.0/10`(예: Tailscale로 접근하는 Gitea)에 있는 경우, 주소 또는 대역을 `git.allowed-private-hosts`에 추가해야 합니다.
+  - 응답이 전혀 없는 WebSocket 연결은 약 100초 후에 끊깁니다(이전에는 약 75초). Cloudflare Tunnel 등의 경로에서 잦은 연결 끊김이 발생하면 `app.ws-ping-wait`를 늘리세요.
+
 ## 🎯 주요 기능
 
 * **🧰 MCP (Model Context Protocol) 기본 지원**:
   * `FNS`는 MCP 서버로써 `Cherry Studio`, `Cursor` 등 호환되는 AI 클라이언트에 연결될 수 있어, AI가 개인 노트와 첨부 파일을 읽고 쓸 수 있도록 지원하며 모든 변경 사항은 실시간으로 모든 단말기에 동기화됩니다.
+  * 지식 조회 도구 7종 추가: 전문 검색, 깨진 링크, 고립 노트, 태그, 최근 수정, 접두사별 목록, 보관소 통계. `note_list`, `file_list` 페이지네이션 지원.
+  * OpenAI Secure MCP Tunnel을 통해 ChatGPT 커넥터로 연결할 수 있습니다.
 * **🚀 REST API 지원**:
   * 표준 REST API 인터페이스를 제공하여 프로그램 방식(예: 자동화 스크립트, AI 비서 통합)을 통한 Obsidian 노트의 CRUD 작업을 지원합니다.
   * 자세한 내용은 [RESTful API 문서](/docs/REST_API.md) 또는 [OpenAPI 문서](/docs/swagger.yaml)를 참조하세요.
 * **💻 웹 관리 패널**:
   * 현대적인 관리 인터페이스가 내장되어 사용자 생성, 플러그인 구성 생성, 저장소 및 노트 콘텐츠 관리를 쉽게 처리할 수 있습니다.
+  * 만료된 로그인 토큰을 매일 자동으로 정리합니다.
 * **🔄 멀티 디바이스 노트 동기화**:
   * Vault (저장소) 자동 생성을 지원합니다.
   * 노트 관리(CRUD)를 지원하며, 변경 사항은 밀리초 단위로 실시간으로 모든 온라인 디바이스에 배포됩니다.
@@ -77,6 +116,7 @@
 
 * **🌳 Git 자동화**:
   * 첨부 파일 및 노트에 변경이 발생하면 자동으로 업데이트되어 원격 Git 저장소로 푸시됩니다.
+  * 저장소 주소는 http / https를 지원합니다. 사설망 저장소는 `git.allowed-private-hosts` 화이트리스트에 추가해야 합니다.
   * 작업 종료 후 시스템 메모리를 자동으로 해제합니다.
 
 * **☁️ 멀티 스토리지 백업 및 단방향 미러 동기화**:
@@ -86,19 +126,18 @@
   * 만료된 백업을 자동으로 정리하고 맞춤 보존 기간을 지원합니다.
 
 * **🗄️ 멀티 데이터베이스 지원**:
-  * SQLite, MySQL, PostgreSQL 등 다양한 주요 데이터베이스를 기본적으로 지원하여 개인부터 팀까지 다양한 배포 요구 사항을 충족합니다.
+  * SQLite와 PostgreSQL을 지원하여 개인부터 팀까지 다양한 배포 요구 사항을 충족합니다. MySQL / MariaDB는 현재 버전에서 권장되지 않습니다.
 
 ## ☕ 후원 및 지원
 
-- 이 플러그인이 유용하고 지속적인 개발을 지원하고 싶으시다면 아래의 방법으로 후원해 주세요:
+- 이 프로젝트는 HaierKeys가 만들었습니다. 도움이 되었다면 아래의 방법으로 원작자를 후원할 수 있습니다(후원금은 원작자에게 전달되며, 이 저장소의 유지 관리와는 무관합니다):
 
   | Ko-fi *중국 외 지역*                                                                             |    | WeChat Pay *중국 국내 지역*                    |
   |--------------------------------------------------------------------------------------------------|----|------------------------------------------------|
   | [<img src="/docs/images/kofi.png" alt="BuyMeACoffee" height="150">](https://ko-fi.com/haierkeys) | 또는 | <img src="/docs/images/wxds.png" height="150"> |
 
   - 후원자 명단:
-    - <a href="https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/Support.ko.md">Support.ko.md</a>
-    - <a href="https://cnb.cool/haierkeys/fast-note-sync-service/-/blob/master/docs/Support.ko.md">Support.ko.md (cnb.cool 미러 저장소)</a>
+    - <a href="https://github.com/isdoge/fast-note-sync-service/blob/master/docs/Support.ko.md">Support.ko.md</a>
 
 ## ⏱️ 업데이트 로그
 
@@ -106,7 +145,7 @@
 
 ## 🗺️ 로드맵 (Roadmap)
 
-- [ ] WebSocket `Protobuf` 전송 형식 지원을 추가하여 동기화 전송 효율을 강화합니다.
+- [x] WebSocket `Protobuf` 전송 형식 지원을 추가하여 동기화 전송 효율을 강화합니다.
 - [ ] 기존 권한 부여 메커니즘을 격리 및 최적화하여 전반적인 보안을 향상합니다.
 - [ ] Web UI에서 노트 실시간 업데이트를 추가합니다.
 - [ ] 클라이언트 간 P2P 메시지 전송을 추가합니다 (노트 및 첨부 파일 제외, LocalSend와 유사한 기능, 클라이언트 측 저장은 지원되지 않으나 서버 측 저장은 가능).
@@ -116,7 +155,7 @@
   * 서버 주소(공용 IP)와 계정 자격 증명만 제공하면 FNS 서버 측 배포가 완료됩니다.
 - [ ] 기존의 오프라인 노트 병합 방안을 최적화하고 충돌 처리 메커니즘을 추가합니다.
 
-우리는 지속적인 개선을 진행 중이며, 향후 개발 계획은 다음과 같습니다:
+로드맵은 원작자의 계획을 그대로 따릅니다. 독립 유지 관리 버전은 이 목록을 항목별로 진행하며, 완료하는 대로 하나씩 체크합니다.
 
 > **개선 제안이나 새로운 아이디어가 있으시면 언제든지 issue를 제출하여 공유해 주세요. 적절한 제안은 신중히 평가하여 채택할 것입니다.**
 
@@ -129,12 +168,7 @@
 시스템 환경을 자동으로 감지하고 설치 및 서비스 등록을 완료합니다.
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/haierkeys/fast-note-sync-service/master/scripts/quest_install.sh)
-```
-
-중국 지역은 Tencent `cnb.cool` 미러 소스를 사용할 수 있습니다:
-```bash
-bash <(curl -fsSL https://cnb.cool/haierkeys/fast-note-sync-service/-/git/raw/master/scripts/quest_install.sh) --cnb
+bash <(curl -fsSL https://raw.githubusercontent.com/isdoge/fast-note-sync-service/master/scripts/quest_install.sh)
 ```
 
 
@@ -143,25 +177,27 @@ bash <(curl -fsSL https://cnb.cool/haierkeys/fast-note-sync-service/-/git/raw/ma
   * 현재 시스템에 적합한 Release 바이너리 파일을 자동으로 다운로드합니다.
   * 기본적으로 `/opt/fast-note`에 설치되며, `/usr/local/bin/fns`에 글로벌 바로 가기 명령 `fns`를 생성합니다.
   * Systemd (Linux) 또는 Launchd (macOS) 서비스를 구성하고 시작하여 자동 실행을 사용 설정합니다.
+  * **대화형 메뉴**: `fns`를 직접 실행하면 설치/업그레이드, 서비스 제어, 자동 실행 설정을 할 수 있는 대화형 메뉴가 열립니다.
   * **관리 명령**: `fns [install|uninstall|start|stop|status|update|menu]`
-  * **대화형 메뉴**: 직접 `fns`를 실행하여 메뉴로 들어가며, 설치/업그레이드, 서비스 제어, 자동 실행 구성, GitHub과 CNB 미러 간 전환 등을 지원합니다.
 
 -----
 
 ### 방법 2: Docker 배포
 
+이미지는 GitHub Container Registry에 게시되며 linux/amd64, linux/arm64, linux/arm/v7을 지원합니다. Docker Hub의 `haierkeys/fast-note-sync-service`는 이전 업스트림 버전이므로 섞어 사용하지 마세요.
+
 #### Docker Run
 
 ```bash
 # 1. 이미지 풀
-docker pull haierkeys/fast-note-sync-service:latest
+docker pull ghcr.io/isdoge/fast-note-sync-service:latest
 
 # 2. 컨테이너 시작
 docker run -tid --name fast-note-sync-service \
     -p 9000:9000 \
     -v /data/fast-note-sync/storage/:/fast-note-sync/storage/ \
     -v /data/fast-note-sync/config/:/fast-note-sync/config/ \
-    haierkeys/fast-note-sync-service:latest
+    ghcr.io/isdoge/fast-note-sync-service:latest
 ```
 
 #### Docker Compose
@@ -172,7 +208,7 @@ docker-compose.yaml 파일 생성:
 version: '3'
 services:
   fast-note-sync-service:
-    image: haierkeys/fast-note-sync-service:latest
+    image: ghcr.io/isdoge/fast-note-sync-service:latest
     container_name: fast-note-sync-service
     restart: always
     ports:
@@ -192,7 +228,7 @@ docker compose up -d
 
 ### 방법 3: 수동 바이너리 설치
 
-[Releases](https://github.com/haierkeys/fast-note-sync-service/releases)에서 해당 시스템용 최신 버전을 다운로드하고 압축을 푼 후 실행합니다:
+[Releases](https://github.com/isdoge/fast-note-sync-service/releases)에서 해당 시스템용 최신 버전을 다운로드하고 압축을 푼 후 실행합니다:
 
 ```bash
 ./fast-note-sync-service run -c config/config.yaml
@@ -214,11 +250,11 @@ docker compose up -d
 
 기본 구성 파일은 `config.yaml`입니다. 프로그램은 **루트 디렉터리** 또는 **config/** 디렉터리에서 자동으로 검색합니다.
 
-전체 구성 예 보기: [config/config.yaml](https://github.com/haierkeys/fast-note-sync-service/blob/master/config/config.yaml)
+전체 구성 예 보기: [config/config.yaml](https://github.com/isdoge/fast-note-sync-service/blob/master/config/config.yaml)
 
 ## 🌐 Nginx 역방향 프록시 예
 
-전체 구성 예 보기: [https-nginx-example.conf](https://github.com/haierkeys/fast-note-sync-service/blob/master/scripts/https-nginx-example.conf)
+전체 구성 예 보기: [https-nginx-example.conf](https://github.com/isdoge/fast-note-sync-service/blob/master/scripts/https-nginx-example.conf)
 
 ## 🧰 MCP (Model Context Protocol) 지원
 
@@ -302,7 +338,7 @@ SSE 모드는 레거시 전송 프로토콜입니다. 하위 호환성을 유지
 ## 🔗 클라이언트 & 클라이언트 플러그인 & 협력 프로젝트
 
 * Obsidian Fast Note Sync 플러그인
-  * [Obsidian Fast Note Sync 플러그인](https://github.com/haierkeys/obsidian-fast-note-sync) / [cnb.cool 미러 저장소](https://cnb.cool/haierkeys/obsidian-fast-note-sync)
+  * [Obsidian Fast Note Sync 플러그인](https://github.com/isdoge/obsidian-fast-note-sync)
 * 제3자 클라이언트
   * [FastNodeSync-CLI](https://github.com/Go1c/FastNodeSync-CLI) FNS WebSocket 동기화 프로토콜을 기반으로 Python으로 구현된 실시간 양방향 동기화 명령줄 클라이언트입니다. GUI가 없는 Linux 서버 환경(예: OpenClaw)에 적합하며 Obsidian 데스크톱/모바일 앱과 동등한 동기화 성능을 제공합니다.
   * [go-fast-note-sync](https://github.com/erichll/go-fast-note-sync) FNS WebSocket 동기화 프로토콜을 기반으로 Go로 개발된 Go CLI 백그라운드 동기화 데몬입니다. 주로 Linux 헤드리스 환경을 대상으로 하며 macOS 및 Windows도 지원합니다.

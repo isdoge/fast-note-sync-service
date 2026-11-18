@@ -1,5 +1,10 @@
 package config
 
+import (
+	"fmt"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
+)
+
 // SecurityConfig security configuration
 // SecurityConfig 安全配置
 type SecurityConfig struct {
@@ -16,4 +21,25 @@ type SecurityConfig struct {
 	// WebGUILoginTokenBindIP whether to bind the client IP when issuing WebGUI login tokens
 	// WebGUILoginTokenBindIP 签发 WebGUI 登录 Token 时是否绑定客户端 IP
 	WebGUILoginTokenBindIP *bool `yaml:"webgui-login-token-bind-ip" default:"true"`
+	// WebGUILoginTokenBindUA whether to bind the User-Agent when issuing WebGUI login tokens
+	// WebGUILoginTokenBindUA 签发 WebGUI 登录 Token 时是否绑定 User-Agent
+	WebGUILoginTokenBindUA *bool `yaml:"webgui-login-token-bind-ua" default:"true"`
+}
+
+// Validate rejects token lifetimes that are nonpositive or overflow time.Duration.
+func (c SecurityConfig) Validate() error {
+	for _, field := range []struct{ name, value string }{
+		{"token-expiry", c.TokenExpiry},
+		{"share-token-expiry", c.ShareTokenExpiry},
+		{"webgui-login-token-expiry", c.WebGUILoginTokenExpiry},
+	} {
+		d, err := util.ParseDuration(field.value)
+		if err != nil {
+			return fmt.Errorf("security.%s: %w", field.name, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("security.%s must be positive", field.name)
+		}
+	}
+	return nil
 }

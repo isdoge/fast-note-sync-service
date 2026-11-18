@@ -32,10 +32,11 @@ type AdminConfig struct {
 	TokenExpiry             *string `json:"tokenExpiry,omitempty" form:"tokenExpiry"`                         // Token expiry // Token 有效期
 	ShareTokenKey           *string `json:"shareTokenKey,omitempty" form:"shareTokenKey"`                     // Share token key // 分享 Token 密钥
 	ShareTokenExpiry        *string `json:"shareTokenExpiry,omitempty" form:"shareTokenExpiry"`               // Share token expiry // 分享 Token 有效期
-	PullSource              *string `json:"pullSource,omitempty" form:"pullSource"`                           // Data pull source: auto | github | cnb // 数据拉取源：auto | github | cnb
+	PullSource              *string `json:"pullSource,omitempty" form:"pullSource"`                           // Data pull source: auto | github (legacy values use GitHub) // 数据拉取源：auto | github (legacy values use GitHub)
 	PullReleaseChannel      *string `json:"pullReleaseChannel,omitempty" form:"pullReleaseChannel"`           // Update version channel: stable | beta // 更新版本通道：stable | beta
 	WebGUILoginTokenExpiry  *string `json:"webguiLoginTokenExpiry,omitempty" form:"webguiLoginTokenExpiry"`   // WebGUI login token expiry // WebGUI 登录 Token 有效期
 	WebGUILoginTokenBindIP  *bool   `json:"webguiLoginTokenBindIp,omitempty" form:"webguiLoginTokenBindIp"`   // WebGUI login token bind IP // WebGUI 登录 Token 是否绑定 IP
+	WebGUILoginTokenBindUA  *bool   `json:"webguiLoginTokenBindUa,omitempty" form:"webguiLoginTokenBindUa"`   // WebGUI login token bind User-Agent // WebGUI 登录 Token 是否绑定 User-Agent
 	CustomResponseHeaders   *map[string]string `json:"customResponseHeaders,omitempty" form:"customResponseHeaders"` // Custom HTTP response headers // 自定义 HTTP 响应头
 	DefaultPageSize               *int               `json:"defaultPageSize,omitempty" form:"defaultPageSize"`                             // Default page size // 默认每页显示数
 	MaxPageSize                   *int               `json:"maxPageSize,omitempty" form:"maxPageSize"`                                     // Max page size // 最大每页显示限制
@@ -63,6 +64,7 @@ type AdminConfig struct {
 	PipelineWindowDown            *int               `json:"pipelineWindowDown,omitempty" form:"pipelineWindowDown"`                       // Download pipeline window size for pv>=2 connections; 0 = stop-and-wait // pv>=2 连接的下行流水线窗口大小；0 = stop-and-wait
 	GitName                       *string            `json:"gitName,omitempty" form:"gitName"`                                             // Git author name // Git 提交的作者名称
 	GitEmail                      *string            `json:"gitEmail,omitempty" form:"gitEmail"`                                           // Git author email // Git 提交的作者邮箱
+	GitAllowedPrivateHosts        *[]string          `json:"gitAllowedPrivateHosts,omitempty" form:"gitAllowedPrivateHosts"`               // Allowed private Git hosts // 允许访问的私网 Git 主机
 }
 
 // AdminUserDatabaseConfig User database configuration structure

@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"html"
 	"mime"
 	"net/http"
 	"net/url"
@@ -89,7 +90,12 @@ type ShareService interface {
 
 	// GetSharedFileInfo retrieves shared file metadata and path for zero-copy download
 	// GetSharedFileInfo 获取分享文件的元数据和路径，用于零拷贝下载
-	GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (savePath string, contentType string, mtime int64, etag string, fileName string, err error)
+	// GetSharedFileInfo retrieves shared file metadata and path for zero-copy download.
+	// isPasswordProtected reports whether the share requires a password, so the caller
+	// can choose cache directives accordingly (#342 S-22).
+	// GetSharedFileInfo 获取分享文件的元数据和路径，用于零拷贝下载。
+	// isPasswordProtected 报告该分享是否设置了访问密码，调用方据此决定缓存策略（#342 S-22）。
+	GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (savePath string, contentType string, mtime int64, etag string, fileName string, isPasswordProtected bool, err error)
 
 	// RecordView aggregates access statistics in memory
 	// RecordView 在内存中聚合访问统计
@@ -107,9 +113,21 @@ type ShareService interface {
 	// CreateShortLink 为分享生成短链
 	CreateShortLink(ctx context.Context, uid int64, vaultName string, path string, pathHash string, baseURL string, longURL string, isForce bool) (string, error)
 
-	// ListShares lists all shares of a user with sorting and pagination
-	// ListShares 列出用户的所有分享（支持排序和分页）
-	ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager) ([]*dto.ShareListItem, int, error)
+	// ListShares lists all shares of a user with sorting and pagination.
+	// allowedVaults is the token's vault allowlist ("" means unrestricted); shares of
+	// other vaults are filtered out so a restricted token cannot read them (#461).
+	// ListShares 列出用户的所有分享（支持排序和分页）。
+	// allowedVaults 为令牌的笔记库白名单（"" 表示不限制），其它库的分享会被过滤，
+	// 受限令牌无法读到（#461）。
+	ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager, allowedVaults string) ([]*dto.ShareListItem, int, error)
+
+	// GetShare retrieves a share record by ID
+	// GetShare 按 ID 获取分享记录
+	GetShare(ctx context.Context, uid int64, id int64) (*domain.UserShare, error)
+
+	// GetShareVaultName resolves the vault name a share's main resource belongs to.
+	// GetShareVaultName 解析分享主资源所属的笔记库名称。
+	GetShareVaultName(ctx context.Context, uid int64, id int64) (string, error)
 
 	// GetShareByPath retrieves share info by path
 	// GetShareByPath 根据路径获取分享信息
@@ -483,9 +501,13 @@ func (s *shareService) UpdateSharePassword(ctx context.Context, uid int64, vault
 	return s.repo.UpdateExpiresAt(ctx, uid, share.ID, expiresAt)
 }
 
-// ListShares lists all shares of a user with sorting, pagination and fills in resource titles
-// ListShares 列出用户的所有分享，支持排序、分页，并填充资源标题
-func (s *shareService) ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager) ([]*dto.ShareListItem, int, error) {
+// ListShares lists all shares of a user with sorting, pagination and fills in resource titles.
+// allowedVaults is the token's vault allowlist ("" means unrestricted); shares of other
+// vaults are filtered out so a restricted token cannot read them (#461).
+// ListShares 列出用户的所有分享，支持排序、分页，并填充资源标题。
+// allowedVaults 为令牌的笔记库白名单（"" 表示不限制），其它库的分享会被过滤，
+// 受限令牌无法读到（#461）。
+func (s *shareService) ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager, allowedVaults string) ([]*dto.ShareListItem, int, error) {
 	// 1. 获取总数
 	count64, err := s.repo.CountByUID(ctx, uid)
 	if err != nil {
@@ -501,6 +523,24 @@ func (s *shareService) ListShares(ctx context.Context, uid int64, sortBy string,
 	shares, err := s.repo.ListByUID(ctx, uid, sortBy, sortOrder, pkgapp.GetPageOffset(pager.Page, pager.PageSize), pager.PageSize)
 	if err != nil {
 		return nil, 0, err
+	}
+
+	// 3. 受限令牌：先解析每条分享所属的笔记库，过滤掉白名单之外的分享（#461）
+	// 3. Restricted token: resolve each share's vault first, drop shares outside the allowlist (#461)
+	if allowedVaults != "" {
+		kept := make([]*domain.UserShare, 0, len(shares))
+		for _, share := range shares {
+			vaultName, err := s.shareVaultName(ctx, uid, share)
+			if err != nil {
+				s.logger.Warn("ListShares: resolve share vault failed", zap.Int64("shareId", share.ID), zap.Error(err))
+				continue
+			}
+			if util.VerifyVaultAccess(allowedVaults, vaultName) {
+				kept = append(kept, share)
+			}
+		}
+		shares = kept
+		count = len(shares)
 	}
 
 	items := make([]*dto.ShareListItem, 0, len(shares))
@@ -593,6 +633,66 @@ func (s *shareService) ListShares(ctx context.Context, uid int64, sortBy string,
 	}
 
 	return items, count, nil
+}
+
+// GetShare retrieves a share record by ID
+// GetShare 按 ID 获取分享记录
+func (s *shareService) GetShare(ctx context.Context, uid int64, id int64) (*domain.UserShare, error) {
+	return s.repo.GetByID(ctx, uid, id)
+}
+
+// GetShareVaultName resolves the vault name a share's main resource belongs to
+// GetShareVaultName 解析分享主资源所属的笔记库名称
+func (s *shareService) GetShareVaultName(ctx context.Context, uid int64, id int64) (string, error) {
+	share, err := s.repo.GetByID(ctx, uid, id)
+	if err != nil {
+		return "", err
+	}
+	if share == nil {
+		return "", code.ErrorShareNotFound
+	}
+	return s.shareVaultName(ctx, uid, share)
+}
+
+// shareVaultName resolves which vault a share's main resource (note or file) belongs to
+// shareVaultName 解析分享主资源（笔记或文件）所属的笔记库
+func (s *shareService) shareVaultName(ctx context.Context, uid int64, share *domain.UserShare) (string, error) {
+	switch share.ResType {
+	case "note":
+		note, err := s.noteRepo.GetByID(ctx, share.ResID, uid)
+		if err != nil {
+			return "", err
+		}
+		if note == nil {
+			return "", code.ErrorNoteNotFound
+		}
+		vault, err := s.vaultRepo.GetByID(ctx, note.VaultID, uid)
+		if err != nil {
+			return "", err
+		}
+		if vault == nil {
+			return "", code.ErrorVaultNotFound
+		}
+		return vault.Name, nil
+	case "file":
+		file, err := s.fileRepo.GetByID(ctx, share.ResID, uid)
+		if err != nil {
+			return "", err
+		}
+		if file == nil {
+			return "", code.ErrorFileNotFound
+		}
+		vault, err := s.vaultRepo.GetByID(ctx, file.VaultID, uid)
+		if err != nil {
+			return "", err
+		}
+		if vault == nil {
+			return "", code.ErrorVaultNotFound
+		}
+		return vault.Name, nil
+	default:
+		return "", code.ErrorInvalidParams.WithDetails("unknown share res type: " + share.ResType)
+	}
 }
 
 // GetShareByPath retrieves share info by path
@@ -914,6 +1014,11 @@ func (s *shareService) resolveSharedFileReference(ctx context.Context, uid int64
 		}
 	}
 
+	// Apply the same decoding as the exact-path candidates before searching
+	// attachments stored outside the note's directory by their basename.
+	if decoded, err := url.PathUnescape(ref); err == nil && decoded != "" {
+		ref = decoded
+	}
 	normalizedRef := normalizeShareVaultPath(ref)
 	if normalizedRef != "" && !strings.Contains(normalizedRef, "/") {
 		file, err := s.fileRepo.GetByPathLike(ctx, normalizedRef, vaultID, uid)
@@ -1111,6 +1216,14 @@ func rewriteMarkdownImageLinks(content string, fileRefs map[string]*domain.File,
 			return `<video src="` + apiURL + `" controls style="max-width:100%"></video>`
 		case "audio":
 			return `<audio src="` + apiURL + `" controls></audio>`
+		case "":
+			if file.Path != "" {
+				label := alt
+				if label == "" {
+					label = file.Path
+				}
+				return `<a href="` + html.EscapeString(apiURL) + `" target="_blank">` + html.EscapeString(label) + `</a>`
+			}
 		}
 
 		// Image (default) — preserve the original markdown image form, only
@@ -1367,14 +1480,25 @@ func (s *shareService) GetSharedFile(ctx context.Context, shareToken string, fil
 
 // GetSharedFileInfo retrieves shared file metadata and path for zero-copy download
 // GetSharedFileInfo 获取分享文件的元数据和路径，用于零拷贝下载
-func (s *shareService) GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (savePath string, contentType string, mtime int64, etag string, fileName string, err error) {
+func (s *shareService) GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (savePath string, contentType string, mtime int64, etag string, fileName string, isPasswordProtected bool, err error) {
 	ridStr := strconv.FormatInt(fileID, 10)
+	// 提前判定分享是否带密码：VerifyShare 只在带密码时校验，这里单独查一次分享记录，
+	// 供调用方决定缓存策略（#342 S-22）。VerifyShare 内部也会查同一记录，代价可接受。
+	// Determine whether the share requires a password up front: VerifyShare only
+	// checks it when set; query the share record here so the caller can pick cache
+	// directives (#342 S-22). VerifyShare fetches the same row; the cost is acceptable.
+	if entity, perr := s.tokenManager.ShareParse(shareToken); perr == nil {
+		if share, serr := s.repo.GetByID(ctx, entity.UID, entity.SID); serr == nil {
+			isPasswordProtected = share.Password != ""
+		}
+	}
+
 	shareEntity, err := s.VerifyShare(ctx, shareToken, ridStr, "file", password)
 	if err != nil {
 		if cObj, ok := err.(*code.Code); ok {
-			return "", "", 0, "", "", cObj
+			return "", "", 0, "", "", isPasswordProtected, cObj
 		}
-		return "", "", 0, "", "", code.ErrorInvalidAuthToken.WithDetails(err.Error())
+		return "", "", 0, "", "", isPasswordProtected, code.ErrorInvalidAuthToken.WithDetails(err.Error())
 	}
 
 	// 1. Get resource owner's UID
@@ -1383,11 +1507,11 @@ func (s *shareService) GetSharedFileInfo(ctx context.Context, shareToken string,
 	// 2. Confirm path hash (get file metadata from fileRepo)
 	file, err := s.fileRepo.GetByID(ctx, fileID, ownerUID)
 	if err != nil {
-		return "", "", 0, "", "", code.ErrorFileNotFound
+		return "", "", 0, "", "", isPasswordProtected, code.ErrorFileNotFound
 	}
 
 	if file.Action == domain.FileActionDelete {
-		return "", "", 0, "", "", code.ErrorFileNotFound
+		return "", "", 0, "", "", isPasswordProtected, code.ErrorFileNotFound
 	}
 
 	// Identify file MIME type
@@ -1403,7 +1527,7 @@ func (s *shareService) GetSharedFileInfo(ctx context.Context, shareToken string,
 		etag = file.PathHash
 	}
 
-	return file.SavePath, contentType, file.Mtime, etag, filepath.Base(file.Path), nil
+	return file.SavePath, contentType, file.Mtime, etag, filepath.Base(file.Path), isPasswordProtected, nil
 }
 
 // Shutdown shuts down the service and flushes remaining data

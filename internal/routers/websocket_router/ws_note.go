@@ -2,6 +2,7 @@ package websocket_router
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
@@ -76,6 +77,17 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	}
 	if params.Ctime == 0 {
 		c.ToResponse(code.ErrorInvalidParams.WithDetails("ctime is required"))
+		return
+	}
+	// 部分第三方客户端传秒级时间戳，归一化为毫秒，避免新旧比较永远偏旧（#461）
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
+
+	// 只校验、不改写路径（#342 S-8）：同步协议要求服务端按客户端上报的原样路径落库
+	// （客户端按自己的路径记基线与哈希），因此不去前导 "/"、不补 ".md"，
+	// 仅按段拒绝 ".." 越界与 NUL。
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
 		return
 	}
 
@@ -409,7 +421,41 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 
 		_, note, err := noteSvc.ModifyOrCreate(ctx, c.User.UID, params, true, checkedNote)
 		if err != nil {
+			// 陈旧重报被墓碑闸门拒绝：仅静默确认以清理客户端 pending 状态
+			// （不广播、不推进同步水位），并补发删除指令让该客户端清理本地残留。
+			// 闸门只拒绝内容与墓碑一致的原样重报，补发删除不会丢失未同步的修改。
+			if errors.Is(err, code.ErrorStaleReviveRejected) {
+				c.ToResponse(code.Success.WithData(dto.NoteModifyAckMessage{
+					Path:     params.Path,
+					PathHash: params.PathHash,
+				}).WithVault(params.Vault).WithContext(params.Context), string(NoteModifyAck))
+				if checkedNote != nil {
+					c.ToResponse(code.Success.WithData(dto.NoteSyncDeleteMessage{
+						Path:             checkedNote.Path,
+						PathHash:         checkedNote.PathHash,
+						Ctime:            checkedNote.Ctime,
+						Mtime:            checkedNote.Mtime,
+						Size:             checkedNote.Size,
+						UpdatedTimestamp: checkedNote.UpdatedTimestamp,
+					}).WithVault(params.Vault).WithContext(params.Context), string(NoteSyncDelete))
+				}
+				return
+			}
 			h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.ModifyOrCreate")
+			return
+		}
+
+		if note == nil {
+			// Content already stored (same mtime and hash): ack so the client clears its pending queue
+			var lastTime int64
+			if nodeCheck != nil {
+				lastTime = nodeCheck.UpdatedTimestamp
+			}
+			c.ToResponse(code.Success.WithData(dto.NoteModifyAckMessage{
+				LastTime: lastTime,
+				Path:     params.Path,
+				PathHash: params.PathHash,
+			}).WithVault(params.Vault).WithContext(params.Context), string(NoteModifyAck))
 			return
 		}
 
@@ -443,7 +489,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				Mtime:            nodeCheck.Mtime,
 				UpdatedTimestamp: nodeCheck.UpdatedTimestamp,
 			},
-		).WithVault(params.Vault), NoteSyncMtime)
+		).WithVault(params.Vault).WithContext(params.Context), NoteSyncMtime)
 		return
 	default:
 		// SuccessNoUpdate 场景也需发 NoteModifyAck，避免客户端 pendingNoteModifies 条目泄漏导致无限重传
@@ -491,6 +537,9 @@ func (h *NoteWSHandler) NoteModifyCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 		return
 	}
 
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
+
 	ctx := c.Context()
 
 	noteSvc := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion())
@@ -529,7 +578,7 @@ func (h *NoteWSHandler) NoteModifyCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 				Mtime:            nodeCheck.Mtime,
 				UpdatedTimestamp: nodeCheck.UpdatedTimestamp,
 			},
-		), NoteSyncMtime)
+		).WithVault(params.Vault), NoteSyncMtime)
 		return
 	default:
 		c.ToResponse(code.SuccessNoUpdate.WithVault(params.Vault))
@@ -566,6 +615,12 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		return
 	}
 
+	// 只校验、不改写路径（#342 S-8）：不去前导 "/"、不补 ".md"，仅按段拒绝越界与 NUL
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
+		return
+	}
+
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "NoteDelete", params.Path, params.Vault)
 
 	ctx := c.Context()
@@ -588,6 +643,10 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		Path:     note.Path,
 		PathHash: note.PathHash,
 	}).WithVault(params.Vault).WithContext(params.Context), string(NoteDeleteAck))
+	// 记录不存在或已删除（幂等重复删除）：只回 Ack，不广播，避免向其他设备重复下发删除
+	if note.Unchanged {
+		return
+	}
 	c.BroadcastResponse(code.Success.WithData(
 		dto.NoteSyncDeleteMessage{
 			Path:             note.Path,
@@ -625,6 +684,13 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	valid, errs := c.BindAndValidWithAction(msg.Type, msg.Data, params)
 	if !valid {
 		h.respondErrorWithData(c, code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()), errs, errs.MapsToString(), "websocket_router.note.NoteRename.BindAndValid", msg)
+		return
+	}
+
+	// 只校验、不改写新旧两个路径（#342 S-8）：不去前导 "/"、不补 ".md"，
+	// 仅按段拒绝越界与 NUL
+	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
 		return
 	}
 
@@ -794,6 +860,8 @@ func (h *NoteWSHandler) NoteSync(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocke
 // doNoteSync 执行笔记差量同步核心逻辑（原 NoteSync 函数体）
 // doNoteSync runs the core note differential sync logic (original NoteSync body)
 func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSyncRequest) {
+	// 新一轮同步取代本连接该类型的旧轮：清理旧轮残留的下行分页条目
+	syncDownloadDropStale(connDone(c), "note", params.Context)
 	ctx := c.Context()
 
 	noteSvc := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion())
@@ -820,6 +888,8 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 
 	if len(params.Notes) > 0 {
 		for _, note := range params.Notes {
+			note.Ctime = timex.NormalizeMilli(note.Ctime)
+			note.Mtime = timex.NormalizeMilli(note.Mtime)
 			cNotes[note.PathHash] = note
 			cNotesKeys[note.PathHash] = struct{}{}
 		}
@@ -890,6 +960,11 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 				// 记录客户端已主动删除的 PathHash，避免重复下发
 				cDelNotesKeys[delNote.PathHash] = struct{}{}
 
+				// 与单条删除入口一致：幂等删除只保留排除记录，不重复广播。
+				if note.Unchanged {
+					continue
+				}
+
 				// Broadcast deletion to other clients
 				// 将删除消息广播给其他客户端
 				// 异步 fire-and-forget：DB 删除已在上面同步完成，广播只用于通知其他设备，
@@ -911,33 +986,8 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 				})
 
 			} else {
-				// Note does not exist, but we still need to record exclusion and broadcast delete message to ensure data consistency
-				// 笔记不存在，但仍需记录排除并广播删除消息，以确保数据一致性
-
-				h.App.Logger().Debug("websocket_router.note.NoteSync.noteSvc.Get check failed (not found or already deleted), broadcasting delete anyway",
-					zap.String(logger.FieldTraceID, c.TraceID),
-					zap.String("pathHash", delNote.PathHash))
-
-				// Record PathHash
-				// 记录 PathHash
+				// 不存在或已删除：仍排除客户端主动删除的路径，但不向其他端广播。
 				cDelNotesKeys[delNote.PathHash] = struct{}{}
-
-				// Broadcast deletion with available info (Path/PathHash)
-				// 使用现有信息(Path/PathHash)广播删除
-				// 同上，异步 fire-and-forget，避免逐条等待广播
-				// Same as above, async fire-and-forget, avoids waiting on the broadcast per item
-				safego.Go(h.App.Logger(), func() {
-					c.BroadcastResponse(code.Success.WithData(
-						dto.NoteSyncDeleteMessage{
-							Path:             delNote.Path,
-							PathHash:         delNote.PathHash,
-							Ctime:            0,
-							Mtime:            0,
-							Size:             0,
-							UpdatedTimestamp: 0,
-						},
-					).WithVault(params.Vault), true, NoteSyncDelete)
-				})
 			}
 		}
 	}
@@ -1163,19 +1213,11 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 
 	c.IsFirstSync = true
 
-	// Send NoteSyncEnd message, containing all counts
-	// 发送 NoteSyncEnd 消息，包含所有统计计数
-	c.ToResponse(code.Success.WithData(
-		dto.NoteSyncEndMessage{
-			LastTime:           lastTime,
-			NeedUploadCount:    needUploadCount,
-			NeedModifyCount:    needModifyCount,
-			NeedSyncMtimeCount: needSyncMtimeCount,
-			NeedDeleteCount:    needDeleteCount,
-		},
-	).WithVault(params.Vault).WithContext(params.Context), NoteSyncEnd)
-
-	// 在 End 消息后，启动受控分页发送流程
+	// 先登记分页队列，再发结束消息：客户端收到结束消息会立刻回首个分页确认，
+	// 开启并行处理时该确认可能抢在登记之前到达，被当作找不到队列丢弃，本轮下载就此卡住。
+	// Register the paged queue before sending the End message: the client acks the first page
+	// as soon as End arrives, and with parallel dispatch that ack could land before the queue
+	// was stored, be dropped as "entry not found" and stall the whole download round.
 	if len(messageQueue) > 0 {
 		pageSize := h.App.Config().App.SyncDownChunkNum
 		if pageSize <= 0 {
@@ -1204,9 +1246,22 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 				return n.Content, nil
 			},
 		}
+		entry.ConnDone = connDone(c)
 		syncDownloadStore(params.Context, "note", entry)
 		// 默认不自动发送，等待客户端拉取
 	}
+
+	// Send NoteSyncEnd message, containing all counts
+	// 发送 NoteSyncEnd 消息，包含所有统计计数
+	c.ToResponse(code.Success.WithData(
+		dto.NoteSyncEndMessage{
+			LastTime:           lastTime,
+			NeedUploadCount:    needUploadCount,
+			NeedModifyCount:    needModifyCount,
+			NeedSyncMtimeCount: needSyncMtimeCount,
+			NeedDeleteCount:    needDeleteCount,
+		},
+	).WithVault(params.Vault).WithContext(params.Context), NoteSyncEnd)
 }
 
 // NoteSyncPageAck handles WebSocket messages for client page ACK

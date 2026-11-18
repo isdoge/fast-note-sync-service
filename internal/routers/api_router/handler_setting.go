@@ -9,6 +9,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	apperrors "github.com/haierkeys/fast-note-sync-service/pkg/errors"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -100,6 +101,16 @@ func (h *SettingHandler) CreateOrUpdate(c *gin.Context) {
 		return
 	}
 
+	cleanedPath, okPath := cleanAPIPath(params.Path)
+	if !okPath {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleanedPath {
+		params.PathHash = util.EncodeHash32(cleanedPath)
+	}
+	params.Path = cleanedPath
+
 	params.Mtime = timex.Now().UnixMilli()
 	params.Ctime = timex.Now().UnixMilli()
 
@@ -142,6 +153,16 @@ func (h *SettingHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	cleanedPath, okPath := cleanAPIPath(params.Path)
+	if !okPath {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleanedPath {
+		params.PathHash = util.EncodeHash32(cleanedPath)
+	}
+	params.Path = cleanedPath
+
 	uid := pkgapp.GetUID(c)
 	res, err := h.App.GetSettingService(h.getClientInfo(c)).Delete(c.Request.Context(), uid, params)
 	if err != nil {
@@ -177,6 +198,26 @@ func (h *SettingHandler) Rename(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
 		return
 	}
+
+	cleanedNewPath, okNewPath := cleanAPIPath(params.NewPath)
+	if !okNewPath {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.NewPath != cleanedNewPath {
+		params.NewPathHash = util.EncodeHash32(cleanedNewPath)
+	}
+	params.NewPath = cleanedNewPath
+
+	cleanedOldPath, okOldPath := cleanAPIPath(params.OldPath)
+	if !okOldPath {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.OldPath != cleanedOldPath {
+		params.OldPathHash = util.EncodeHash32(cleanedOldPath)
+	}
+	params.OldPath = cleanedOldPath
 
 	uid := pkgapp.GetUID(c)
 	res, err := h.App.GetSettingService(h.getClientInfo(c)).Rename(c.Request.Context(), uid, params)

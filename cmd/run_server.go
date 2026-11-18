@@ -390,6 +390,8 @@ func initLoggerWithConfig(s *Server, cfg *internalApp.AppConfig) error {
 		return fmt.Errorf("failed to init logger: %w", err)
 	}
 	s.logger = lg
+	// 设为全局 logger，使 service 等处的 zap.L() 日志不被丢弃
+	zap.ReplaceGlobals(lg)
 
 	return nil
 }

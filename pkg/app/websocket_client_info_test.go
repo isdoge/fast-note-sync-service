@@ -48,6 +48,7 @@ func TestWebsocketClient_ClientInfo_ConcurrentAccess(t *testing.T) {
 				_ = c.ClientVersion()
 				_ = c.OfflineSyncStrategy()
 				_ = c.UseProtobuf()
+				_ = c.acceptsProtobuf()
 				platform := c.ClientPlatform()
 				if platform != nil {
 					_ = platform["isDesktop"]
@@ -83,7 +84,7 @@ func TestWebsocketClient_SetUseProtobuf_ConcurrentAccess(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	// Half the goroutines mimic the early pb upgrade (setUseProtobuf alone), the other half
+	// Half the goroutines mimic inbound negotiation and the early outbound pb upgrade, the other half
 	// mimic ClientInfo (setClientInfo touching every field including useProtobuf).
 	for g := 0; g < goroutines; g++ {
 		wg.Add(1)
@@ -91,14 +92,48 @@ func TestWebsocketClient_SetUseProtobuf_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
 				if g%2 == 0 {
+					c.setAcceptProtobuf(i%2 == 0)
 					c.setUseProtobuf(i%2 == 0)
 				} else {
 					c.setClientInfo(fmt.Sprintf("client-%d-%d", g, i), "web", "1.0.0", nil, "newTimeMerge", i%2 == 0)
 				}
 				_ = c.UseProtobuf()
+				_ = c.acceptsProtobuf()
 			}
 		}(g)
 	}
 
 	wg.Wait()
+}
+
+// #440：未知的 offlineSyncStrategy（如某第三方客户端默认的 "auto"）不命中任何同步分支，会静默关闭
+// “服务端更新时通知客户端拉取”与合并/冲突保护；必须回落为默认策略 ""，已知值保持不变。
+func TestWebsocketClient_SetClientInfo_UnknownOfflineSyncStrategyFallsBackToDefault(t *testing.T) {
+	for in, want := range map[string]string{
+		"auto":            "",
+		"NewTimeMerge":    "",
+		"":                "",
+		"newTimeMerge":    "newTimeMerge",
+		"ignoreTimeMerge": "ignoreTimeMerge",
+		"manualMerge":     "manualMerge",
+	} {
+		c := &WebsocketClient{}
+		c.setClientInfo("n", "t", "1", nil, in, false)
+		if got := c.OfflineSyncStrategy(); got != want {
+			t.Fatalf("offlineSyncStrategy %q stored as %q, want %q", in, got, want)
+		}
+	}
+}
+
+// ClientInfo completes the early negotiation, including an explicit protobuf downgrade.
+// ClientInfo 完成提前协商；显式关闭 pb 后，入站接受状态也必须关闭。
+func TestWebsocketClient_SetClientInfo_CompletesProtobufNegotiation(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		c := &WebsocketClient{}
+		c.setAcceptProtobuf(true)
+		c.setClientInfo("n", "desktop", "1", nil, "", enabled)
+		if c.UseProtobuf() != enabled || c.acceptsProtobuf() != enabled {
+			t.Fatalf("ClientInfo protobuf=%v: outbound=%v inbound=%v", enabled, c.UseProtobuf(), c.acceptsProtobuf())
+		}
+	}
 }

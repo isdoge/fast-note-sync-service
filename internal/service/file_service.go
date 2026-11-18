@@ -275,8 +275,8 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 			}
 
 			// If content is consistent but modification time is different, only update modification time
-			// 检查内容是否一致但修改时间不同，则只更新修改时间
-			if mtimeCheck && file.Mtime < params.Mtime && file.ContentHash == params.ContentHash {
+			// 检查内容是否一致但修改时间不同，则只更新修改时间（墓碑记录不走此分支，须经下方墓碑闸门）
+			if mtimeCheck && file.Action != domain.FileActionDelete && file.Mtime < params.Mtime && file.ContentHash == params.ContentHash {
 				err := s.fileRepo.UpdateActionMtime(ctx, domain.FileActionModify, params.Mtime, file.ID, uid)
 				if err != nil {
 					return nil, code.ErrorDBQuery.WithDetails(err.Error())
@@ -296,10 +296,22 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 			}
 
 			// Set action
-			// Set action
 			// 设置 action
 			var action domain.FileAction
 			if file.Action == domain.FileActionDelete {
+				// 墓碑闸门（与笔记侧同一策略）：内容与墓碑一致的陈旧重报不得复活已删文件；
+				// 内容不同按正常上传复活。
+				if file.ContentHash == params.ContentHash && isStaleRevive(params.Mtime, params.Ctime, file.UpdatedTimestamp) {
+					zap.L().Info("stale revive rejected",
+						zap.Int64(logger.FieldUID, uid),
+						zap.String(logger.FieldPath, file.Path),
+						zap.Int64("mtime", params.Mtime),
+						zap.Int64("ctime", params.Ctime),
+						zap.Int64("deletedAt", file.UpdatedTimestamp),
+						zap.String("clientName", s.clientName),
+					)
+					return nil, code.ErrorStaleReviveRejected
+				}
 				action = domain.FileActionCreate
 			} else {
 				action = domain.FileActionModify
@@ -397,9 +409,24 @@ func (s *fileService) Delete(ctx context.Context, uid int64, params *dto.FileDel
 		return nil, err
 	}
 
+	// 删除必须幂等（同 noteService.Delete）：对不存在/已删除的文件返回成功，
+	// 否则客户端收到 "record not found" 后无限重试。
+	// Delete must be idempotent: return success for missing/already-deleted files,
+	// otherwise clients retry forever on "record not found".
 	file, err := s.fileRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 幂等：记录不存在 → 用请求参数构造成功 DTO（客户端按 path 匹配 pending）
+			return &dto.FileDTO{Path: params.Path, PathHash: params.PathHash, Unchanged: true}, nil
+		}
 		return nil, err
+	}
+
+	if file.Action == domain.FileActionDelete {
+		// 幂等：已是删除状态 → 不重复写库，直接返回
+		res := s.domainToDTO(file)
+		res.Unchanged = true
+		return res, nil
 	}
 
 	// Update to deleted status // 更新为删除状态
@@ -838,6 +865,30 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 				return nil, code.ErrorFileNotFound
 			}
 			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+		// 墓碑行优先级（与 noteService.Delete eba76c4d 同理）：目录移动/反复移动后
+		// 同一 path_hash 常同时存在 rename 墓碑行与活跃行，GetByPathHash 是无 ORDER BY
+		// 的 First()，命中哪行不确定。命中墓碑行时会把陈旧的 ContentHash/SavePath/Size
+		// 复制进新路径行——新行指向错误内容，其它端下载到张冠李戴的附件（#312）。
+		// 命中墓碑行时回退列出全部行，优先取活跃行；全是墓碑行则维持原行为（再标记一次无害）。
+		// Tombstone priority (same rationale as noteService.Delete eba76c4d): after folder
+		// moves / repeated moves the same path_hash often holds both a rename tombstone and
+		// a live row, and GetByPathHash is an unordered First() — which row it hits is
+		// nondeterministic. Hitting the tombstone copies its stale ContentHash/SavePath/Size
+		// into the new-path row, pointing it at the wrong content (#312). On a tombstone hit,
+		// fall back to listing all rows and prefer the live one; all-tombstone keeps the old
+		// behavior (re-marking is harmless).
+		if f.Action == domain.FileActionDelete {
+			rows, lerr := s.fileRepo.ListByPathHash(ctx, oldPathHash, vaultID, uid)
+			if lerr != nil {
+				return nil, code.ErrorDBQuery.WithDetails(lerr.Error())
+			}
+			for _, row := range rows {
+				if row.Action != domain.FileActionDelete {
+					f = row
+					break
+				}
+			}
 		}
 
 		// 3. Mark old file as deleted

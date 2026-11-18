@@ -248,6 +248,24 @@ func TestUserAuthTokenWithConfig_AllowsLoginTokenWithoutClientHeader(t *testing.
 	assert.Equal(t, code.Success.Code(), res.Code)
 }
 
+func TestUserAuthTokenWithConfig_AllowsUnboundUALoginTokenAfterProxyRewrite(t *testing.T) {
+	token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
+	res := runUserAuthMiddlewareWithRequest(t, &fakeMiddlewareTokenService{activeToken: &domain.AuthToken{
+		ID:          2,
+		UID:         1,
+		TokenString: "nonce-ok",
+		Status:      1,
+		Scope:       "p:rest c:WebGui f:*",
+		ClientType:  "WebGui",
+		IssueType:   1,
+		ExpiredAt:   time.Now().Add(time.Hour),
+	}}, token, http.MethodGet, "/api/file?vault=main&path=image.png", func(req *http.Request) {
+		req.Header.Set("User-Agent", "Rewritten by proxy")
+	})
+
+	assert.Equal(t, code.Success.Code(), res.Code)
+}
+
 func TestUserAuthTokenWithConfig_RejectsHeaderlessLoginTokenWrite(t *testing.T) {
 	token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
 	res := runUserAuthMiddlewareWithRequest(t, &fakeMiddlewareTokenService{activeToken: &domain.AuthToken{

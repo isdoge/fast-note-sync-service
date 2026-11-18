@@ -13,6 +13,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
+	pkgdiff "github.com/haierkeys/fast-note-sync-service/pkg/diff"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"github.com/sergi/go-diff/diffmatchpatch"
@@ -231,6 +232,11 @@ func (s *noteHistoryService) ProcessDelay(ctx context.Context, noteID int64, uid
 	}
 
 	if note.Content == note.ContentLastSnapshot {
+		// 内容未变但哈希不一致（如空笔记：EncodeHash32("") 为 "0"，快照哈希默认为 ""）时同步快照哈希，
+		// 否则该笔记每次启动都会被 ListContentUnchanged 重新调度（#499）
+		if note.ContentHash != note.ContentLastSnapshotHash {
+			return s.noteRepo.UpdateSnapshot(ctx, note.Content, note.ContentHash, note.Version, note.ID, uid)
+		}
 		return nil
 	}
 
@@ -253,7 +259,8 @@ func (s *noteHistoryService) ProcessDelay(ctx context.Context, noteID int64, uid
 		content2 := s.ensureValidUTF8(note.Content)
 
 		diffs := dmp.DiffMain(content1, content2, false)
-		patchText = dmp.PatchToText(dmp.PatchMake(content1, diffs))
+		// 等价于 dmp.PatchToText(dmp.PatchMake(content1, diffs))，避免大笔记峰值内存随补丁数 × 笔记大小增长（#499）
+		patchText = pkgdiff.PatchText(dmp, content1, diffs)
 	}()
 
 	if patchText == "" && note.Content != note.ContentLastSnapshot {
@@ -380,6 +387,10 @@ func (s *noteHistoryService) RestoreFromHistory(ctx context.Context, uid int64, 
 	note.Mtime = timex.Now().UnixMilli()
 	note.Action = domain.NoteActionModify
 	note.Rename = 0
+	// 恢复后正文长度已变，Size 必须随内容重算，否则列表/MCP note_list 报告旧值（#360）
+	// The restored body length differs; Size must follow the content or list/MCP note_list
+	// keeps reporting the stale value (#360)
+	note.Size = int64(len(restoredContent))
 
 	// 6. Update note
 	// 6. 更新笔记
@@ -392,6 +403,7 @@ func (s *noteHistoryService) RestoreFromHistory(ctx context.Context, uid int64, 
 	go s.folderService.SyncResourceFID(context.Background(), uid, vaultID, []int64{updated.ID}, nil)
 	go s.noteService.CountSizeSum(context.Background(), vaultID, uid)
 	go s.noteService.UpdateNoteLinks(context.Background(), updated.ID, updated.Content, vaultID, uid)
+	go s.noteService.UpdateNoteTags(context.Background(), updated.ID, updated.Content, vaultID, uid)
 
 	NoteHistoryDelayPush(updated.ID, uid)
 

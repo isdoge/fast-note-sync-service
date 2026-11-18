@@ -54,7 +54,7 @@ func oldNoteFixture() *domain.Note {
 // newNoteSvc 构造 NoteService（vaultSvc/folderSvc 可为 nil，Migrate 级测试不需要它们）
 func newNoteSvc(t *testing.T, noteRepo *domainmocks.MockNoteRepository, historyRepo *domainmocks.MockNoteHistoryRepository, vaultSvc service.VaultService, folderSvc service.FolderService) service.NoteService {
 	t.Helper()
-	return service.NewNoteService(nil, noteRepo, nil, nil, nil, historyRepo, vaultSvc, folderSvc, nil, nil, nil, nil)
+	return service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, historyRepo, vaultSvc, folderSvc, nil, nil, nil, nil)
 }
 
 // TestNoteService_Migrate_MigratesNoteHistory 验证 Migrate 会把旧笔记 ID 的历史迁移到新笔记 ID。
@@ -86,7 +86,7 @@ func TestNoteService_Migrate_MigratesNoteHistory(t *testing.T) {
 }
 
 // TestNoteService_Migrate_HistoryErrorWarnNotFail 验证历史迁移失败只告警、不阻断整个迁移流程
-//（与 share 迁移失败的处理保持一致）。
+// （与 share 迁移失败的处理保持一致）。
 func TestNoteService_Migrate_HistoryErrorWarnNotFail(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
 	historyRepo := new(domainmocks.MockNoteHistoryRepository)
@@ -140,11 +140,13 @@ func TestNoteService_Rename_MigratesNoteHistory(t *testing.T) {
 	folderSvc.On("CleanupEmptyAncestors", mock.Anything, int64(1), int64(1), "旧笔记.md").Return(nil)
 
 	// Migrate goroutine 依赖
-	noteRepo.On("GetByID", mock.Anything, int64(137), int64(1)).Return(oldNote, nil)
+	// GetByID 返回独立对象（与真实仓库一致）：Migrate 会改写它，若与 Rename 主流程共用同一指针会形成测试自身的数据竞争
+	noteRepo.On("GetByID", mock.Anything, int64(137), int64(1)).Return(oldNoteFixture(), nil)
 	noteRepo.On("UpdateSnapshot", mock.Anything, oldNote.ContentLastSnapshot, oldNote.ContentLastSnapshotHash, oldNote.Version, int64(2048), int64(1)).Return(nil)
 	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
 	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 1024}, nil).Maybe()
-	historyRepo.On("Migrate", mock.Anything, int64(137), int64(2048), int64(1)).Return(nil)
+	migrated := make(chan struct{})
+	historyRepo.On("Migrate", mock.Anything, int64(137), int64(2048), int64(1)).Return(nil).Run(func(mock.Arguments) { close(migrated) })
 
 	svc := newNoteSvc(t, noteRepo, historyRepo, vaultSvc, folderSvc)
 
@@ -158,20 +160,138 @@ func TestNoteService_Rename_MigratesNoteHistory(t *testing.T) {
 	require.NoError(t, err)
 
 	// Rename 内部 go s.Migrate(...) 异步执行，等待 history 迁移被触发
-	deadline := time.Now().Add(2 * time.Second)
-	migrated := false
-	for time.Now().Before(deadline) {
-		if len(historyRepo.Calls) > 0 {
-			migrated = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// （用 Run 回调通知，不直接读 historyRepo.Calls，后者无锁访问会与 mock 写入竞争）
+	select {
+	case <-migrated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Rename 后应触发 note_history 迁移（oldNoteID 137 -> newNoteID 2048）")
 	}
-	require.True(t, migrated, "Rename 后应触发 note_history 迁移（oldNoteID 137 -> newNoteID 2048）")
 	historyRepo.AssertCalled(t, "Migrate", mock.Anything, int64(137), int64(2048), int64(1))
 
 	// 确认 Rename 主流程 stub 全部命中
 	noteRepo.AssertExpectations(t)
 	vaultSvc.AssertExpectations(t)
 	folderSvc.AssertExpectations(t)
+}
+
+// ---------------------------------------------------------------------------
+// 回归测试：Rename 必须把 Size（以及复用记录时的 Ctime）带到新笔记记录上
+// Regression: Rename must carry Size (and Ctime when reusing a record) over to the new note record
+//
+// 背景：修复前，新建分支创建的记录 Size 为 0；复用已删除记录的分支保留了旧记录的 Size 和 Ctime。
+// 内容本身完好，但 note_list、GET /api/notes 以及同步消息都报告 0 字节（或过期的大小）。
+// Before the fix the create branch stored Size 0, and the reuse branch kept the stale Size/Ctime
+// of the deleted record. Content was intact, but note_list, GET /api/notes and sync messages
+// reported 0 bytes (or an outdated size).
+// ---------------------------------------------------------------------------
+
+// renameMigrateMocks 注册 Rename 内部异步 goroutine（Migrate、SyncResourceFID）可能用到的 stub
+// renameMigrateMocks registers stubs for the async goroutines started by Rename
+func renameMigrateMocks(noteRepo *domainmocks.MockNoteRepository, historyRepo *domainmocks.MockNoteHistoryRepository, folderSvc *servicemocks.MockFolderService) {
+	noteRepo.On("GetByID", mock.Anything, mock.Anything, int64(1)).Return(oldNoteFixture(), nil).Maybe()
+	noteRepo.On("UpdateSnapshot", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, int64(1)).Return(nil).Maybe()
+	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil).Maybe()
+	noteRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{Count: 1, Size: 1024}, nil).Maybe()
+	historyRepo.On("Migrate", mock.Anything, mock.Anything, mock.Anything, int64(1)).Return(nil).Maybe()
+	folderSvc.On("SyncResourceFID", mock.Anything, int64(1), int64(1), mock.Anything, mock.Anything).Return(nil).Maybe()
+}
+
+// TestNoteService_Rename_NewRecordKeepsSize 新建分支：新记录必须带上旧笔记的 Size
+// Create branch: the new record must carry the old note's Size
+func TestNoteService_Rename_NewRecordKeepsSize(t *testing.T) {
+	noteRepo := new(domainmocks.MockNoteRepository)
+	historyRepo := new(domainmocks.MockNoteHistoryRepository)
+	vaultSvc := new(servicemocks.MockVaultService)
+	folderSvc := new(servicemocks.MockFolderService)
+
+	oldNote := oldNoteFixture()
+	var created *domain.Note
+
+	vaultSvc.On("MustGetID", mock.Anything, int64(1), "obsidian-vault").Return(int64(1), nil)
+	noteRepo.On("GetAllByPathHash", mock.Anything, "newpathhash", int64(1), int64(1)).Return(nil, nil)
+	noteRepo.On("GetByPathHash", mock.Anything, "oldpathhash", int64(1), int64(1)).Return(oldNote, nil)
+	noteRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(oldNote, nil)
+	folderSvc.On("EnsurePathFID", mock.Anything, int64(1), int64(1), "目录").Return(int64(11), nil)
+	noteRepo.On("Create", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).
+		Run(func(args mock.Arguments) {
+			n := *args.Get(1).(*domain.Note)
+			created = &n
+		}).
+		Return(&domain.Note{ID: 2048, VaultID: 1, Path: "目录/新笔记.md", PathHash: "newpathhash"}, nil)
+	folderSvc.On("CleanupEmptyAncestors", mock.Anything, int64(1), int64(1), "旧笔记.md").Return(nil)
+	renameMigrateMocks(noteRepo, historyRepo, folderSvc)
+
+	svc := newNoteSvc(t, noteRepo, historyRepo, vaultSvc, folderSvc)
+
+	_, _, err := svc.Rename(context.Background(), 1, &dto.NoteRenameRequest{
+		Vault:       "obsidian-vault",
+		Path:        "目录/新笔记.md",
+		PathHash:    "newpathhash",
+		OldPath:     "旧笔记.md",
+		OldPathHash: "oldpathhash",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created, "Rename 应创建新记录")
+	assert.Equal(t, int64(1024), created.Size, "新记录必须保留旧笔记的 Size")
+	assert.Equal(t, int64(1000), created.Ctime)
+	assert.Equal(t, "当前内容", created.Content)
+}
+
+// TestNoteService_Rename_ReusedRecordTakesSizeAndCtime 复用分支：复用已删除记录时必须覆盖 Size 和 Ctime
+// Reuse branch: when a deleted record is reused, Size and Ctime must be overwritten
+func TestNoteService_Rename_ReusedRecordTakesSizeAndCtime(t *testing.T) {
+	noteRepo := new(domainmocks.MockNoteRepository)
+	historyRepo := new(domainmocks.MockNoteHistoryRepository)
+	vaultSvc := new(servicemocks.MockVaultService)
+	folderSvc := new(servicemocks.MockFolderService)
+
+	oldNote := oldNoteFixture()
+	deletedAtTarget := &domain.Note{
+		ID:       4096,
+		VaultID:  1,
+		Action:   domain.NoteActionDelete,
+		Rename:   1,
+		Path:     "新笔记.md",
+		PathHash: "newpathhash",
+		Content:  "很久以前的内容",
+		Size:     7,
+		Ctime:    9,
+	}
+	var updated []domain.Note
+
+	vaultSvc.On("MustGetID", mock.Anything, int64(1), "obsidian-vault").Return(int64(1), nil)
+	noteRepo.On("GetAllByPathHash", mock.Anything, "newpathhash", int64(1), int64(1)).Return(deletedAtTarget, nil)
+	noteRepo.On("GetByPathHash", mock.Anything, "oldpathhash", int64(1), int64(1)).Return(oldNote, nil)
+	noteRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).
+		Run(func(args mock.Arguments) {
+			updated = append(updated, *args.Get(1).(*domain.Note))
+		}).
+		Return(&domain.Note{ID: 4096, VaultID: 1, Path: "新笔记.md", PathHash: "newpathhash"}, nil)
+	folderSvc.On("EnsurePathFID", mock.Anything, int64(1), int64(1), "").Return(int64(10), nil)
+	folderSvc.On("CleanupEmptyAncestors", mock.Anything, int64(1), int64(1), "旧笔记.md").Return(nil)
+	renameMigrateMocks(noteRepo, historyRepo, folderSvc)
+
+	svc := newNoteSvc(t, noteRepo, historyRepo, vaultSvc, folderSvc)
+
+	_, _, err := svc.Rename(context.Background(), 1, &dto.NoteRenameRequest{
+		Vault:       "obsidian-vault",
+		Path:        "新笔记.md",
+		PathHash:    "newpathhash",
+		OldPath:     "旧笔记.md",
+		OldPathHash: "oldpathhash",
+	})
+	require.NoError(t, err)
+	noteRepo.AssertNotCalled(t, "Create", mock.Anything, mock.Anything, mock.Anything)
+
+	var reused *domain.Note
+	for i := range updated {
+		if updated[i].ID == 4096 {
+			reused = &updated[i]
+		}
+	}
+	require.NotNil(t, reused, "Rename 应复用目标路径上已删除的记录")
+	assert.Equal(t, domain.NoteActionCreate, reused.Action)
+	assert.Equal(t, int64(1024), reused.Size, "复用记录必须取旧笔记的 Size，而不是已删除记录的旧值")
+	assert.Equal(t, int64(1000), reused.Ctime, "复用记录必须取旧笔记的 Ctime")
+	assert.Equal(t, "当前内容", reused.Content)
 }

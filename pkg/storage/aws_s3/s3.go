@@ -2,6 +2,7 @@ package aws_s3
 
 import (
 	"context"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -10,8 +11,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-func cacheKey(conf *Config) string {
-	return conf.AccessKeyID + ":" + conf.AccessKeySecret + ":" + conf.Region
+func cacheKey(conf *Config) Config {
+	return *conf
 }
 
 type Config struct {
@@ -28,9 +29,14 @@ type S3 struct {
 	Config          *Config
 }
 
-var clients = make(map[string]*S3)
+var clients = make(map[Config]*S3)
+var clientsMu sync.Mutex
 
 func NewClient(conf *Config) (*S3, error) {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	snapshot := *conf
+	conf = &snapshot
 	var region = conf.Region
 	var accessKeyId = conf.AccessKeyID
 	var accessKeySecret = conf.AccessKeySecret

@@ -13,10 +13,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	SupportGitHubRawURL = "https://raw.githubusercontent.com/haierkeys/fast-note-sync-service/refs/heads/master/docs/Support.%s.json"
-	SupportCNBRawURL    = "https://cnb.cool/haierkeys/fast-note-sync-service/-/git/raw/master/docs/Support.%s.json"
-)
+const SupportGitHubRawURL = "https://raw.githubusercontent.com/isdoge/fast-note-sync-service/master/docs/Support.%s.json"
 
 type UpdateSupportTask struct {
 	app *app.App
@@ -38,7 +35,6 @@ func (t *UpdateSupportTask) Run(ctx context.Context) error {
 
 	recordsMap := t.app.GetSupportRecords()
 	for lang := range recordsMap {
-		var url string
 		var remoteLang = lang
 		// Some lang in files are zh-CN, zh-TW, but keys are zh-cn, zh-tw
 		// We need to try matching the filename case if possible, but the raw URL usually follows the repo filename.
@@ -50,11 +46,7 @@ func (t *UpdateSupportTask) Run(ctx context.Context) error {
 			remoteLang = "zh-TW"
 		}
 
-		if t.app.IsPullFromGitHub() {
-			url = fmt.Sprintf(SupportGitHubRawURL, remoteLang)
-		} else {
-			url = fmt.Sprintf(SupportCNBRawURL, remoteLang)
-		}
+		url := fmt.Sprintf(SupportGitHubRawURL, remoteLang)
 
 		records, err := t.fetchSupportRecords(url)
 		if err != nil {

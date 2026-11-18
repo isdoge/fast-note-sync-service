@@ -108,6 +108,8 @@ func (h *FolderWSHandler) FolderSync(c *pkgapp.WebsocketClient, msg *pkgapp.WebS
 // doFolderSync 执行文件夹差量同步核心逻辑（原 FolderSync 函数体）
 // doFolderSync runs the core folder differential sync logic
 func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.FolderSyncRequest) {
+	// 新一轮同步取代本连接该类型的旧轮：清理旧轮残留的下行分页条目
+	syncDownloadDropStale(connDone(c), "folder", params.Context)
 	ctx := c.Context()
 	uid := c.User.UID
 
@@ -120,6 +122,8 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 	var cFoldersKeys map[string]struct{} = make(map[string]struct{}, 0)
 	if len(params.Folders) > 0 {
 		for _, f := range params.Folders {
+			// 客户端可能传秒级时间戳，归一化为毫秒再参与墓碑闸门比较（#461）
+			f.Mtime = timex.NormalizeMilli(f.Mtime)
 			cFolders[f.PathHash] = f
 		}
 		for _, folder := range params.Folders {
@@ -288,6 +292,35 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 	if len(cFoldersKeys) > 0 {
 		for pathHash := range cFoldersKeys {
 			folder := cFolders[pathHash]
+			if !validWSPath(folder.Path) {
+				h.App.Logger().Warn("websocket_router.folder.FolderSync: invalid folder path, skip creation",
+					zap.String(logpkg.FieldTraceID, c.TraceID),
+					zap.String(logpkg.FieldPath, folder.Path))
+				continue
+			}
+
+			// 墓碑闸门：服务端已删除的目录不得被客户端陈旧上报复活
+			// （客户端快照失效后的全量重报会把删除顶回来，是复活拉锯的主要目录通道）；
+			// 与笔记/文件同一规则，mtime 晚于删除时刻（含容差）的上报视为重新创建，放行。
+			// 查询出错时同样跳过（保守）：漏报一个目录可由下轮同步补上，
+			// 错误放行则会把墓碑翻回 create 并广播到所有设备（#152）。
+			// On lookup error skip too (conservative): a missed folder is repaired by the
+			// next sync round, while a wrong allow-through resurrects the tombstone and
+			// broadcasts it to every device (#152).
+			stale, err := folderSvc.IsStaleRevive(ctx, uid, params.Vault, folder.PathHash, folder.Mtime)
+			if err != nil {
+				h.App.Logger().Warn("websocket_router.folder.FolderSync.IsStaleRevive failed, skip folder",
+					zap.String(logpkg.FieldTraceID, c.TraceID),
+					zap.String(logpkg.FieldPath, folder.Path),
+					zap.Error(err))
+				continue
+			}
+			if stale {
+				h.App.Logger().Debug("websocket_router.folder.FolderSync.skipDeletedFolder",
+					zap.String(logpkg.FieldTraceID, c.TraceID),
+					zap.String(logpkg.FieldPath, folder.Path))
+				continue
+			}
 
 			newFolder, err := folderSvc.UpdateOrCreate(ctx, uid, &dto.FolderCreateRequest{
 				Vault:    params.Vault,
@@ -310,17 +343,11 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 		}
 	}
 
-	// Send FolderSyncEnd message
-	// 发送 FolderSyncEnd 消息
-	c.ToResponse(code.Success.WithData(&dto.FolderSyncEndMessage{
-		// Use syncStartTime (recorded before query) to prevent writes during query processing from being missed.
-		// 使用查询前记录 of syncStartTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
-		LastTime:        syncStartTime,
-		NeedModifyCount: needModifyCount,
-		NeedDeleteCount: needDeleteCount,
-	}).WithVault(params.Vault).WithContext(params.Context), FolderSyncEnd)
-
-	// 在 End 消息后，启动受控分页发送流程
+	// 先登记分页队列，再发结束消息：客户端收到结束消息会立刻回首个分页确认，
+	// 开启并行处理时该确认可能抢在登记之前到达，被当作找不到队列丢弃，本轮下载就此卡住。
+	// Register the paged queue before sending the End message: the client acks the first page
+	// as soon as End arrives, and with parallel dispatch that ack could land before the queue
+	// was stored, be dropped as "entry not found" and stall the whole download round.
 	if len(messageQueue) > 0 {
 		pageSize := h.App.Config().App.SyncDownChunkNum
 		if pageSize <= 0 {
@@ -341,9 +368,20 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 			PageSize:     pageSize,
 			Window:       window,
 		}
+		entry.ConnDone = connDone(c)
 		syncDownloadStore(params.Context, "folder", entry)
 		// 默认不自动发送，等待客户端拉取
 	}
+
+	// Send FolderSyncEnd message
+	// 发送 FolderSyncEnd 消息
+	c.ToResponse(code.Success.WithData(&dto.FolderSyncEndMessage{
+		// Use syncStartTime (recorded before query) to prevent writes during query processing from being missed.
+		// 使用查询前记录 of syncStartTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
+		LastTime:        syncStartTime,
+		NeedModifyCount: needModifyCount,
+		NeedDeleteCount: needDeleteCount,
+	}).WithVault(params.Vault).WithContext(params.Context), FolderSyncEnd)
 }
 
 // FolderSyncPageAck handles WebSocket messages for client page ACK
@@ -374,6 +412,12 @@ func (h *FolderWSHandler) FolderModify(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	valid, errs := c.BindAndValidWithAction(msg.Type, msg.Data, params)
 	if !valid {
 		h.respondErrorWithData(c, code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()), errs, errs.MapsToString(), "websocket_router.folder.FolderModify.BindAndValid", msg)
+		return
+	}
+
+	// 只校验、不改写路径（#342 S-8）：不去前导 "/"，仅按段拒绝越界与 NUL
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
 		return
 	}
 
@@ -410,6 +454,12 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		return
 	}
 
+	// 只校验、不改写路径（#342 S-8）：不去前导 "/"，仅按段拒绝越界与 NUL
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
+		return
+	}
+
 	uid := c.User.UID
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).Delete(c.Context(), uid, params)
 	if err != nil {
@@ -440,6 +490,12 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	valid, errs := c.BindAndValidWithAction(msg.Type, msg.Data, params)
 	if !valid {
 		h.respondErrorWithData(c, code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()), errs, errs.MapsToString(), "websocket_router.folder.FolderRename.BindAndValid", msg)
+		return
+	}
+
+	// 只校验、不改写新旧两个路径（#342 S-8）
+	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
 		return
 	}
 

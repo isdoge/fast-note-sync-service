@@ -55,9 +55,9 @@ func (m *MockShareService) GetSharedFile(ctx context.Context, shareToken string,
 	return content, args.String(1), args.Get(2).(int64), args.String(3), args.String(4), args.Error(5)
 }
 
-func (m *MockShareService) GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (string, string, int64, string, string, error) {
+func (m *MockShareService) GetSharedFileInfo(ctx context.Context, shareToken string, fileID int64, password string) (string, string, int64, string, string, bool, error) {
 	args := m.Called(ctx, shareToken, fileID, password)
-	return args.String(0), args.String(1), args.Get(2).(int64), args.String(3), args.String(4), args.Error(5)
+	return args.String(0), args.String(1), args.Get(2).(int64), args.String(3), args.String(4), args.Bool(5), args.Error(6)
 }
 
 func (m *MockShareService) RecordView(uid int64, id int64) {
@@ -79,12 +79,25 @@ func (m *MockShareService) CreateShortLink(ctx context.Context, uid int64, vault
 	return args.String(0), args.Error(1)
 }
 
-func (m *MockShareService) ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager) ([]*dto.ShareListItem, int, error) {
-	args := m.Called(ctx, uid, sortBy, sortOrder, pager)
+func (m *MockShareService) ListShares(ctx context.Context, uid int64, sortBy string, sortOrder string, pager *pkgapp.Pager, allowedVaults string) ([]*dto.ShareListItem, int, error) {
+	args := m.Called(ctx, uid, sortBy, sortOrder, pager, allowedVaults)
 	if v := args.Get(0); v != nil {
 		return v.([]*dto.ShareListItem), args.Int(1), args.Error(2)
 	}
 	return nil, args.Int(1), args.Error(2)
+}
+
+func (m *MockShareService) GetShare(ctx context.Context, uid int64, id int64) (*domain.UserShare, error) {
+	args := m.Called(ctx, uid, id)
+	if v := args.Get(0); v != nil {
+		return v.(*domain.UserShare), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
+func (m *MockShareService) GetShareVaultName(ctx context.Context, uid int64, id int64) (string, error) {
+	args := m.Called(ctx, uid, id)
+	return args.String(0), args.Error(1)
 }
 
 func (m *MockShareService) GetShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string) (*domain.UserShare, error) {

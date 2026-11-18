@@ -128,3 +128,24 @@ func Since(t Time) time.Duration {
 	ts := time.Time(t)
 	return time.Since(ts)
 }
+
+// secondsMillisThreshold separates second-scale Unix timestamps from millisecond-scale ones:
+// 1e11 ms is 1973-03-03, so any positive client-supplied timestamp below it must be seconds.
+// secondsMillisThreshold 用于区分秒级与毫秒级 Unix 时间戳：1e11 毫秒对应 1973-03-03，
+// 小于该值的正数客户端时间戳只可能是秒。
+const secondsMillisThreshold = int64(100_000_000_000)
+
+// NormalizeMilli converts a client-supplied Unix timestamp to milliseconds. Clients are
+// documented to send milliseconds, but some third-party clients send seconds, which then
+// display as 1970 dates and always lose freshness comparisons (#461). Values in (0, 1e11)
+// are treated as seconds and multiplied by 1000; everything else (0, negatives, values
+// already in milliseconds) is returned unchanged.
+// NormalizeMilli 将客户端传入的 Unix 时间戳归一化为毫秒。按约定客户端应传毫秒，但部分
+// 第三方客户端传秒，导致时间显示为 1970 年且在新旧比较中永远偏旧（#461）。(0, 1e11)
+// 区间内的值视为秒并乘 1000；其余值（0、负数、已是毫秒的值）原样返回。
+func NormalizeMilli(v int64) int64 {
+	if v > 0 && v < secondsMillisThreshold {
+		return v * 1000
+	}
+	return v
+}

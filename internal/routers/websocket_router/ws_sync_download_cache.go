@@ -33,6 +33,16 @@ type syncDownloadEntry struct {
 
 	UpdatedAt time.Time // 更新时间
 
+	// ConnDone 是创建该条目的 WebSocket 连接的关闭信号（WsCtx.Done()）。连接仍在时，客户端可能正在
+	// 处理一整页的附件上传/下载，处理完才发 PageAck，耗时可远超 syncDownloadCacheTTL；此时不能按空闲
+	// 时间回收，否则迟到的 ACK 找不到条目，后续页永远不会下发。nil 表示未知，按旧规则回收。
+	// ConnDone is the close signal (WsCtx.Done()) of the connection that created this entry. While
+	// the connection is alive the client may still be working through a whole page of attachment
+	// uploads/downloads before it ACKs, which can take far longer than syncDownloadCacheTTL; evicting
+	// on idle time would make the late ACK miss the entry and stop all remaining pages. nil means
+	// unknown and falls back to the old idle-only rule.
+	ConnDone <-chan struct{}
+
 	// FillContent 可选：当消息队列中携带了未填充正文的笔记（WSQueuedMessage.NoteID != 0）时，
 	// 由构造 entry 的一方（ws_note.go）注入的按需读取函数。sendSyncPage 在发送某一页前，
 	// 仅为该页内需要填充正文的消息并发调用它，避免把全部待发笔记正文一次性物化进内存。
@@ -63,19 +73,56 @@ var syncDownloadCacheMap sync.Map
 
 const syncDownloadCacheTTL = 10 * time.Minute
 
+// syncDownloadCacheMaxIdle 是连接仍存活时的空闲上限，防止异常情况下条目无限驻留。
+// syncDownloadCacheMaxIdle caps idle time even while the connection is alive, so entries cannot leak forever.
+const syncDownloadCacheMaxIdle = 24 * time.Hour
+
 func init() {
 	go func() {
 		for {
 			time.Sleep(1 * time.Minute)
-			now := time.Now()
-			syncDownloadCacheMap.Range(func(k, v interface{}) bool {
-				if now.Sub(v.(*syncDownloadEntry).UpdatedAt) > syncDownloadCacheTTL {
-					syncDownloadCacheMap.Delete(k)
-				}
-				return true
-			})
+			evictExpiredSyncDownloads(time.Now())
 		}
 	}()
+}
+
+// connDone returns the close signal of the client's connection, or nil when unavailable.
+// connDone 返回客户端连接的关闭信号，不可用时返回 nil。
+func connDone(c *pkgapp.WebsocketClient) <-chan struct{} {
+	if c == nil || c.WsCtx == nil {
+		return nil
+	}
+	return c.WsCtx.Done()
+}
+
+// syncDownloadExpired reports whether an entry may be evicted at now.
+// syncDownloadExpired 判断条目在 now 时刻是否可回收。
+func syncDownloadExpired(e *syncDownloadEntry, now time.Time) bool {
+	idle := now.Sub(e.UpdatedAt)
+	if idle > syncDownloadCacheMaxIdle {
+		return true
+	}
+	if idle <= syncDownloadCacheTTL {
+		return false
+	}
+	if e.ConnDone == nil {
+		return true
+	}
+	select {
+	case <-e.ConnDone:
+		return true // 连接已关闭 / connection closed
+	default:
+		return false // 连接仍在，客户端可能仍在处理当前页 / still connected, client may still be processing the page
+	}
+}
+
+func evictExpiredSyncDownloads(now time.Time) {
+	syncDownloadCacheMap.Range(func(k, v interface{}) bool {
+		if syncDownloadExpired(v.(*syncDownloadEntry), now) {
+			syncDownloadCacheMap.Delete(k)
+		}
+		return true
+	})
 }
 
 func syncDownloadGet(context, typeName string) (*syncDownloadEntry, bool) {
@@ -96,6 +143,25 @@ func syncDownloadStore(context, typeName string, entry *syncDownloadEntry) {
 func syncDownloadDelete(context, typeName string) {
 	key := context + "_" + typeName
 	syncDownloadCacheMap.Delete(key)
+}
+
+// syncDownloadDropStale 在同一连接发起同一类型的新一轮同步时，删除该连接该类型其他 context 的
+// 旧下行条目：新一轮已取代旧轮，旧条目的后续页不会再被 ACK，只会驻留到连接关闭或 24h 上限。
+// 连接身份按 ConnDone（连接的 WsCtx.Done()）比较；done 为 nil 时无法识别连接，不做清理。
+// syncDownloadDropStale drops this connection's older download entries of the same type (other
+// contexts) when a new sync round starts: the new round supersedes them, so their remaining pages
+// will never be ACKed and would otherwise linger until the connection closes or the 24h cap.
+func syncDownloadDropStale(done <-chan struct{}, typeName, context string) {
+	if done == nil {
+		return
+	}
+	syncDownloadCacheMap.Range(func(k, v interface{}) bool {
+		e := v.(*syncDownloadEntry)
+		if e.ConnDone == done && e.TypeName == typeName && e.Context != context {
+			syncDownloadCacheMap.Delete(k)
+		}
+		return true
+	})
 }
 
 // pump 推进下行窗口（同步流水线设计 §4.2）：在窗口允许的范围内尽量多发送尚未发出的页。

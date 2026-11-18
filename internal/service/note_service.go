@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/haierkeys/fast-note-sync-service/internal/dao"
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/pkg/app"
@@ -132,6 +133,10 @@ type NoteService interface {
 	// UpdateNoteLinks 从内容中提取 Wiki 链接并更新链接索引
 	UpdateNoteLinks(ctx context.Context, noteID int64, content string, vaultID, uid int64)
 
+	// UpdateNoteTags extracts tags from content and replaces the note's rows in the tag index
+	// UpdateNoteTags 从内容中提取标签并替换该笔记的标签索引
+	UpdateNoteTags(ctx context.Context, noteID int64, content string, vaultID, uid int64)
+
 	// RecycleClear cleans up the recycle bin
 	// RecycleClear 清理回收站
 	RecycleClear(ctx context.Context, uid int64, params *dto.NoteRecycleClearRequest) error
@@ -148,33 +153,35 @@ type NoteService interface {
 // noteService implementation of NoteService interface
 // noteService 实现 NoteService 接口
 type noteService struct {
-	userRepo       domain.UserRepository      // User repository // 用户仓库
-	noteRepo       domain.NoteRepository      // Note repository // 笔记仓库
-	noteLinkRepo   domain.NoteLinkRepository  // Note link repository // 笔记链接仓库
-	fileRepo       domain.FileRepository      // File repository // 文件仓库
-	shareRepo      domain.UserShareRepository // Share repository for auto-revoke on delete // 分享仓库（删除时自动撤销）
+	userRepo       domain.UserRepository        // User repository // 用户仓库
+	noteRepo       domain.NoteRepository        // Note repository // 笔记仓库
+	noteLinkRepo   domain.NoteLinkRepository    // Note link repository // 笔记链接仓库
+	noteTagRepo    domain.NoteTagRepository     // Note tag repository (tag index) // 笔记标签仓库（标签索引）
+	fileRepo       domain.FileRepository        // File repository // 文件仓库
+	shareRepo      domain.UserShareRepository   // Share repository for auto-revoke on delete // 分享仓库（删除时自动撤销）
 	historyRepo    domain.NoteHistoryRepository // Note history repository // 笔记历史仓库（rename 时迁移历史归属）
-	vaultService   VaultService               // Vault service // 仓库服务
-	folderService  FolderService              // Folder service // 文件夹服务
-	syncLogService SyncLogService             // Sync log service // 同步日志服务
-	sf             *singleflight.Group        // Singleflight group // 并发请求合并组
-	kmu            *keyedmutex.KeyedMutex     // Per-key mutex for write paths that must not share results across callers // 用于写路径的按 key 互斥锁，避免调用方之间共享结果
-	clientType     string                     // Client type // 客户端类型
-	clientName     string                     // Client name // 客户端名称
-	clientVer      string                     // Client version // 客户端版本
-	config         *ServiceConfig             // Service configuration // 服务配置
-	backupService  BackupService              // Backup service // 备份服务
-	gitSyncService GitSyncService             // Git sync service // Git 同步服务
-	countTimers    *sync.Map                  // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
+	vaultService   VaultService                 // Vault service // 仓库服务
+	folderService  FolderService                // Folder service // 文件夹服务
+	syncLogService SyncLogService               // Sync log service // 同步日志服务
+	sf             *singleflight.Group          // Singleflight group // 并发请求合并组
+	kmu            *keyedmutex.KeyedMutex       // Per-key mutex for write paths that must not share results across callers // 用于写路径的按 key 互斥锁，避免调用方之间共享结果
+	clientType     string                       // Client type // 客户端类型
+	clientName     string                       // Client name // 客户端名称
+	clientVer      string                       // Client version // 客户端版本
+	config         *ServiceConfig               // Service configuration // 服务配置
+	backupService  BackupService                // Backup service // 备份服务
+	gitSyncService GitSyncService               // Git sync service // Git 同步服务
+	countTimers    *sync.Map                    // Timers for CountSizeSum debounce // CountSizeSum 防抖计时器
 }
 
 // NewNoteService creates NoteService instance
 // NewNoteService 创建 NoteService 实例
-func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteRepository, noteLinkRepo domain.NoteLinkRepository, fileRepo domain.FileRepository, shareRepo domain.UserShareRepository, historyRepo domain.NoteHistoryRepository, vaultSvc VaultService, folderSvc FolderService, backupSvc BackupService, gitSyncSvc GitSyncService, syncLogSvc SyncLogService, config *ServiceConfig) NoteService {
+func NewNoteService(userRepo domain.UserRepository, noteRepo domain.NoteRepository, noteLinkRepo domain.NoteLinkRepository, noteTagRepo domain.NoteTagRepository, fileRepo domain.FileRepository, shareRepo domain.UserShareRepository, historyRepo domain.NoteHistoryRepository, vaultSvc VaultService, folderSvc FolderService, backupSvc BackupService, gitSyncSvc GitSyncService, syncLogSvc SyncLogService, config *ServiceConfig) NoteService {
 	return &noteService{
 		userRepo:       userRepo,
 		noteRepo:       noteRepo,
 		noteLinkRepo:   noteLinkRepo,
+		noteTagRepo:    noteTagRepo,
 		fileRepo:       fileRepo,
 		shareRepo:      shareRepo,
 		historyRepo:    historyRepo,
@@ -196,6 +203,7 @@ func (s *noteService) WithClient(clientType, name, version string) NoteService {
 	return &noteService{
 		noteRepo:       s.noteRepo,
 		noteLinkRepo:   s.noteLinkRepo,
+		noteTagRepo:    s.noteTagRepo,
 		fileRepo:       s.fileRepo,
 		shareRepo:      s.shareRepo,
 		historyRepo:    s.historyRepo,
@@ -409,11 +417,15 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 
 			// Check if content is consistent, excluding notes marked as deleted
 			if mtimeCheck && note.Action != domain.NoteActionDelete && note.Mtime == params.Mtime && note.ContentHash == params.ContentHash {
-				return &result{isNew: isNew, dto: nil}, nil
+				// 幂等短路：内容与 mtime 均一致，无需写库。必须返回有效 DTO——
+				// 调用方无条件访问 note 的字段，返回 nil 会导致空指针 panic。
+				// Must return a valid DTO: the caller unconditionally dereferences
+				// note fields; returning nil panics.
+				return &result{isNew: isNew, dto: s.domainToDTO(note)}, nil
 			}
 			// If content is consistent but modification time is different, only update modification time
-			// 检查内容是否一致但修改时间不同，则只更新修改时间
-			if mtimeCheck && note.Mtime < params.Mtime && note.ContentHash == params.ContentHash {
+			// 检查内容是否一致但修改时间不同，则只更新修改时间（墓碑记录不走此分支，须经下方墓碑闸门）
+			if mtimeCheck && note.Action != domain.NoteActionDelete && note.Mtime < params.Mtime && note.ContentHash == params.ContentHash {
 				err := s.noteRepo.UpdateActionMtime(ctx, domain.NoteActionModify, params.Mtime, note.ID, uid)
 				if err != nil {
 					return nil, code.ErrorDBQuery.WithDetails(err.Error())
@@ -429,6 +441,22 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 			// Set action // 设置 action
 			var action domain.NoteAction
 			if note.Action == domain.NoteActionDelete {
+				// 墓碑闸门：已被服务端删除的记录，只有未判定为"陈旧重报"的上传
+				// 才允许复活。陈旧 = 内容与墓碑一致（原样重报），且 mtime 与 ctime
+				// 都无法证明晚于删除时刻（含容差）。内容不同说明客户端有服务端未见过的
+				// 修改，按正常上传复活，避免调用方补发删除导致这份修改丢失。
+				// 典型场景：客户端本地状态失效后全量重报历史文件，把服务端删除顶回来。
+				if note.ContentHash == params.ContentHash && isStaleRevive(params.Mtime, params.Ctime, note.UpdatedTimestamp) {
+					zap.L().Info("stale revive rejected",
+						zap.Int64(logger.FieldUID, uid),
+						zap.String(logger.FieldPath, note.Path),
+						zap.Int64("mtime", params.Mtime),
+						zap.Int64("ctime", params.Ctime),
+						zap.Int64("deletedAt", note.UpdatedTimestamp),
+						zap.String("clientName", s.clientName),
+					)
+					return nil, code.ErrorStaleReviveRejected
+				}
 				action = domain.NoteActionCreate
 			} else {
 				action = domain.NoteActionModify
@@ -463,6 +491,7 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 			go s.folderService.SyncResourceFID(context.Background(), uid, vaultID, []int64{updated.ID}, nil)
 			go s.CountSizeSum(context.Background(), vaultID, uid)
 			go s.UpdateNoteLinks(context.Background(), updated.ID, params.Content, vaultID, uid)
+			go s.UpdateNoteTags(context.Background(), updated.ID, params.Content, vaultID, uid)
 			NoteHistoryDelayPush(updated.ID, uid)
 
 			if s.backupService != nil {
@@ -505,6 +534,7 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 		go s.folderService.SyncResourceFID(context.Background(), uid, vaultID, []int64{created.ID}, nil)
 		go s.CountSizeSum(context.Background(), vaultID, uid)
 		go s.UpdateNoteLinks(context.Background(), created.ID, params.Content, vaultID, uid)
+		go s.UpdateNoteTags(context.Background(), created.ID, params.Content, vaultID, uid)
 		NoteHistoryDelayPush(created.ID, uid)
 		if s.backupService != nil {
 			go s.backupService.NotifyUpdated(uid)
@@ -535,12 +565,35 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 		return nil, err // VaultService 已返回 code.Error
 	}
 
-	note, err := s.noteRepo.GetByPathHashIncludeRecycle(ctx, params.PathHash, vaultID, uid, false)
+	// 删除必须幂等：客户端在快速创建-删除竞争下会重复发送删除请求，
+	// 且仅在上传确认后才清理本地哈希——对已删除/不存在的记录返回错误
+	// 会导致客户端无限重试。因此改用 GetAllByPathHash（不过滤 action）
+	// 并对缺失记录返回成功。
+	// Delete must be idempotent: clients retry deletes on rapid create-delete
+	// races and only clear their local hash upon NoteDeleteAck; returning an
+	// error for already-deleted or missing records causes an infinite retry loop.
+	// 同一 path_hash 存在重复行（含墓碑行）时优先取未删除的那行，避免命中墓碑行后跳过删除、
+	// 活跃行残留；没有未删除行时再回退到任意状态的记录。
+	// Prefer the non-deleted row when duplicate path_hash rows exist (incl. tombstones), so a
+	// tombstone hit cannot skip deleting the live row; fall back to any status otherwise.
+	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		note, err = s.noteRepo.GetAllByPathHash(ctx, params.PathHash, vaultID, uid)
+	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, code.ErrorNoteNotFound
+			// 幂等：记录不存在（上传未完成或已物理清理）→ 用请求参数构造成功 DTO，
+			// path 必须来自请求，客户端按 path 匹配 pending 集合并清理 hash
+			return &dto.NoteDTO{Path: params.Path, PathHash: params.PathHash, Unchanged: true}, nil
 		}
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	if note.Action == domain.NoteActionDelete {
+		// 幂等：已是删除状态 → 不重复写库，直接返回
+		res := s.domainToDTO(note)
+		res.Unchanged = true
+		return res, nil
 	}
 
 	// Update to deleted status // 更新为删除状态
@@ -554,6 +607,9 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 	if err != nil {
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
+
+	// 删除后从标签索引移除（失败只记日志）；从回收站恢复时 Restore 会重建
+	s.DeleteNoteTags(ctx, note.ID, uid)
 
 	// If note has active share, automatically revoke (to prevent count residue) // 若笔记有 active 分享，自动撤销（防止计数残留）
 	if err := s.shareRepo.UpdateStatusByRes(ctx, uid, "note", note.ID, domain.UserShareStatusRevoked); err != nil {
@@ -636,6 +692,7 @@ func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRe
 	go s.folderService.SyncResourceFID(context.Background(), uid, vaultID, []int64{updated.ID}, nil)
 	go s.CountSizeSum(context.Background(), vaultID, uid)
 	go s.UpdateNoteLinks(context.Background(), updated.ID, updated.Content, vaultID, uid)
+	go s.UpdateNoteTags(context.Background(), updated.ID, updated.Content, vaultID, uid)
 
 	NoteHistoryDelayPush(updated.ID, uid)
 	if s.backupService != nil {
@@ -721,6 +778,8 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 			existNote.FID, _ = s.folderService.EnsurePathFID(ctx, uid, vaultID, newPathDir)
 			existNote.Content = n.Content
 			existNote.ContentHash = n.ContentHash
+			existNote.Size = n.Size   // Carry size over, otherwise the stale size of the deleted record remains // 带上大小，否则保留已删除记录的旧大小
+			existNote.Ctime = n.Ctime // Preserve original ctime, same as the create branch // 保留原始创建时间，与新建分支一致
 			existNote.Version = n.Version
 			existNote.Mtime = n.Mtime // Preserve original mtime // 保留原始修改时间
 			existNote.ClientName = s.clientName
@@ -744,6 +803,7 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 				UpdatedTimestamp: timex.Now().UnixMilli(),
 				Content:          n.Content,
 				ContentHash:      n.ContentHash,
+				Size:             n.Size, // Carry size over, otherwise the renamed note reports 0 bytes // 带上大小，否则重命名后的笔记显示 0 字节
 				Version:          n.Version,
 			}
 			newPathDir := ""
@@ -774,6 +834,9 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 			)
 		}
 		go s.Migrate(context.Background(), n.ID, newNoteCreated.ID, uid)
+		// 标签索引按笔记 ID 归属：旧 ID 的行删除，新 ID 按正文重建
+		s.DeleteNoteTags(ctx, n.ID, uid)
+		s.UpdateNoteTags(ctx, newNoteCreated.ID, n.Content, vaultID, uid)
 		if s.backupService != nil {
 			go s.backupService.NotifyUpdated(uid)
 		}
@@ -1297,6 +1360,43 @@ func (s *noteService) ReplaceContent(ctx context.Context, uid int64, params *dto
 	}, nil
 }
 
+// UpdateNoteTags re-extracts the note's tags and replaces its rows in the tag
+// index. Mirrors UpdateNoteLinks: callers fire it in a goroutine so a tag-index
+// failure can never fail the note write itself.
+// UpdateNoteTags 重新提取笔记标签并替换其标签索引记录。与 UpdateNoteLinks 一致：
+// 调用方以 goroutine 触发，标签索引失败绝不影响笔记写入本身。
+func (s *noteService) UpdateNoteTags(ctx context.Context, noteID int64, content string, vaultID, uid int64) {
+	if s.noteTagRepo == nil {
+		return
+	}
+	tags, source := dao.ExtractTags(content)
+	if err := s.noteTagRepo.ReplaceForNote(ctx, noteID, tags, vaultID, uid, source); err != nil {
+		s.logTagIndexError("replace", noteID, uid, err)
+	}
+}
+
+// DeleteNoteTags drops the note's rows from the tag index.
+// DeleteNoteTags 从标签索引中删除该笔记的记录。
+func (s *noteService) DeleteNoteTags(ctx context.Context, noteID, uid int64) {
+	if s.noteTagRepo == nil {
+		return
+	}
+	if err := s.noteTagRepo.DeleteByNoteID(ctx, noteID, uid); err != nil {
+		s.logTagIndexError("delete", noteID, uid, err)
+	}
+}
+
+// logTagIndexError reports a tag-index failure without propagating it.
+// logTagIndexError 记录标签索引错误但不向上抛出。
+func (s *noteService) logTagIndexError(op string, noteID, uid int64, err error) {
+	zap.L().Warn("note tag index "+op+" failed",
+		zap.Int64(logger.FieldUID, uid),
+		zap.Int64("noteId", noteID),
+		zap.String(logger.FieldMethod, "NoteService.logTagIndexError"),
+		zap.Error(err),
+	)
+}
+
 // UpdateNoteLinks extracts wiki links from content and updates the link index
 // UpdateNoteLinks 从内容中提取 Wiki 链接并更新链接索引
 func (s *noteService) UpdateNoteLinks(ctx context.Context, noteID int64, content string, vaultID, uid int64) {
@@ -1382,7 +1482,11 @@ func (s *noteService) RecycleClear(ctx context.Context, uid int64, params *dto.N
 // CleanDuplicateNotes 清理重复的笔记记录
 func (s *noteService) CleanDuplicateNotes(ctx context.Context, uid int64, vaultID int64) error {
 	// 获取所有笔记（包含已删除，以便全局去重）
-	notes, err := s.noteRepo.ListByUpdatedTimestamp(ctx, 0, vaultID, uid)
+	// 用 Meta 版本：去重只需 path/action/timestamp 等元数据，无需读取正文/快照文件。
+	// 非 Meta 版本会逐条读 content.txt，而 Create 是"先插库后写文件"，并发窗口下
+	// 会命中 "note content file not found" 导致任务中断。
+	// Use the Meta variant: dedup only needs metadata, not content/snapshot files.
+	notes, err := s.noteRepo.ListByUpdatedTimestampMeta(ctx, 0, vaultID, uid)
 	if err != nil {
 		return err
 	}

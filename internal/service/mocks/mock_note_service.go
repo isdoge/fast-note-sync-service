@@ -200,6 +200,10 @@ func (m *MockNoteService) UpdateNoteLinks(ctx context.Context, noteID int64, con
 	m.Called(ctx, noteID, content, vaultID, uid)
 }
 
+func (m *MockNoteService) UpdateNoteTags(ctx context.Context, noteID int64, content string, vaultID, uid int64) {
+	m.Called(ctx, noteID, content, vaultID, uid)
+}
+
 func (m *MockNoteService) RecycleClear(ctx context.Context, uid int64, params *dto.NoteRecycleClearRequest) error {
 	args := m.Called(ctx, uid, params)
 	return args.Error(0)

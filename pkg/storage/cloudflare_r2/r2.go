@@ -3,6 +3,7 @@ package cloudflare_r2
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -24,8 +25,8 @@ func validateAccountID(accountID string) error {
 	return nil
 }
 
-func cacheKey(conf *Config) string {
-	return conf.AccessKeyID + ":" + conf.AccessKeySecret + ":" + conf.AccountID
+func cacheKey(conf *Config) Config {
+	return *conf
 }
 
 type Config struct {
@@ -42,9 +43,14 @@ type R2 struct {
 	Config          *Config
 }
 
-var clients = make(map[string]*R2)
+var clients = make(map[Config]*R2)
+var clientsMu sync.Mutex
 
 func NewClient(conf *Config) (*R2, error) {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	snapshot := *conf
+	conf = &snapshot
 	var accountId = conf.AccountID
 	var accessKeyId = conf.AccessKeyID
 	var accessKeySecret = conf.AccessKeySecret

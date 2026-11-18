@@ -2,6 +2,7 @@ package routers
 
 import (
 	"embed"
+	"net"
 	"net/http"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	ut "github.com/go-playground/universal-translator"
 	"github.com/lxzan/gws"
+	"go.uber.org/zap"
 )
 
 var methodLimiters = limiter.NewMethodLimiter().AddBuckets(
@@ -25,6 +27,7 @@ var methodLimiters = limiter.NewMethodLimiter().AddBuckets(
 	},
 	limiter.BucketRule{
 		Key:          "/api/user/login",
+		PerClient:    true,
 		FillInterval: time.Second,
 		Capacity:     5,
 		Quantum:      1,
@@ -43,6 +46,18 @@ var methodLimiters = limiter.NewMethodLimiter().AddBuckets(
 	},
 )
 
+// globalLimiters 全局兜底桶：不区分客户端，限制登录接口失败总速率（每秒 50 次），
+// 防止大量来源地址各自不超单客户端限额时的分布式撞库。在 methodLimiters 之后检查，
+// 已被单客户端桶拒绝的请求不消耗全局额度；只有失败登录消耗额度（见 middleware.FailureRateLimiter）。
+var globalLimiters = limiter.NewMethodLimiter().AddBuckets(
+	limiter.BucketRule{
+		Key:          "/api/user/login",
+		FillInterval: time.Second,
+		Capacity:     50,
+		Quantum:      50,
+	},
+)
+
 func NewRouter(frontendFiles embed.FS, appContainer *app.App, uni *ut.UniversalTranslator) *gin.Engine {
 
 	// Get configuration
@@ -57,6 +72,8 @@ func NewRouter(frontendFiles embed.FS, appContainer *app.App, uni *ut.UniversalT
 	}
 
 	var wss = pkgapp.NewWebsocketServer(pkgapp.WSConfig{
+		PingInterval: time.Duration(cfg.App.WebSocketPingInterval),
+		PingWait:     time.Duration(cfg.App.WebSocketPingWait),
 		GWSOption: gws.ServerOption{
 			ResponseHeader:   responseHeader,
 			CheckUtf8Enabled: *cfg.App.WebSocketCheckUtf8Enabled,
@@ -89,7 +106,7 @@ func NewRouter(frontendFiles embed.FS, appContainer *app.App, uni *ut.UniversalT
 	// 初始化 WebSocket 路由
 	initWebSocketRoutes(wss, appContainer)
 
-	r := gin.New()
+	r := newRouterEngine(cfg.Server.TrustedProxies, appContainer.Logger())
 	r.Use(middleware.Proxy(cfg.Server.TrustedProxies))
 	r.Use(middleware.Cors(cfg.Server.CORSAllowedOrigins, cfg.Server.ExtApiUrl))
 	if len(cfg.Server.CustomResponseHeaders) > 0 {
@@ -127,7 +144,7 @@ func NewRouter(frontendFiles embed.FS, appContainer *app.App, uni *ut.UniversalT
 
 func NewWebGuiRouter(frontendFiles embed.FS, appContainer *app.App) *gin.Engine {
 	cfg := appContainer.Config()
-	r := gin.New()
+	r := newRouterEngine(cfg.Server.TrustedProxies, appContainer.Logger())
 	r.Use(middleware.Proxy(cfg.Server.TrustedProxies))
 	r.Use(middleware.Cors(cfg.Server.CORSAllowedOrigins, cfg.Server.ExtApiUrl))
 	if len(cfg.Server.CustomResponseHeaders) > 0 {
@@ -144,7 +161,7 @@ func NewWebGuiRouter(frontendFiles embed.FS, appContainer *app.App) *gin.Engine 
 
 func NewShareRouter(frontendFiles embed.FS, appContainer *app.App) *gin.Engine {
 	cfg := appContainer.Config()
-	r := gin.New()
+	r := newRouterEngine(cfg.Server.TrustedProxies, appContainer.Logger())
 	r.Use(middleware.Proxy(cfg.Server.TrustedProxies))
 	r.Use(middleware.Cors(cfg.Server.CORSAllowedOrigins, cfg.Server.ExtApiUrl))
 	if len(cfg.Server.CustomResponseHeaders) > 0 {
@@ -155,5 +172,29 @@ func NewShareRouter(frontendFiles embed.FS, appContainer *app.App) *gin.Engine {
 	registerShareRoutes(r, frontendFiles, appContainer)
 
 	r.NoRoute(middleware.NoFound())
+	return r
+}
+
+// newRouterEngine trusts forwarding headers only from the configured reverse proxies.
+// Invalid entries (neither IP nor CIDR) are skipped with a warning instead of aborting startup.
+// newRouterEngine 只信任配置的反向代理转发头；非法项（非 IP/CIDR）跳过并打 warn 日志，不中止启动。
+func newRouterEngine(trustedProxies []string, logger *zap.Logger) *gin.Engine {
+	if len(trustedProxies) == 0 {
+		trustedProxies = []string{"127.0.0.1", "::1"}
+	}
+	valid := make([]string, 0, len(trustedProxies))
+	for _, proxy := range trustedProxies {
+		if net.ParseIP(proxy) == nil {
+			if _, _, err := net.ParseCIDR(proxy); err != nil {
+				logger.Warn("server.trusted-proxies: invalid entry ignored (expect IP or CIDR)", zap.String("entry", proxy))
+				continue
+			}
+		}
+		valid = append(valid, proxy)
+	}
+	r := gin.New()
+	if err := r.SetTrustedProxies(valid); err != nil {
+		panic(err)
+	}
 	return r
 }

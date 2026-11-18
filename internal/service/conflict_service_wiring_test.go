@@ -45,7 +45,7 @@ func TestConflictService_CreateConflictFile_PersistsSyncableCopy(t *testing.T) {
 		}).
 		Return(&domain.Note{ID: 99}, nil)
 
-	svc := NewConflictService(noteRepo, vaultSvc, zap.NewNop())
+	svc := NewConflictService(noteRepo, nil, vaultSvc, zap.NewNop())
 
 	req := &dto.ConflictFileRequest{
 		Vault:             "MyVault",
@@ -83,4 +83,27 @@ func TestConflictService_CreateConflictFile_PersistsSyncableCopy(t *testing.T) {
 	if createdNote.ContentHash != req.ClientContentHash {
 		t.Fatalf("created note ContentHash = %q, want %q", createdNote.ContentHash, req.ClientContentHash)
 	}
+}
+
+// TestConflictService_CreateConflictFile_IndexesTags：冲突副本与普通新建笔记一样写入标签索引（#509）。
+func TestConflictService_CreateConflictFile_IndexesTags(t *testing.T) {
+	noteRepo := new(domainmocks.MockNoteRepository)
+	tagRepo := new(domainmocks.MockNoteTagRepository)
+	vaultSvc := &fakeVaultServiceForConflictTest{vaultID: 7}
+
+	noteRepo.On("Create", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(42)).
+		Return(&domain.Note{ID: 99}, nil)
+	tagRepo.On("ReplaceForNote", mock.Anything, int64(99), []string{"work"}, int64(7), int64(42), "inline").
+		Return(nil)
+
+	svc := NewConflictService(noteRepo, tagRepo, vaultSvc, zap.NewNop())
+	_, err := svc.CreateConflictFile(context.Background(), 42, &dto.ConflictFileRequest{
+		Vault:         "MyVault",
+		OriginalPath:  "Notes/ReadMe.md",
+		ClientContent: "client side #work content",
+	})
+	if err != nil {
+		t.Fatalf("CreateConflictFile returned error: %v", err)
+	}
+	tagRepo.AssertExpectations(t)
 }

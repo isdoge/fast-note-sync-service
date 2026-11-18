@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/routers/websocket_router"
@@ -16,6 +17,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/middleware"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -150,7 +152,7 @@ func (h *ShareHandler) FileGet(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	savePath, contentType, mtime, etag, fileName, err := h.App.ShareService.GetSharedFileInfo(ctx, shareToken, params.ID, params.Password)
+	savePath, contentType, mtime, etag, fileName, isPasswordProtected, err := h.App.ShareService.GetSharedFileInfo(ctx, shareToken, params.ID, params.Password)
 
 	if err != nil {
 		if cObj, ok := err.(*code.Code); ok {
@@ -175,7 +177,17 @@ func (h *ShareHandler) FileGet(c *gin.Context) {
 	if contentType != "" {
 		c.Header("Content-Type", contentType)
 	}
-	c.Header("Cache-Control", "public, s-maxage=31536000, max-age=31536000, must-revalidate")
+	// #342 S-22：带密码的分享是私有资源，禁止共享缓存（CDN/代理）存储；
+	// 浏览器本地缓存保留一年，分享页刷新无需重下附件。公开分享维持一年的强缓存。
+	// #342 S-22: password-protected shares are private resources; shared caches
+	// (CDN/proxies) must not store them. Keep a year of browser-local caching so the
+	// share page can refresh without re-downloading attachments. Public shares keep
+	// the original year-long strong cache.
+	if isPasswordProtected {
+		c.Header("Cache-Control", "private, max-age=31536000, must-revalidate")
+	} else {
+		c.Header("Cache-Control", "public, s-maxage=31536000, max-age=31536000, must-revalidate")
+	}
 	if etag != "" {
 		c.Header("ETag", etag)
 	}
@@ -266,6 +278,25 @@ func (h *ShareHandler) Cancel(c *gin.Context) {
 
 	var err error
 	if params.ID > 0 {
+		// 受限令牌：按 ID 撤销时请求里的 vault 不可信（ID 与 vault 可不一致），
+		// 必须按分享记录实际所属的库对照白名单（#461）
+		// Restricted token: when cancelling by ID the request vault is not trustworthy
+		// (ID and vault may not match), so check the share's actual vault against the allowlist (#461)
+		if allowedVaults := tokenVaults(c); allowedVaults != "" {
+			shareVault, err := h.App.ShareService.GetShareVaultName(ctx, uid, params.ID)
+			if err != nil {
+				if cObj, ok := err.(*code.Code); ok {
+					response.ToResponse(cObj)
+				} else {
+					response.ToResponse(code.Failed.WithDetails(err.Error()))
+				}
+				return
+			}
+			if !util.VerifyVaultAccess(allowedVaults, shareVault) {
+				response.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: " + shareVault))
+				return
+			}
+		}
 		err = h.App.ShareService.StopShare(ctx, uid, params.ID)
 	} else if params.Vault != "" && params.PathHash != "" {
 		err = h.App.ShareService.StopShareByPath(ctx, uid, params.Vault, params.PathHash)
@@ -388,7 +419,10 @@ func (h *ShareHandler) List(c *gin.Context) {
 	ctx := c.Request.Context()
 	pager := pkgapp.NewPager(c)
 
-	items, count, err := h.App.ShareService.ListShares(ctx, uid, params.SortBy, params.SortOrder, pager)
+	// 受限令牌：把令牌的笔记库白名单传给服务层过滤，其它库的分享不返回（#461）
+	// Restricted token: pass the token's vault allowlist to the service layer so
+	// shares of other vaults are filtered out (#461)
+	items, count, err := h.App.ShareService.ListShares(ctx, uid, params.SortBy, params.SortOrder, pager, tokenVaults(c))
 	if err != nil {
 		response.ToResponse(code.Failed.WithDetails(err.Error()))
 		return
@@ -460,6 +494,23 @@ func (h *ShareHandler) getShareBaseUrl(c *gin.Context) string {
 	scheme := "http"
 	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
 		scheme = "https"
+	}
+
+	// haierkeys/obsidian-fast-note-sync#252：配了独立 share-port 而未配 share-base-url
+	// 时，之前回落到 c.Request.Host（主服务端口），生成的分享链接打的是主端口而非
+	// 分享端口。此时用请求主机名拼上 share-port。SharePort 形如 ":9100" 或 "9100"，
+	// 统一成 host:port。
+	// haierkeys/obsidian-fast-note-sync#252: when an independent share-port is
+	// configured without share-base-url, the old fallback used c.Request.Host
+	// (the main service port), so generated share links pointed at the main port
+	// instead of the share port. Rebuild host with the configured share port.
+	if cfg.SharePort != "" {
+		host := c.Request.Host
+		if i := strings.LastIndex(host, ":"); i > 0 && !strings.Contains(host[i:], "]") {
+			host = host[:i] // strip existing port (keep IPv6 brackets intact)
+		}
+		sharePort := strings.TrimPrefix(cfg.SharePort, ":")
+		return fmt.Sprintf("%s://%s:%s", scheme, host, sharePort)
 	}
 
 	return fmt.Sprintf("%s://%s", scheme, c.Request.Host)

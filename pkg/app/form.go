@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	ut "github.com/go-playground/universal-translator"
 	"github.com/go-playground/validator/v10"
 	"github.com/haierkeys/fast-note-sync-service/pkg/json"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 )
 
 type ValidError struct {
@@ -69,10 +72,51 @@ func (v ValidErrors) MapsToString() string {
 	return string(re)
 }
 
+// bindableBodyContentType reports whether the request carries a body whose declared
+// Content-Type the current binder will actually parse.
+//
+// 为什么需要它：当请求带了 body 但 Content-Type 不是可解析类型时（text/plain、
+// text/html、或未声明），gin 的 form binder 会**静默忽略 body**、只从 URL query
+// 绑定字段。对 /api/note 这类"字段在 body 里"的写接口，这会让 vault/path 从 query
+// 拿到、content 落空，请求仍返回 code=1 Success 并把既有内容写没（静默数据丢失）。
+// 这类请求一律拒绝（Invalid Params），而不是继续静默绑定。
+func bindableBodyContentType(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return true
+	}
+	// 无 body：query-only 绑定行为不变，保持向后兼容。
+	if c.Request.ContentLength == 0 {
+		return true
+	}
+	switch c.ContentType() {
+	case binding.MIMEJSON,
+		binding.MIMEXML, binding.MIMEXML2,
+		binding.MIMEPROTOBUF,
+		binding.MIMEMSGPACK, binding.MIMEMSGPACK2,
+		binding.MIMEYAML,
+		binding.MIMETOML,
+		binding.MIMEPOSTForm,
+		binding.MIMEMultipartPOSTForm:
+		return true
+	}
+	return false
+}
+
 // BindAndValid bind request parameters and perform validation, supporting multiple languages
 // BindAndValid 绑定请求参数并进行验证，支持多语言
 func BindAndValid(c *gin.Context, obj interface{}) (bool, ValidErrors) {
 	var errs ValidErrors
+
+	// Reject bodies the binder would silently drop, instead of binding from the
+	// query string alone and persisting empty content.
+	// 拒绝会被 binder 静默丢弃的 body，避免只从查询串绑定而把内容写成空值。
+	if !bindableBodyContentType(c) {
+		errs = append(errs, &ValidError{
+			Key:     "Content-Type",
+			Message: "unsupported Content-Type for request body, use application/json (#kvpac-suxu2)",
+		})
+		return false, errs
+	}
 
 	// Use global validator for validation
 	// 使用全局验证器进行验证
@@ -99,7 +143,47 @@ func BindAndValid(c *gin.Context, obj interface{}) (bool, ValidErrors) {
 		return false, errs // Return validation error // 返回验证错误
 	}
 
+	allowedVaults, _ := c.Get("vaults")
+	vaults, _ := allowedVaults.(string)
+	if verr := verifyBoundVault(vaults, obj); verr != nil {
+		return false, ValidErrors{verr}
+	}
+
 	return true, nil // Binding and validation both succeeded, returns true // 绑定和验证都成功，返回 true
+}
+
+// verifyBoundVault checks the vault actually bound into the request object against the
+// token's vault allowlist (#458). The auth middleware / WS interceptor read the vault from the
+// raw request (query first, exact JSON key, JSON only), which can differ from what the binder
+// fills in (JSON body, case-insensitive keys, protobuf payloads); checking the bound value closes
+// that gap. A restricted token must name an allowed vault, so an empty vault is rejected too.
+// Objects without a string field named Vault are not checked.
+// verifyBoundVault 按令牌的笔记库白名单校验实际绑定到请求对象里的 vault（#458）。鉴权中间件 / WS 拦截器
+// 从原始请求取 vault（先 query、JSON 精确键名、只认 JSON），与绑定器实际填入的值（JSON 请求体、键名大小写不敏感、
+// protobuf 载荷）可能不同；校验绑定后的值即可堵住这一差异。受限令牌必须指明允许的库，因此空 vault 也拒绝。
+// 没有名为 Vault 的字符串字段的对象不做校验。
+func verifyBoundVault(allowedVaults string, obj any) *ValidError {
+	if allowedVaults == "" {
+		return nil
+	}
+	v := reflect.ValueOf(obj)
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return nil
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	field := v.FieldByName("Vault")
+	if !field.IsValid() || field.Kind() != reflect.String {
+		return nil
+	}
+	if util.VerifyVaultAccess(allowedVaults, field.String()) {
+		return nil
+	}
+	return &ValidError{Key: "vault", Message: "Vault access restricted: " + field.String()}
 }
 
 // RequestParam extracts the specified parameter from the request without consuming or breaking the request body stream.

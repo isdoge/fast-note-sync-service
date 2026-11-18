@@ -106,3 +106,39 @@ func TestNoteHistoryHandler_Restore_Success(t *testing.T) {
 	assertResponseCode(t, w, code.Success.Code())
 	mockSvc.AssertExpectations(t)
 }
+
+// #458：只允许 B 库的受限令牌按 ID 读取 A 库笔记的历史版本，必须拒绝。
+func TestNoteHistoryHandler_Get_RestrictedTokenOtherVaultRejected(t *testing.T) {
+	mockSvc := new(svcmocks.MockNoteHistoryService)
+	vaultSvc := new(svcmocks.MockVaultService)
+	mockSvc.On("Get", mock.Anything, int64(1), int64(10)).Return(&dto.NoteHistoryDTO{ID: 10, VaultID: 2, Content: "secret"}, nil)
+	vaultSvc.On("Get", mock.Anything, int64(1), int64(2)).Return(&dto.VaultDTO{ID: 2, Name: "A"}, nil)
+
+	testApp := app.NewTestApp(&app.Services{NoteHistoryService: mockSvc, VaultService: vaultSvc})
+	handler := NewNoteHistoryHandler(testApp, pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, testApp))
+	c, w := newNoteHistoryTestContext("GET", "/api/note/history?id=10", "", 1)
+	c.Set("vaults", "B")
+
+	handler.Get(c)
+
+	assertResponseCode(t, w, code.ErrorAuthTokenScopeRestricted.Code())
+	assert.NotContains(t, w.Body.String(), "secret")
+}
+
+// #458：受限令牌用允许的库名 B 加上 A 库的历史 ID 发起恢复，必须拒绝且不执行恢复。
+func TestNoteHistoryHandler_Restore_RestrictedTokenOtherVaultRejected(t *testing.T) {
+	mockSvc := new(svcmocks.MockNoteHistoryService)
+	vaultSvc := new(svcmocks.MockVaultService)
+	mockSvc.On("Get", mock.Anything, int64(1), int64(10)).Return(&dto.NoteHistoryDTO{ID: 10, VaultID: 2}, nil)
+	vaultSvc.On("Get", mock.Anything, int64(1), int64(2)).Return(&dto.VaultDTO{ID: 2, Name: "A"}, nil)
+
+	testApp := app.NewTestApp(&app.Services{NoteHistoryService: mockSvc, VaultService: vaultSvc})
+	handler := NewNoteHistoryHandler(testApp, pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, testApp))
+	c, w := newNoteHistoryTestContext("PUT", "/api/note/history/restore", `{"vault":"B","historyId":10}`, 1)
+	c.Set("vaults", "B")
+
+	handler.Restore(c)
+
+	assertResponseCode(t, w, code.ErrorAuthTokenScopeRestricted.Code())
+	mockSvc.AssertNotCalled(t, "RestoreFromHistory", mock.Anything, mock.Anything, mock.Anything)
+}

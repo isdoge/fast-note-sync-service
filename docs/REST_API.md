@@ -1283,7 +1283,7 @@ Schema: `app.Res`
 ### Probe version source latency
 **Endpoint**: `GET /api/version/probe`
 
-Parallel-probe GitHub and CNB release endpoints, return reachability, latency, recommended source and current selected mode
+Probe GitHub releases and return reachability, latency, recommended source and current mode
 
 **Parameters**:
 | Name | In | Type | Required | Description |
@@ -1299,8 +1299,7 @@ Schema: `app.Res{data=dto.SourceProbeDTO}`
   "msg": "Success",
   "data": {
     "github": { "ok": true, "latencyMs": 280 },
-    "cnb": { "ok": true, "latencyMs": 52 },
-    "recommended": "cnb",
+    "recommended": "github",
     "selectedMode": "auto"
   }
 }
@@ -1442,7 +1441,7 @@ Schema: `app.Res`
 
 ## Timestamp Format
 
-All timestamp fields (`ctime`, `mtime`, `updatedTimestamp`, `lastTime`) are **Unix timestamps in milliseconds**.
+All timestamp fields (`ctime`, `mtime`, `updatedTimestamp`, `lastTime`) are **Unix timestamps in milliseconds**. When writing notes or attachments, the server tolerates second-scale values: any `ctime`/`mtime` in the range (0, 1e11) is treated as seconds and normalized to milliseconds before storage (#461).
 
 ---
 

@@ -82,6 +82,11 @@ func (m *MockBackupRepository) ListOldHistory(ctx context.Context, uid int64, co
 	return args.Get(0).([]*domain.BackupHistory), args.Error(1)
 }
 
+func (m *MockBackupRepository) DeleteHistory(ctx context.Context, uid int64, historyID int64) error {
+	args := m.Called(ctx, uid, historyID)
+	return args.Error(0)
+}
+
 func (m *MockBackupRepository) DeleteOldHistory(ctx context.Context, uid int64, configID int64, cutoffTime time.Time) error {
 	args := m.Called(ctx, uid, configID, cutoffTime)
 	return args.Error(0)

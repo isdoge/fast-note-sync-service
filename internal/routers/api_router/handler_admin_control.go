@@ -60,10 +60,7 @@ func NewAdminControlHandler(a *app.App, wss *pkgapp.WebsocketServer) *AdminContr
 func (h *AdminControlHandler) Config(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
 	cfg := h.App.Config()
-	ftsBleveEnabled := true
-	if cfg.App.FtsBleveEnabled != nil {
-		ftsBleveEnabled = *cfg.App.FtsBleveEnabled
-	}
+	ftsBleveEnabled := h.App.Dao.BleveMgr.IsEnabled()
 	data := dto.AdminWebGUIConfig{
 		FontSet:          cfg.WebGUI.FontSet,
 		RegisterIsEnable: h.App.UserService.IsRegisterEnabled(c),
@@ -145,6 +142,7 @@ func (h *AdminControlHandler) GetConfig(c *gin.Context) {
 		PullReleaseChannel:            &cfg.App.PullReleaseChannel,
 		WebGUILoginTokenExpiry:        &cfg.Security.WebGUILoginTokenExpiry,
 		WebGUILoginTokenBindIP:        cfg.Security.WebGUILoginTokenBindIP,
+		WebGUILoginTokenBindUA:        cfg.Security.WebGUILoginTokenBindUA,
 		CustomResponseHeaders:         &cfg.Server.CustomResponseHeaders,
 		DefaultPageSize:               &cfg.App.DefaultPageSize,
 		MaxPageSize:                   &cfg.App.MaxPageSize,
@@ -170,6 +168,7 @@ func (h *AdminControlHandler) GetConfig(c *gin.Context) {
 		FtsBleveStoreRaw:              cfg.App.FtsBleveStoreRaw,
 		GitName:                       &cfg.Git.Name,
 		GitEmail:                      &cfg.Git.Email,
+		GitAllowedPrivateHosts:        &cfg.Git.AllowedPrivateHosts,
 		PipelineWindowUp:              cfg.App.PipelineWindowUp,
 		PipelineWindowDown:            cfg.App.PipelineWindowDown,
 	}
@@ -242,14 +241,21 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 		}
 	}
 
-	// Validate webguiLoginTokenExpiry format
-	// 验证 webguiLoginTokenExpiry 格式
-	if params.WebGUILoginTokenExpiry != nil && *params.WebGUILoginTokenExpiry != "" {
-		_, err := util.ParseDuration(*params.WebGUILoginTokenExpiry)
-		if err != nil {
-			logger.Warn("apiRouter.WebGUI.UpdateConfig invalid webguiLoginTokenExpiry format",
-				zap.String("value", *params.WebGUILoginTokenExpiry))
-			response.ToResponse(code.ErrorInvalidParams.WithDetails("webguiLoginTokenExpiry format invalid, e.g. 7d, 24h, 30m"))
+	// Validate token lifetimes before mutating or saving the live config.
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{
+		{"tokenExpiry", params.TokenExpiry},
+		{"shareTokenExpiry", params.ShareTokenExpiry},
+		{"webguiLoginTokenExpiry", params.WebGUILoginTokenExpiry},
+	} {
+		if field.value == nil {
+			continue
+		}
+		d, err := util.ParseDuration(*field.value)
+		if err != nil || d <= 0 {
+			response.ToResponse(code.ErrorInvalidParams.WithDetails(fmt.Sprintf("%s format invalid: must be positive and at most %d days (e.g. 7d, 24h, 30m)", field.name, util.MaxDurationDays)))
 			return
 		}
 	}
@@ -348,6 +354,9 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 	if params.WebGUILoginTokenBindIP != nil {
 		cfg.Security.WebGUILoginTokenBindIP = params.WebGUILoginTokenBindIP
 	}
+	if params.WebGUILoginTokenBindUA != nil {
+		cfg.Security.WebGUILoginTokenBindUA = params.WebGUILoginTokenBindUA
+	}
 	if params.CustomResponseHeaders != nil {
 		cfg.Server.CustomResponseHeaders = *params.CustomResponseHeaders
 	}
@@ -422,6 +431,9 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 	}
 	if params.GitEmail != nil {
 		cfg.Git.Email = *params.GitEmail
+	}
+	if params.GitAllowedPrivateHosts != nil {
+		cfg.Git.AllowedPrivateHosts = *params.GitAllowedPrivateHosts
 	}
 	if params.PipelineWindowUp != nil {
 		// Stored as-is (may exceed the read-time clamp); PipelineWindowUpClamped()
@@ -1167,30 +1179,14 @@ func (h *AdminControlHandler) Upgrade(c *gin.Context) {
 
 	versionRaw := strings.TrimPrefix(version, "v")
 
-	// Determine download URL
-	// At upgrade time, probe both sources in auto mode to pick the best one
-	// rather than relying on the cached background-task result.
-	// 确定下载地址：auto 模式在升级时主动探测两源，不依赖后台任务缓存。
-	useGitHub := checkInfo.GithubAvailable
-	if cfg.App.PullSource == "auto" {
-		snap := h.App.SourceSelector().Probe(c.Request.Context())
-		useGitHub = snap.UseGitHub
-	}
-
+	// Download fork releases from GitHub regardless of legacy source settings.
+	// 无论旧下载源设置为何值，均从 GitHub fork 下载。
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 
 	// Example: fast-note-sync-service-2.0.10-linux-amd64.tar.gz
 	fileName := fmt.Sprintf("fast-note-sync-service-%s-%s-%s.tar.gz", versionRaw, goos, goarch)
-	downloadURL := ""
-	if useGitHub {
-		// GitHub releases/download/[tag]/[filename]
-		// Based on user feedback: URL should NOT have 'v' in the tag part if the tag itself doesn't have it
-		downloadURL = fmt.Sprintf("https://github.com/haierkeys/fast-note-sync-service/releases/download/%s/%s", versionRaw, fileName)
-	} else {
-		// CNB download URL format
-		downloadURL = fmt.Sprintf("https://cnb.cool/haierkeys/fast-note-sync-service/-/releases/download/%s/%s", versionRaw, fileName)
-	}
+	downloadURL := fmt.Sprintf("https://github.com/isdoge/fast-note-sync-service/releases/download/%s/%s", versionRaw, fileName)
 
 	h.App.Logger().Info("Starting upgrade download", zap.String("url", downloadURL), zap.String("version", versionRaw))
 

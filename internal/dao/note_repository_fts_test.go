@@ -412,3 +412,30 @@ func TestBleveFTSDisabled(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, results) // Should fall back or return empty without panic
 }
+
+// TestNoteRepository_SearchHits_PathEscapesLike 覆盖 #509 修复：按路径搜索时关键字中的 % _ 按字面匹配。
+func TestNoteRepository_SearchHits_PathEscapesLike(t *testing.T) {
+	daoInst, repo, _, cleanup := setupFTSTestEnv(t, false)
+	defer cleanup()
+
+	ctx := context.Background()
+	uid, vaultID := int64(7), int64(3)
+	userDb := daoInst.ResolveDB("user_7")
+	require.NoError(t, userDb.AutoMigrate(&model.Note{}))
+	for i, p := range []string{"100%.md", "100x.md", "a_b.md", "axb.md"} {
+		require.NoError(t, userDb.Create(&model.Note{ID: int64(i + 1), VaultID: vaultID, Path: p, PathHash: util.EncodeHash32(p), Content: "body", Action: "create"}).Error)
+	}
+
+	paths := func(keyword string) []string {
+		hits, total, err := repo.SearchHits(ctx, vaultID, uid, keyword, "path", false, "", "", 20, 0)
+		require.NoError(t, err)
+		out := make([]string, 0, len(hits))
+		for _, h := range hits {
+			out = append(out, h.Note.Path)
+		}
+		require.Equal(t, len(out), total)
+		return out
+	}
+	require.Equal(t, []string{"100%.md"}, paths("100%"), "Bug: 路径关键字中的 %% 必须按字面匹配")
+	require.Equal(t, []string{"a_b.md"}, paths("a_b"), "Bug: 路径关键字中的 _ 必须按字面匹配")
+}

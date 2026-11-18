@@ -204,7 +204,7 @@ func (h *BackupHandler) Execute(c *gin.Context) {
 		return
 	}
 
-	response.ToResponse(code.Success.WithDetails("Backup task completed, check history for details"))
+	response.ToResponse(code.Success.WithDetails("Backup task accepted, check status and history for results"))
 }
 
 func (h *BackupHandler) logError(ctx context.Context, method string, err error) {

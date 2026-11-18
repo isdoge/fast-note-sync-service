@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -94,16 +95,26 @@ type BleveManager struct {
 // NewBleveManager creates a new BleveManager instance
 // NewBleveManager 创建一个新的 BleveManager 实例
 func NewBleveManager(enabled *bool, storeRaw *bool, logger *zap.Logger) *BleveManager {
-	en := true
-	if enabled != nil {
-		en = *enabled
-	}
+	return newBleveManagerForArch(enabled, storeRaw, logger, runtime.GOARCH)
+}
+
+// bleveEnabledForArch 返回最终开关；zapx 的 64 位原子操作在 32 位 ARM 上可能未对齐。
+func bleveEnabledForArch(enabled *bool, arch string) bool {
+	return arch != "arm" && (enabled == nil || *enabled)
+}
+
+func newBleveManagerForArch(enabled *bool, storeRaw *bool, logger *zap.Logger, arch string) *BleveManager {
+	en := bleveEnabledForArch(enabled, arch)
 	raw := true
 	if storeRaw != nil {
 		raw = *storeRaw
 	}
 	if logger == nil {
 		logger = zap.NewNop()
+	}
+	if arch == "arm" && (enabled == nil || *enabled) {
+		logger.Warn("Bleve full-text search disabled on 32-bit ARM: zapx unaligned 64-bit atomic operations can panic; full-text search is unavailable, other features continue normally",
+			zap.String("arch", arch))
 	}
 	m := &BleveManager{
 		enabled:  en,

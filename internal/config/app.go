@@ -1,5 +1,10 @@
 package config
 
+import (
+	"fmt"
+	"time"
+)
+
 // AppSettings application settings
 // AppSettings 应用设置
 type AppSettings struct {
@@ -54,6 +59,10 @@ type AppSettings struct {
 
 	// WebSocket configurations
 	// WebSocket 配置
+	// WebSocket heartbeat durations in seconds; zero uses the defaults.
+	// WebSocket 心跳时长（秒）；零值使用默认值。
+	WebSocketPingInterval         int    `yaml:"ws-ping-interval" default:"25"`
+	WebSocketPingWait             int    `yaml:"ws-ping-wait" default:"60"`
 	WebSocketReadMaxPayloadSize   string `yaml:"ws-read-max-payload-size" default:"128MB"`
 	WebSocketWriteMaxPayloadSize  string `yaml:"ws-write-max-payload-size" default:"128MB"`
 	WebSocketParallelEnabled      *bool  `yaml:"ws-parallel-enabled" default:"true"`
@@ -68,8 +77,8 @@ type AppSettings struct {
 	// WebSocketWriteTimeout WebSocket 应用层出站消息（ToResponse/BroadcastResponse/SendBinary 等）
 	// 的写超时（秒），防止僵尸连接让 WriteMessage 无限阻塞；yaml 显式 0 = 不设写超时（旧行为），nil 才用默认 10
 	WebSocketWriteTimeout *int `yaml:"ws-write-timeout" default:"10"`
-	// PullSource data pull source: auto | github | cnb
-	// PullSource 数据拉取源：auto | github | cnb
+	// PullSource data pull source: auto | github (legacy values use GitHub)
+	// PullSource 数据拉取源：auto | github (legacy values use GitHub)
 	PullSource string `yaml:"pull-source" default:"auto"`
 	// PullReleaseChannel update version channel: stable | beta
 	// PullReleaseChannel 更新版本通道：stable（正式版） | beta（测试版）
@@ -81,8 +90,8 @@ type AppSettings struct {
 
 	FtsBleveEnabled  *bool `yaml:"fts-bleve-enabled" default:"true"`    // Bleve FTS enabled flag // 是否启用 Bleve 全文搜索（默认启用）
 	FtsBleveStoreRaw *bool `yaml:"fts-bleve-store-raw" default:"false"` // Bleve FTS store raw content flag // Bleve 全文搜索是否存储原始文本（默认启用为方案 B，若设为 false 则为仅索引不存储的方案 A）
-	SyncDownChunkNum int `yaml:"sync-down-chunk-num" default:"200"` // Serial download sync page chunk size // 串行下载同步的分块数量
-	SyncUpChunkNum   int `yaml:"sync-up-chunk-num" default:"100"`  // Serial upload sync batch size // 串行上传同步的分包大小
+	SyncDownChunkNum int   `yaml:"sync-down-chunk-num" default:"200"`   // Serial download sync page chunk size // 串行下载同步的分块数量
+	SyncUpChunkNum   int   `yaml:"sync-up-chunk-num" default:"100"`     // Serial upload sync batch size // 串行上传同步的分包大小
 
 	// PipelineWindowUp negotiated upload sliding-window size for pv>=2 connections; 0 disables
 	// the window (stop-and-wait, same as pre-3.6.0 behavior — this is the runtime rollback
@@ -139,3 +148,14 @@ func (a AppSettings) PipelineWindowDownClamped() int {
 	return clampWindow(*a.PipelineWindowDown, 16)
 }
 
+// ValidateWebSocketHeartbeat rejects invalid durations before starting timers.
+func (a AppSettings) ValidateWebSocketHeartbeat() error {
+	// Leave room for wait + 3*interval when computing the read deadline.
+	maxSeconds := int64((time.Duration(1<<63-1) / time.Second) / 4)
+	for name, value := range map[string]int{"ws-ping-interval": a.WebSocketPingInterval, "ws-ping-wait": a.WebSocketPingWait} {
+		if value <= 0 || int64(value) > maxSeconds {
+			return fmt.Errorf("app.%s must be between 1 and %d seconds", name, maxSeconds)
+		}
+	}
+	return nil
+}

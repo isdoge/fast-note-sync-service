@@ -10,11 +10,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
+	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/internal/middleware"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	apperrors "github.com/haierkeys/fast-note-sync-service/pkg/errors"
+	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
@@ -139,7 +141,14 @@ func (h *FileHandler) GetInfo(c *gin.Context) {
 	if contentType != "" {
 		c.Header("Content-Type", contentType)
 	}
-	c.Header("Cache-Control", "public, s-maxage=31536000, max-age=31536000, must-revalidate")
+	// #342 S-22：该端点需要用户令牌鉴权，附件是私有资源，禁止 CDN/代理等共享缓存
+	// 存储（否则令牌撤销后缓存期内仍可取回文件）。浏览器本地缓存保留一年——
+	// Obsidian 的云预览依赖它。s-maxage 一并去掉：private 下它无意义。
+	// #342 S-22: this endpoint requires an authenticated user token, attachments are
+	// private resources; shared caches (CDN/proxies) must not store them (otherwise the
+	// file stays retrievable within the cache window after token revocation). Keep a
+	// year of browser-local caching — Obsidian's cloud preview relies on it.
+	c.Header("Cache-Control", "private, max-age=31536000, must-revalidate")
 	if etag != "" {
 		c.Header("ETag", etag)
 	}
@@ -186,6 +195,18 @@ func (h *FileHandler) Delete(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidUserAuthToken)
 		return
 	}
+
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
 
 	// Calculate PathHash
 	// 计算 PathHash
@@ -274,6 +295,16 @@ func (h *FileHandler) Get(c *gin.Context) {
 		return
 	}
 
+	// A soft-deleted row is "not on the server" unless the caller asks for the recycle bin:
+	// the response carries no action field, so a tombstone would look like a live file whose
+	// size/mtime/hash still match (clients use this to decide whether a local copy can go).
+	// 未指定 isRecycle 时，软删除记录视为"服务端不存在"：响应里没有 action 字段，墓碑会被当成
+	// 大小、时间、哈希都对得上的正常文件（客户端据此判断本地副本能否清理）。
+	if !params.IsRecycle && file.Action == string(domain.FileActionDelete) {
+		response.ToResponse(code.ErrorFileNotFound)
+		return
+	}
+
 	response.ToResponse(code.Success.WithData(file))
 }
 
@@ -307,6 +338,18 @@ func (h *FileHandler) Restore(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidUserAuthToken)
 		return
 	}
+
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(params.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
+	params.Path = cleaned
 
 	// Calculate PathHash
 	// 计算 PathHash
@@ -370,6 +413,20 @@ func (h *FileHandler) RecycleClear(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path when targeting a single file (#342 S-8)
+	// 指定单个文件时校验并清洗路径（#342 S-8）
+	if params.Path != "" {
+		cleaned, ok := cleanAPIPath(params.Path)
+		if !ok {
+			response.ToResponse(code.ErrorInvalidPath)
+			return
+		}
+		if params.Path != cleaned {
+			params.PathHash = util.EncodeHash32(cleaned)
+		}
+		params.Path = cleaned
+	}
+
 	ctx := c.Request.Context()
 	fileSvc := h.App.GetFileService(h.getClientInfo(c))
 	if err := fileSvc.RecycleClear(ctx, uid, params); err != nil {
@@ -413,11 +470,22 @@ func (h *FileHandler) Rename(c *gin.Context) {
 		return
 	}
 
-	// Validate paths
-	if !util.ValidatePath(params.Path) || !util.ValidatePath(params.OldPath) {
+	// Validate and clean both paths (#342 S-8)
+	// 校验并清洗新旧两个路径（#342 S-8）
+	newPath, ok := cleanAPIPath(params.Path)
+	oldPath, okOld := cleanAPIPath(params.OldPath)
+	if !ok || !okOld {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != newPath {
+		params.PathHash = util.EncodeHash32(newPath)
+	}
+	params.Path = newPath
+	if params.OldPath != oldPath {
+		params.OldPathHash = util.EncodeHash32(oldPath)
+	}
+	params.OldPath = oldPath
 
 	// Calculate PathHash
 	if params.PathHash == "" {
@@ -493,6 +561,18 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		return
 	}
 
+	// Validate and clean the path (#342 S-8)
+	// 校验并清洗路径（#342 S-8）
+	cleaned, ok := cleanAPIPath(input.Path)
+	if !ok {
+		response.ToResponse(code.ErrorInvalidPath)
+		return
+	}
+	if input.Path != cleaned {
+		input.PathHash = util.EncodeHash32(cleaned)
+	}
+	input.Path = cleaned
+
 	// Calculate PathHash
 	if input.PathHash == "" {
 		input.PathHash = util.EncodeHash32(input.Path)
@@ -506,8 +586,9 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	}
 
 	// Default timestamps if not provided
-	ctime := input.Ctime
-	mtime := input.Mtime
+	// 部分第三方客户端传秒级时间戳，归一化为毫秒（#461）
+	ctime := timex.NormalizeMilli(input.Ctime)
+	mtime := timex.NormalizeMilli(input.Mtime)
 	if ctime == 0 {
 		ctime = time.Now().UnixMilli()
 	}
