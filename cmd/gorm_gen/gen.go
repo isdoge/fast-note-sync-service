@@ -143,6 +143,18 @@ func getTableDefaultValueTags(db *gorm.DB, table string) []gen.ModelOpt {
 			if isIndexed && (strings.ToUpper(dbType) == "TEXT" || strings.ToUpper(dbType) == "LONGTEXT" || dbType == "text") {
 				if strings.Contains(strings.ToLower(fieldName), "path") {
 					tag.Set("type", "varchar(1024)")
+					// MySQL utf8mb4 下 varchar(1024) 单列已超过 InnoDB 3072 字节索引上限。
+					// 仅给索引声明前缀长度；PostgreSQL 与项目使用的 SQLite 驱动会忽略 length。
+					for _, k := range indexKeys {
+						if values, exists := tag[k]; exists {
+							for i, value := range values {
+								if !strings.Contains(value, ",length:") {
+									values[i] = value + ",length:255"
+								}
+							}
+							tag[k] = values
+						}
+					}
 				} else {
 					tag.Set("type", "varchar(255)")
 				}

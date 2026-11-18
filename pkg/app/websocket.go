@@ -30,7 +30,7 @@ type LogType string
 const (
 	WSPingInterval             = 25
 	WSPingWait                 = 60
-	WSPingWriteTimeout         = 10 // WritePing write timeout (seconds), must < PingInterval // WritePing 写超时（秒），需小于 PingInterval
+	WSPingWriteTimeout         = 10 // Maximum WritePing timeout (seconds) // WritePing 最大写超时（秒）
 	LogInfo            LogType = "info"
 	LogError           LogType = "error"
 	LogWarn            LogType = "warn"
@@ -224,7 +224,8 @@ type ClientInfoMessage struct {
 }
 
 type WSConfig struct {
-	GWSOption    gws.ServerOption
+	GWSOption gws.ServerOption
+	// PingInterval and PingWait are expressed in seconds (legacy WSConfig contract).
 	PingInterval time.Duration
 	PingWait     time.Duration
 	// WriteTimeout application-layer write deadline for outbound messages (ToResponse/
@@ -290,7 +291,7 @@ type WebsocketClient struct {
 	DiffMergePaths      map[string]DiffMergeEntry // File paths needing merging // 需要合并的文件路径，包含创建时间用于超时清理
 	DiffMergePathsMu    sync.RWMutex              // Mutex lock to prevent concurrency conflicts // 互斥锁，防止并发冲突
 	failCount           atomic.Int32              // Consecutive broadcast failure counter; connection closed when exceeding threshold // 连续广播失败计数器，超过阈值时主动关闭连接
-	lastPongAt          atomic.Int64              // Unix timestamp of last received pong; used to detect zombie connections // 最后一次收到 pong 的 Unix 时间戳，用于检测僵尸连接
+	lastPongAt          atomic.Int64              // Unix nanosecond timestamp of last received pong; used to detect zombie connections // 最后一次收到 pong 的 Unix 纳秒时间戳，用于检测僵尸连接
 	TokenID             int64                     // Bound Token ID // 绑定的令牌 ID
 	Scope               string                    // Token Scope // 令牌权限范围
 	Vaults              string                    // Restrict Vaults // 限制笔记库
@@ -577,7 +578,7 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 // Send Ping message regularly
 // 定期发送 Ping 消息
 func (c *WebsocketClient) PingLoop(PingInterval time.Duration) {
-	ticker := time.NewTicker(PingInterval * time.Second) // Send Ping every 25 seconds // 每 25 秒发送一次 Ping
+	ticker := time.NewTicker(PingInterval * time.Second)
 	defer ticker.Stop()
 
 	// Periodic cleanup of expired conflict merge paths
@@ -587,10 +588,12 @@ func (c *WebsocketClient) PingLoop(PingInterval time.Duration) {
 
 	// Initialize last pong time to now (connection just established)
 	// 初始化最后 pong 时间为当前（连接刚建立）
-	c.lastPongAt.Store(time.Now().Unix())
+	c.lastPongAt.Store(time.Now().UnixNano())
+	_ = c.conn.NetConn().SetReadDeadline(c.Server.heartbeatReadDeadline())
 	// Track whether we've sent a ping and are waiting for a pong
 	// 跟踪是否已发送 ping 并等待 pong
 	pingSent := false
+	var heartbeat wsHeartbeat
 
 	for {
 		select {
@@ -601,13 +604,11 @@ func (c *WebsocketClient) PingLoop(PingInterval time.Duration) {
 			if c.conn == nil {
 				return
 			}
-			// If we sent a ping last cycle but never received a pong, the connection is likely dead.
-			// If we sent a ping last cycle but never received a pong, force close.
-			// 如果上一轮发了 ping 但没收到 pong，连接可能已死，强制关闭。
+			// 超时后再发一次 ping，并等待一个完整的 ping 周期；仍无上行响应才关闭。
 			if pingSent {
 				lastPong := c.lastPongAt.Load()
-				elapsed := time.Since(time.Unix(lastPong, 0))
-				if elapsed > time.Duration(WSPingWait)*time.Second {
+				elapsed := time.Since(time.Unix(0, lastPong))
+				if heartbeat.expired(time.Now(), time.Unix(0, lastPong), c.Server.config.PingWait*time.Second, PingInterval*time.Second) {
 					log(LogWarn, "WS Client: no pong received within deadline, force closing",
 						zap.Duration("sinceLastPong", elapsed),
 						zap.String("traceID", c.TraceID))
@@ -617,7 +618,7 @@ func (c *WebsocketClient) PingLoop(PingInterval time.Duration) {
 			}
 			// Set write deadline to prevent WritePing from blocking indefinitely on dead connections.
 			// 设置写超时，防止 WritePing 在死连接上永久阻塞
-			_ = c.conn.NetConn().SetWriteDeadline(time.Now().Add(WSPingWriteTimeout * time.Second))
+			_ = c.conn.NetConn().SetWriteDeadline(time.Now().Add(min(WSPingWriteTimeout*time.Second, PingInterval*time.Second)))
 			if err := c.conn.WritePing(nil); err != nil {
 				// Normal error when the connection is closed, lower log level
 				// 连接关闭时的正常错误，降低日志级别
@@ -1048,10 +1049,10 @@ func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 	if app == nil {
 		panic("AppContainer is required for WebsocketServer")
 	}
-	if c.PingInterval == 0 {
+	if c.PingInterval <= 0 {
 		c.PingInterval = WSPingInterval
 	}
-	if c.PingWait == 0 {
+	if c.PingWait <= 0 {
 		c.PingWait = WSPingWait
 	}
 
@@ -1086,6 +1087,25 @@ func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 // App 获取 App Container
 func (w *WebsocketServer) App() AppContainer {
 	return w.app
+}
+
+// NewTestClient builds a minimal WebsocketClient bound to this server without a real
+// connection, for unit tests that drive handler code paths (ToResponse dereferences the
+// private app field, which only Run() would otherwise populate). conn stays nil, so
+// writeMessage returns an error instead of panicking, and UserClients stays empty so
+// BroadcastResponse is a no-op.
+// NewTestClient 构造一个绑定到本 server、无真实连接的最小 WebsocketClient，供单元测试
+// 驱动处理器代码路径（ToResponse 会解引用私有 app 字段，此前只有 Run() 会填充它）。
+// conn 保持 nil，writeMessage 只返回错误不 panic；UserClients 保持为空，BroadcastResponse 为 no-op。
+func (w *WebsocketServer) NewTestClient(uid int64) *WebsocketClient {
+	client := &WebsocketClient{
+		app:    w.app,
+		Server: w,
+		SF:     new(singleflight.Group),
+		User:   &UserEntity{UID: uid},
+	}
+	client.initContext("test-trace")
+	return client
 }
 
 func (w *WebsocketServer) Upgrade() {
@@ -1734,14 +1754,19 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 }
 
 func (w *WebsocketServer) OnPing(socket *gws.Conn, payload []byte) {
-	_ = socket.SetDeadline(time.Now().Add(w.config.PingWait * time.Second))
+	if c := w.GetClient(socket); c != nil {
+		c.lastPongAt.Store(time.Now().UnixNano())
+	}
+	_ = socket.NetConn().SetReadDeadline(w.heartbeatReadDeadline())
+	_ = socket.NetConn().SetWriteDeadline(time.Now().Add(min(WSPingWriteTimeout*time.Second, w.config.PingInterval*time.Second)))
 	_ = socket.WritePong(nil)
+	_ = socket.NetConn().SetWriteDeadline(time.Time{})
 }
 
 func (w *WebsocketServer) OnPong(socket *gws.Conn, payload []byte) {
-	_ = socket.SetDeadline(time.Now().Add(w.config.PingWait * time.Second))
+	_ = socket.NetConn().SetReadDeadline(w.heartbeatReadDeadline())
 	if c := w.GetClient(socket); c != nil {
-		c.lastPongAt.Store(time.Now().Unix())
+		c.lastPongAt.Store(time.Now().UnixNano())
 	}
 }
 
@@ -1765,7 +1790,7 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 	// PingLoop kill clients that were actively streaming attachments. Treat data as liveness.
 	// 收到任何数据帧都说明对端活着。慢上行时浏览器的 pong 会排在待发送的附件分片后面，
 	// 晚于 WSPingWait 才到，导致 PingLoop 误杀正在上传附件的客户端。数据帧同样刷新存活时间。
-	c.lastPongAt.Store(time.Now().Unix())
+	c.lastPongAt.Store(time.Now().UnixNano())
 
 	uid := "Guest"
 	if c.User != nil {
@@ -1774,7 +1799,7 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 
 	// Set deadline
 	// 设置延时
-	_ = conn.SetDeadline(time.Now().Add(w.config.PingWait * time.Second))
+	_ = conn.NetConn().SetReadDeadline(w.heartbeatReadDeadline())
 
 	if message.Opcode == gws.OpcodeBinary {
 		data := message.Data.Bytes()

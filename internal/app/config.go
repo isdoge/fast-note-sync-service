@@ -78,6 +78,9 @@ func LoadConfig(f string) (*AppConfig, string, error) {
 	if err := defaults.Set(c); err != nil {
 		return nil, realpath, errors.Wrap(err, "re-set default config failed")
 	}
+	if err := c.App.ValidateWebSocketHeartbeat(); err != nil {
+		return nil, realpath, errors.Wrap(err, "validate websocket heartbeat config failed")
+	}
 	if err := c.Security.Validate(); err != nil {
 		return nil, realpath, errors.Wrap(err, "validate security config failed")
 	}

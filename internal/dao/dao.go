@@ -259,6 +259,16 @@ func (d *Dao) QueryWithOnceInit(f func(*gorm.DB), onceKey string, key ...string)
 	return query.Use(db)
 }
 
+// PoolCount returns the number of cached tenant pools. It is used by tests and
+// diagnostics to verify PostgreSQL/MySQL pool sharing.
+// PoolCount 返回缓存的租户连接池数量，供测试和诊断验证 PostgreSQL/MySQL
+// 连接池共享。
+func (d *Dao) PoolCount() int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return len(d.KeyDb)
+}
+
 // CleanupConnections cleans up idle database connections
 // CleanupConnections 清理闲置数据库连接
 func (d *Dao) CleanupConnections(maxIdle time.Duration) {
@@ -309,15 +319,29 @@ func (d *Dao) resolveConfig(key string) config.DatabaseConfig {
 }
 
 func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
+	cacheKey := d.tenantCacheKey(key)
+
 	// Use read lock to check if already exists
 	// 使用读锁检查是否已存在
 	d.mu.RLock()
-	if entry, ok := d.KeyDb[key]; ok {
+	if entry, ok := d.KeyDb[cacheKey]; ok {
 		entry.lastUsed = time.Now()
 		d.mu.RUnlock()
 		return entry.db
 	}
 	d.mu.RUnlock()
+
+	// Build under the write lock: connection creation may open a schema/database
+	// admin connection first, and concurrent first access must not create one
+	// pool per repository key for the same PostgreSQL schema / MySQL database.
+	// 在写锁内建池：建池前可能先打开 schema/库管理连接，PostgreSQL / MySQL 下
+	// 同一租户多个仓储 key 的并发首次访问不能各自创建一个连接池。
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if existingEntry, ok := d.KeyDb[cacheKey]; ok {
+		existingEntry.lastUsed = time.Now()
+		return existingEntry.db
+	}
 
 	// Get configuration
 	// 获取配置
@@ -364,22 +388,6 @@ func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 		return nil
 	}
 
-	// Use write lock for storage
-	// 使用写锁存储
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	// Double check
-	// 双重检查
-	if existingEntry, ok := d.KeyDb[key]; ok {
-		// Close the newly created connection
-		// 关闭新创建的连接
-		if sqlDB, err := dbNew.DB(); err == nil {
-			sqlDB.Close()
-		}
-		existingEntry.lastUsed = time.Now()
-		return existingEntry.db
-	}
-
 	// Check cache quantity limit; if over the cap, clean up the least recently used
 	// connection — but only among connections that have been idle for at least
 	// dbConnMinIdleBeforeEvict. lastUsed is stamped at checkout time and never refreshed
@@ -424,12 +432,35 @@ func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 		}
 	}
 
-	d.KeyDb[key] = &dbEntry{
+	d.KeyDb[cacheKey] = &dbEntry{
 		db:       dbNew,
 		lastUsed: time.Now(),
 	}
 
 	return dbNew
+}
+
+// tenantCacheKey returns the cache key for a tenant repository key. SQLite keeps
+// one database file and one connection per repository key. PostgreSQL and MySQL
+// already route all repository keys ending in a UID to the same user_<uid>
+// schema/database, so they must also share one connection pool per user instead
+// of one pool per repository.
+// tenantCacheKey 返回租户仓储 key 的缓存键。SQLite 保持每个仓储 key 一个库
+// 文件和一个连接。PostgreSQL / MySQL 已把以 UID 结尾的所有仓储 key 路由到
+// 同一 user_<uid> schema/库，因此也必须按用户共享一个连接池，而不是按仓储
+// 各自建池。
+func (d *Dao) tenantCacheKey(key string) string {
+	if key == "" {
+		return key
+	}
+	c := d.resolveConfig(key)
+	if (c.Type != "postgres" && c.Type != "mysql") || key == "" {
+		return key
+	}
+	if schemaName, ok := d.extractUserSchema(key); ok {
+		return schemaName
+	}
+	return key
 }
 
 // NewEngine 创建数据库引擎（支持依赖注入）
@@ -778,11 +809,17 @@ func (d *Dao) ensurePostgresSchema(schemaName string) error {
 		return nil
 	}
 
+	// The first PostgreSQL pool is created while holding d.mu, so the schema
+	// bootstrap connection is only made once per user. After tenantCacheKey has
+	// normalized repository keys to user_<uid>, later repository keys reuse the
+	// existing pool and never enter this function.
+	// 首个 PostgreSQL 连接池在持有 d.mu 时创建，因此每个用户的 schema 初始化
+	// 连接只建立一次。tenantCacheKey 把仓储 key 归一到 user_<uid> 后，后续
+	// 仓储 key 直接复用既有连接池，不会进入本函数。
 	// Construct basic connection DSN without schema
 	// 构造不带 schema 的基础连接 DSN
 	cfg := *d.userConfig
 	cfg.Schema = ""
-
 	// Use base connection to create a new Schema
 	// 使用基础连接来创建新的 Schema
 	db, err := NewEngine(cfg, d.Logger())
