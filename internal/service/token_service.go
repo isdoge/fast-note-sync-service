@@ -97,7 +97,7 @@ func (s *tokenService) Create(ctx context.Context, uid int64, params *dto.TokenI
 	if params.Protocol != "" || params.Client != "" || params.Function != "" {
 		p := params.Protocol
 		if p == "" {
-			p = "*"
+			p = "rest"
 		}
 		c := params.Client
 		if c == "" {
@@ -109,17 +109,22 @@ func (s *tokenService) Create(ctx context.Context, uid int64, params *dto.TokenI
 		}
 		formattedScope = fmt.Sprintf("p:%s c:%s f:%s", p, c, f)
 	} else {
-		// Legacy WebGUI tokens also support MCP. Explicit protocol restrictions
-		// are handled by the 3D-RBAC branch above.
+		// Legacy scope branch: issue exactly the protocols the caller asked
+		// for. MCP is no longer appended implicitly — a token intended for
+		// REST/WS must not silently gain the MCP entry. Explicit protocol
+		// restrictions are handled by the 3D-RBAC branch above.
+		// 旧 scope 分支：按调用方给出的协议原样签发，不再隐式追加 mcp——
+		// 仅用于 REST/WS 的令牌不应静默获得 MCP 入口。显式协议限制由上面的
+		// 三维分支处理。
 		protocols := params.Scope
-		hasMCP := false
-		for _, protocol := range strings.Split(protocols, ",") {
-			if strings.EqualFold(strings.TrimSpace(protocol), "mcp") {
-				hasMCP = true
-			}
-		}
-		if protocols != "" && protocols != "*" && !hasMCP {
-			protocols += ",mcp"
+		if protocols == "" {
+			// An empty protocol dimension would act as a wildcard in
+			// VerifyPermissions; default new tokens to rest so an omitted
+			// scope cannot mint a nearly-unrestricted token. Explicit "*" is
+			// still preserved below.
+			// 空协议维度在 VerifyPermissions 中等同通配；新签发默认落成
+			// rest，避免省略 scope 时签出近乎全权限的令牌。显式 "*" 仍保留。
+			protocols = "rest"
 		}
 		formattedScope = "p:" + protocols
 		if params.ClientType != "" {
@@ -250,9 +255,15 @@ func (s *tokenService) Update(ctx context.Context, uid int64, tokenID int64, par
 
 	// Only manual tokens can be fully edited
 	if token.IssueType != 2 {
-		// For login tokens, maybe only allow scope update or just deny
-		if params.Scope != "" {
-			return s.tokenRepo.UpdateScope(ctx, tokenID, params.Scope)
+		// Login tokens are issued by the login flow with a fixed scope
+		// (p:rest c:<client> f:*). Allowing an update call to rewrite that
+		// scope would let a leaked session token be upgraded into a
+		// long-lived full API token (B3), so scope changes are rejected.
+		// 登录令牌由登录流程按固定 scope 签发（p:rest c:<client> f:*）。
+		// 允许通过更新接口改写 scope 会让泄露的会话令牌被升级成长期
+		// 全权限 API 令牌（B3），因此拒绝修改 scope。
+		if params.Scope != "" || params.Protocol != "" || params.Client != "" || params.Function != "" {
+			return code.ErrorInvalidParams.WithDetails("Login token scope cannot be updated")
 		}
 		return code.ErrorInvalidAuthToken.WithDetails("Only manual tokens can be fully edited")
 	}
@@ -271,14 +282,21 @@ func (s *tokenService) Update(ctx context.Context, uid int64, tokenID int64, par
 	if params.UserAgent != "" {
 		token.UserAgent = params.UserAgent
 	}
-	token.Vaults = params.Vaults
+	// Vault restriction is only overwritten when the request carries the
+	// vaults field; omitting it (e.g. a script that only renews expiry) must
+	// not silently turn a restricted token into an all-vault token (B4).
+	// 只有请求携带 vaults 字段时才覆盖库限制；省略该字段（例如只续期的
+	// 脚本）不得把受限令牌静默变成全库令牌（B4）。
+	if params.Vaults != nil {
+		token.Vaults = *params.Vaults
+	}
 	token.ExpiredAt = time.Now().Add(time.Duration(params.ExpiredDays) * 24 * time.Hour)
 
 	// Format scope
 	if params.Protocol != "" || params.Client != "" || params.Function != "" {
 		p := params.Protocol
 		if p == "" {
-			p = "*"
+			p = "rest"
 		}
 		c := params.Client
 		if c == "" {
@@ -292,6 +310,12 @@ func (s *tokenService) Update(ctx context.Context, uid int64, tokenID int64, par
 	} else if params.Scope != "" {
 		// If explicit scope is provided, we use it, but check if it's legacy
 		if !app.Is3DRBACScope(params.Scope) {
+			if strings.TrimSpace(params.Scope) == "" {
+				// An all-empty protocol dimension is a wildcard; reject instead
+				// of persisting an unrestricted scope.
+				// 全空协议维度等同通配，拒绝而不是落库成无限制 scope。
+				return code.ErrorInvalidParams.WithDetails("scope must specify at least one protocol")
+			}
 			token.Scope = "p:" + params.Scope + " c:" + token.ClientType + " f:*"
 		} else {
 			token.Scope = params.Scope

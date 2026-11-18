@@ -147,6 +147,7 @@ Use `required-scopes: []` only when the authorization server or client does not 
 | `default-fns-scope` | If set, bypasses OAuth scope mapping and grants this FNS scope to verified OAuth requests. |
 | `default-client`, `default-client-name`, `default-client-version` | Default MCP client headers used when the request or token does not provide them. |
 | `default-vault-name` | Default vault name used by MCP operations when the request does not provide a vault. |
+| `vaults` | Vault allowlist for OAuth-authenticated MCP access. Empty = unrestricted (all vaults of the mapped user); once configured, OAuth connectors only access the listed vaults. OAuth scope to function mapping: `notes:read→note_r`, `notes:write→note_w`, `notes:purge→note_purge`, `files:read→file_r`, `files:write→file_w`, `files:purge→file_purge`, `vaults:read→vault_r`, `vaults:write→vault_w`. |
 
 For a single-user deployment, `fixed_uid` is the simplest option:
 

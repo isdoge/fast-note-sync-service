@@ -85,7 +85,7 @@ func initWebSocketRoutes(wss *pkgapp.WebsocketServer, appContainer *app.App) {
 		}
 
 		// 1. Verify Scope Permissions (Protocol: ws)
-		if !pkgapp.VerifyPermissions(dbToken.Scope, "ws", reqClientType, "") {
+		if !pkgapp.VerifyPermissionsWithStrictEmptyProtocol(dbToken.Scope, "ws", reqClientType, "", appContainer.Config().Security.StrictEmptyProtocol) {
 			fmt.Printf("[WSDebug] Permission denied: scope=%s, protocol=%s, client=%s\n", dbToken.Scope, "ws", reqClientType)
 			return "", "", code.ErrorAuthTokenScopeRestricted.WithDetails("Permission denied: Handshake")
 		}

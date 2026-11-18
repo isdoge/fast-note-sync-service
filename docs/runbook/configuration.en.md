@@ -7,7 +7,7 @@ This reference follows the 3.7.0 implementation in `internal/config/*.go`, `inte
 - Generate a key with `openssl rand -base64 32` and set `security.auth-token-key`; do not keep the default. Changing it invalidates existing tokens. Existing user and share tokens also become invalid when the machine identity changes, even if this key stays unchanged.
 - Set `security.share-token-key` to a separate random value as well.
 - Set `user.register-is-enable: false` unless public registration is required.
-- Set `user.admin-uid` to the intended administrator UID during deployment. **The implementation treats `0` as unrestricted administrator access: every authenticated user with a nonzero UID passes the administrator check, so the default is unsafe.** With `admin-uid: 0`, registration also stops accepting new users once any user exists, even when registration is enabled.
+- Prefer setting `user.admin-uid` to the intended administrator UID during deployment. `0` means no explicit admin is configured: the user with the smallest existing UID is then treated as the administrator (nobody, if there are no users), which keeps single-user deployments working without configuration. Multi-user or open-registration instances must set it explicitly, otherwise every login except the earliest-registered user loses admin access. With `admin-uid: 0`, registration also stops accepting new users once any user exists, even when registration is enabled.
 - `server.trusted-proxies` trusts only loopback proxies by default. For a proxy on another host or a container gateway, add the source IP/CIDR actually observed by the application. Do not use `0.0.0.0/0`.
 - WebGUI login tokens bind to IP and UA by default. Disable `webgui-login-token-bind-ip` if the access path changes client IPs, or `webgui-login-token-bind-ua` if a proxy rewrites UA and causes error 313. Each switch disables its corresponding check.
 
@@ -82,6 +82,7 @@ This reference follows the 3.7.0 implementation in `internal/config/*.go`, `inte
 | `webgui-login-token-expiry` | duration | `7d` | WebGUI login token lifetime. |
 | `webgui-login-token-bind-ip` | bool | `true` | Bind WebGUI tokens to client IP. |
 | `webgui-login-token-bind-ua` | bool | `true` | Bind WebGUI tokens to User-Agent. |
+| `strict-empty-protocol` | bool | `false` | Strictly reject token scopes whose protocol dimension is empty (whole-string empty scope or `p:` with no value); such scopes act as wildcards by default and are denied when enabled. Verification-side only; newly issued tokens no longer produce an empty protocol dimension. Before enabling, run `SELECT id, uid, scope FROM auth_token WHERE scope = '' OR scope LIKE 'p: %';` to confirm no legacy rows. |
 
 ## database and user-database
 
@@ -118,7 +119,7 @@ Both sections use the same structure. An empty `user-database.type` inherits **t
 | `log.file` | path | `storage/logs/log.log` | Log file path. |
 | `log.production` | bool | `false` | JSON logs when true; the sample YAML explicitly enables it. |
 | `user.register-is-enable` | bool | `false` | Registration switch; the sample YAML explicitly enables it. |
-| `user.admin-uid` | int | `0` | Every nonzero UID passes admin checks when zero; set the intended administrator UID. Also limits registration once users exist. |
+| `user.admin-uid` | int | `0` | `0` means no explicit admin: the smallest existing UID is treated as administrator (nobody if no users exist); set it explicitly on multi-user instances. A nonzero value passes only that UID. Also limits registration once users exist. |
 | `tracer.enabled` | bool | `true` | Request tracing. |
 | `tracer.header` | string | `X-Trace-ID` | Trace ID request header. |
 
@@ -165,14 +166,15 @@ Both sections use the same structure. An empty `user-database.type` inherits **t
 | `authorization-servers` | string[] | Empty | Authorization servers; at least one when enabled. |
 | `jwks-url` / `issuer` | string | Empty | JWT public-key URL and issuer; required when enabled. |
 | `audience` | string[] | Empty | Allowed audiences. |
-| `scopes-supported` | string[] | `notes:read`, `notes:write`, `files:read`, `files:write`, `vaults:read` | Supported scopes. |
+| `scopes-supported` | string[] | `notes:read`, `notes:write`, `notes:purge`, `files:read`, `files:write`, `files:purge`, `vaults:read`, `vaults:write` | Supported scopes. `vaults:read` maps to vault reading only (no implicit note read anymore); `vaults:write`, `notes:purge`, and `files:purge` cover vault management and recycle-bin purging. |
 | `required-scopes` | string[] | `notes:read`, `files:read`, `vaults:read` | Required scopes. |
 | `resource-name` | string | Empty | Resource display name. |
 | `allow-static-fns-token` | bool | `true` | Also accept static FNS tokens. |
 | `default-client` / `default-client-name` | string | `ChatGPT` | Default client ID/name. |
 | `default-client-version` | string | Empty | Default client version. |
 | `default-vault-name` | string | Empty | Default mapped vault. |
-| `default-fns-scope` | string | Empty | Default FNS scope. |
+| `vaults` | string[] | Empty | Vault allowlist for OAuth-authenticated MCP access; empty = unrestricted (all vaults of the mapped user). Once configured, OAuth connectors only access the listed vaults; affects the OAuth path only, static tokens keep their own vault limits. |
+| `default-fns-scope` | string | Empty | Default FNS scope. A scope containing `p:*` or `f:*` triggers a startup security notice. |
 | `subject-mapping.mode` | string | `email_or_fixed_uid` | `email`, `fixed_uid`, or `email_or_fixed_uid`. |
 | `subject-mapping.claim` | string | `email` | Email mapping claim. |
 | `subject-mapping.fixed-uid` | int64 | `0` | Fixed mapping UID. |

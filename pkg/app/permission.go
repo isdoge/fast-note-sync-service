@@ -14,8 +14,23 @@ import (
 // c: The client of the current request (e.g. "webgui", "obsidian", "mobile") // 当前请求的客户端
 // f: The function being accessed (e.g. "note_r", "note_w"). If empty, it means the resource is not restricted by function level. // 访问的功能。如果为空，表示该资源不受功能级别限制。
 func VerifyPermissions(scope string, p string, c string, f string) bool {
+	return VerifyPermissionsWithStrictEmptyProtocol(scope, p, c, f, false)
+}
+
+// VerifyPermissionsWithStrictEmptyProtocol is VerifyPermissions with an
+// explicit strictness flag for the empty protocol dimension. When strict is
+// true, a whole-string empty scope and a scope whose "p:" value is empty are
+// both rejected instead of acting as wildcards; when false the legacy
+// behavior (empty = allow all) is kept.
+// VerifyPermissionsWithStrictEmptyProtocol 是带显式严格开关的
+// VerifyPermissions。strict 为 true 时，整串空 scope 与 "p:" 值为空的 scope
+// 都判为不允许，不再当通配处理；false 保持旧行为（空 = 全放行）。
+func VerifyPermissionsWithStrictEmptyProtocol(scope string, p string, c string, f string, strict bool) bool {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
+		if strict {
+			return false
+		}
 		return true
 	}
 
@@ -35,6 +50,10 @@ func VerifyPermissions(scope string, p string, c string, f string) bool {
 		} else if strings.HasPrefix(part, "f:") {
 			scopeF = part[2:]
 		}
+	}
+
+	if strict && scopeP == "" {
+		return false
 	}
 
 	// Match Protocol (supports comma-separated list, e.g. "rest,ws")

@@ -88,6 +88,33 @@ func checkSecurityConfigWithConfig(cfg *internalApp.AppConfig, lg *zap.Logger) {
 	}
 }
 
+// checkOAuthSecurityConfig 输出 OAuth 相关的安全提醒。
+// #4：OAuth 启用时静态 FNS 令牌仍可直连 MCP，绕过 OAuth 的集中授权/撤销，
+// 提醒运维按需显式关闭；B6：default-fns-scope 含通配时任何通过校验的外部
+// 令牌都会拿到配置的固定 FNS scope，提醒避免配成全员全权限。
+// checkOAuthSecurityConfig emits OAuth-related security notices.
+// #4: with OAuth enabled, static FNS tokens can still reach MCP directly,
+// bypassing centralized OAuth grant/revocation — remind operators to disable
+// explicitly if unwanted. B6: when default-fns-scope contains wildcards, any
+// externally verified token gets the configured fixed FNS scope — remind
+// operators not to configure everyone-full-permissions.
+func checkOAuthSecurityConfig(cfg *internalApp.AppConfig, lg *zap.Logger) {
+	if lg == nil {
+		return
+	}
+	if !cfg.OAuth.Enabled {
+		return
+	}
+	if cfg.OAuth.AllowStaticFNSToken {
+		lg.Warn("oauth.enabled=true and static FNS tokens are still allowed (oauth.allow-static-fns-token=true): legacy tokens can reach MCP directly, bypassing OAuth; disable it explicitly if not needed")
+	}
+	if scope := strings.TrimSpace(cfg.OAuth.DefaultFNSScope); scope != "" {
+		if strings.Contains(scope, "p:*") || strings.Contains(scope, "f:*") {
+			lg.Warn("oauth.default-fns-scope contains a wildcard (p:* or f:*): every externally verified token gets this fixed scope; use narrow scopes instead")
+		}
+	}
+}
+
 func NewServer(runEnv *runFlags) (*Server, error) {
 
 	// Use LoadConfig to directly load config into AppConfig
@@ -124,6 +151,7 @@ func NewServer(runEnv *runFlags) (*Server, error) {
 	// Check security configuration (using injected config)
 	// 检查安全配置（使用注入的配置）
 	checkSecurityConfigWithConfig(appConfig, s.logger)
+	checkOAuthSecurityConfig(appConfig, s.logger)
 
 	// Initialize storage directory (using injected config)
 	// 初始化存储目录（使用注入的配置）
@@ -146,6 +174,15 @@ func NewServer(runEnv *runFlags) (*Server, error) {
 		return nil, fmt.Errorf("failed to create app container: %w", err)
 	}
 	s.app = app
+
+	// AdminUID not set: log how the effective admin is resolved so operators
+	// notice the fallback (smallest existing UID) instead of assuming everyone
+	// is admin. Explicit configuration is recommended.
+	// 未配置 AdminUID：打日志说明当前按“现存最小 UID 用户”认定管理员，
+	// 建议显式配置，避免误以为仍是“人人都是管理员”的旧行为。
+	if appConfig.User.AdminUID == 0 {
+		s.logger.Warn("user.admin-uid is 0: the user with the smallest existing UID is treated as admin; set user.admin-uid explicitly to pin the administrator")
+	}
 
 	// Auto-execute migration tasks (using injected config)
 	// 自动执行迁移任务（使用注入的配置）

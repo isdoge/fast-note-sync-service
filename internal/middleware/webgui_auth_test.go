@@ -146,3 +146,57 @@ func TestRequireWebGUI_AuthRoute_CaseInsensitiveWebGUI_Allowed(t *testing.T) {
 	res := doWebGUIRequest(t, router, "WebGui")
 	assert.Equal(t, code.Success.Code(), res.Code)
 }
+
+
+// #6：DebugMode 下不再跳过 WebGUI 校验。本地调试请显式携带 x-client: webgui
+// 请求头（或使用合法的 WebGUI 登录令牌）。
+// #6: DebugMode no longer skips the WebGUI check. For local debugging, send
+// the x-client: webgui header explicitly (or use a valid WebGUI login token).
+func TestRequireWebGUI_DebugModeStillEnforces(t *testing.T) {
+	// 手动以 DebugMode 构建路由；结束后恢复 TestMode。
+	router := gin.New()
+	router.Use(RequireWebGUI())
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	})
+
+	prevMode := gin.Mode()
+	gin.SetMode(gin.DebugMode)
+	defer gin.SetMode(prevMode)
+
+	// 非 webgui 头在 debug 模式下仍被拦截。
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("x-client", "obsidian")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var res app.Res
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Equal(t, code.ErrorAuthTokenClientRestricted.Code(), res.Code, "debug 模式不得放行非 webgui 客户端")
+
+	// 手动令牌在 debug 模式下仍被拦截。
+	issueType := 2
+	clientType := "webgui"
+	router2 := gin.New()
+	router2.Use(func(c *gin.Context) {
+		c.Set("token_issue_type", issueType)
+		c.Set("token_client_type", clientType)
+		c.Next()
+	})
+	router2.Use(RequireWebGUI())
+	router2.GET("/test", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	})
+	req = httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("x-client", "webgui")
+	w = httptest.NewRecorder()
+	router2.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Equal(t, code.ErrorAuthTokenClientRestricted.Code(), res.Code, "debug 模式不得放行手动令牌")
+
+	// 恢复 TestMode 后正常路径不受影响。
+	router3 := buildWebGUITestRouter(nil, nil)
+	res = doWebGUIRequest(t, router3, "webgui")
+	assert.Equal(t, code.Success.Code(), res.Code)
+}

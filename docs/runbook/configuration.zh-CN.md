@@ -7,7 +7,7 @@
 - 用 `openssl rand -base64 32` 生成并设置 `security.auth-token-key`，不要保留默认值。修改它会使既有令牌失效；即使不修改，机器标识变化也会使既有用户令牌和分享令牌失效。
 - 同时把 `security.share-token-key` 改成独立随机值。
 - 无需开放注册时设置 `user.register-is-enable: false`。
-- 部署时必须把 `user.admin-uid` 设为指定管理员的 UID。**代码实际行为是 `0` 不限制管理员访问，任何非零 UID 的已认证用户都可通过管理员检查，不能保持默认。** 此外 `admin-uid: 0` 时，即使开启注册，已有用户后也不再允许新注册。
+- 部署时建议把 `user.admin-uid` 设为指定管理员的 UID。`0` 表示未显式配置，此时按“现存用户中 UID 最小者”认定管理员（无任何用户时无人是管理员），单用户部署无需配置即可用；多用户、开放注册的实例必须显式设置，否则除最早注册用户外的其它登录用户都没有管理权限。此外 `admin-uid: 0` 时，即使开启注册，已有用户后也不再允许新注册。
 - `server.trusted-proxies` 默认只信任回环代理。跨主机代理或容器网关必须按应用实际看到的来源 IP/CIDR 配置，不要填 `0.0.0.0/0`。
 - WebGUI 登录令牌默认绑定 IP 和 UA。链路改变客户端 IP 时可关闭 `webgui-login-token-bind-ip`；代理改写 UA 导致 313 时可关闭 `webgui-login-token-bind-ua`。关闭后对应维度的校验不再生效。
 
@@ -82,6 +82,7 @@
 | `webgui-login-token-expiry` | duration | `7d` | WebGUI 自动签发登录令牌有效期。 |
 | `webgui-login-token-bind-ip` | bool | `true` | WebGUI 令牌绑定 IP；客户端 IP 随链路变化时可关。 |
 | `webgui-login-token-bind-ua` | bool | `true` | WebGUI 令牌绑定 UA；UA 被网关改写导致 313 时可关。 |
+| `strict-empty-protocol` | bool | `false` | 严格校验协议维度为空的令牌 scope（整串空 scope 或 `p:` 后无值），这类 scope 默认按通配放行，开启后一律拒绝。仅影响校验端；新签发令牌已不再产生空协议维度。开启前建议执行 `SELECT id, uid, scope FROM auth_token WHERE scope = '' OR scope LIKE 'p: %';` 确认无存量。 |
 
 ## database 与 user-database
 
@@ -118,7 +119,7 @@
 | `log.file` | path | `storage/logs/log.log` | 日志文件路径。 |
 | `log.production` | bool | `false` | `true` 使用 JSON 日志；示例 YAML 显式为 `true`。 |
 | `user.register-is-enable` | bool | `false` | 开放注册开关；示例 YAML 显式为 `true`。不需要公开注册时应关闭。 |
-| `user.admin-uid` | int | `0` | `0` 时任何非零 UID 均通过管理员检查，部署时必须设为指定管理员 UID；也影响已有用户后的注册。 |
+| `user.admin-uid` | int | `0` | `0` 表示未显式配置：按现存用户中 UID 最小者认定管理员（无用户时无人是管理员）；多用户实例应显式设置。非零时仅该 UID 通过管理员检查。也影响已有用户后的注册。 |
 | `tracer.enabled` | bool | `true` | 请求链路追踪。 |
 | `tracer.header` | string | `X-Trace-ID` | Trace ID 请求头名。 |
 
@@ -165,14 +166,15 @@
 | `authorization-servers` | string[] | 空 | 授权服务器列表；启用时至少一个。 |
 | `jwks-url` / `issuer` | string | 空 | JWT 公钥地址与签发者；启用时必填。 |
 | `audience` | string[] | 空 | 允许的受众。 |
-| `scopes-supported` | string[] | `notes:read`, `notes:write`, `files:read`, `files:write`, `vaults:read` | 支持的作用域。 |
+| `scopes-supported` | string[] | `notes:read`, `notes:write`, `notes:purge`, `files:read`, `files:write`, `files:purge`, `vaults:read`, `vaults:write` | 支持的作用域。`vaults:read` 只映射库读取（不再附带笔记读），`vaults:write` / `notes:purge` / `files:purge` 对应库管理与清空回收站能力。 |
 | `required-scopes` | string[] | `notes:read`, `files:read`, `vaults:read` | 必需作用域。 |
 | `resource-name` | string | 空 | 资源显示名。 |
 | `allow-static-fns-token` | bool | `true` | 是否也接受静态 FNS 令牌。 |
 | `default-client` / `default-client-name` | string | `ChatGPT` | 默认客户端 ID/名称。 |
 | `default-client-version` | string | 空 | 默认客户端版本。 |
 | `default-vault-name` | string | 空 | 默认映射笔记库。 |
-| `default-fns-scope` | string | 空 | 默认 FNS 权限范围。 |
+| `vaults` | string[] | 空 | OAuth 鉴权的 MCP 可访问笔记库白名单；空 = 不限制（映射用户的所有库）。配置后 OAuth 连接器只能访问列出的库；仅影响 OAuth 路径，静态令牌按令牌自身的库限制。 |
+| `default-fns-scope` | string | 空 | 默认 FNS 权限范围。含 `p:*` 或 `f:*` 通配时启动日志会输出安全提醒。 |
 | `subject-mapping.mode` | string | `email_or_fixed_uid` | `email` / `fixed_uid` / `email_or_fixed_uid`。 |
 | `subject-mapping.claim` | string | `email` | 邮箱映射 Claim。 |
 | `subject-mapping.fixed-uid` | int64 | `0` | 固定 UID 映射目标。 |

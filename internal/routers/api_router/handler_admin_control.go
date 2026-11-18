@@ -79,17 +79,13 @@ func (h *AdminControlHandler) Config(c *gin.Context) {
 // @Router /api/admin/check [get]
 func (h *AdminControlHandler) CheckAdmin(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
-	cfg := h.App.Config()
 	uid := pkgapp.GetUID(c)
 
-	isAdmin := false
-	if uid != 0 {
-		// AdminUID 0 means no restriction, otherwise must match AdminUID
-		// AdminUID 为 0 表示不限制，否则必须匹配 AdminUID
-		if cfg.User.AdminUID == 0 || uid == int64(cfg.User.AdminUID) {
-			isAdmin = true
-		}
-	}
+	// AdminUID == 0 falls back to "smallest existing UID is admin"
+	// (see effectiveAdminUID) instead of granting admin to everyone.
+	// AdminUID == 0 时回退为“现存最小 UID 的用户是管理员”
+	// （见 effectiveAdminUID），不再对任何登录用户都返回 true。
+	isAdmin := requireEffectiveAdmin(c.Request.Context(), h.App, uid)
 
 	response.ToResponse(code.Success.WithData(dto.AdminCheckResponse{
 		IsAdmin: isAdmin,
@@ -117,9 +113,9 @@ func (h *AdminControlHandler) GetConfig(c *gin.Context) {
 		return
 	}
 
-	// Deny access if AdminUID is configured and current user is not an admin
-	// 当配置了管理员 UID 且当前用户不是管理员时，拒绝访问
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	// Deny access unless the requester is the effective admin
+	// 非生效管理员一律拒绝访问
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -207,9 +203,9 @@ func (h *AdminControlHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 
-	// Deny access if AdminUID is configured and current user is not an admin
-	// 当配置了管理员 UID 且当前用户不是管理员时，拒绝访问
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	// Deny access unless the requester is the effective admin
+	// 非生效管理员一律拒绝访问
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -478,9 +474,9 @@ func (h *AdminControlHandler) GetUserDatabaseConfig(c *gin.Context) {
 		return
 	}
 
-	// Deny access if AdminUID is configured and current user is not an admin
-	// 当配置了管理员 UID 且当前用户不是管理员时，拒绝访问
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	// Deny access unless the requester is the effective admin
+	// 非生效管理员一律拒绝访问
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -546,9 +542,9 @@ func (h *AdminControlHandler) UpdateUserDatabaseConfig(c *gin.Context) {
 		return
 	}
 
-	// Deny access if AdminUID is configured and current user is not an admin
-	// 当配置了管理员 UID 且当前用户不是管理员时，拒绝访问
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	// Deny access unless the requester is the effective admin
+	// 非生效管理员一律拒绝访问
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -629,10 +625,9 @@ func (h *AdminControlHandler) ValidateUserDatabaseConfig(c *gin.Context) {
 		return
 	}
 
-	cfg := h.App.Config()
-	// Deny access if AdminUID is configured and current user is not an admin
-	// 当配置了管理员 UID 且当前用户不是管理员时，拒绝访问
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	// Deny access unless the requester is the effective admin
+	// 非生效管理员一律拒绝访问
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -732,7 +727,7 @@ func (h *AdminControlHandler) GetCloudflareConfig(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -777,7 +772,7 @@ func (h *AdminControlHandler) UpdateCloudflareConfig(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -813,7 +808,6 @@ func (h *AdminControlHandler) UpdateCloudflareConfig(c *gin.Context) {
 // @Failure 403 {object} pkgapp.Res "Insufficient privileges"
 // @Router /api/admin/users/create [post]
 func (h *AdminControlHandler) CreateUser(c *gin.Context) {
-	cfg := h.App.Config()
 	logger := h.App.Logger()
 	response := pkgapp.NewResponse(c)
 	params := &dto.UserCreateRequest{}
@@ -825,7 +819,7 @@ func (h *AdminControlHandler) CreateUser(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -868,7 +862,6 @@ func (h *AdminControlHandler) CreateUser(c *gin.Context) {
 // @Failure 403 {object} pkgapp.Res "Insufficient privileges"
 // @Router /api/admin/users/update [post]
 func (h *AdminControlHandler) UpdateUser(c *gin.Context) {
-	cfg := h.App.Config()
 	logger := h.App.Logger()
 	response := pkgapp.NewResponse(c)
 	params := &dto.UserUpdateRequest{}
@@ -880,7 +873,7 @@ func (h *AdminControlHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -896,7 +889,7 @@ func (h *AdminControlHandler) UpdateUser(c *gin.Context) {
 
 	// Prevent block an administrator
 	if params.IsDeleted {
-		if params.UID == int64(cfg.User.AdminUID) {
+		if params.UID == effectiveAdminUID(c.Request.Context(), h.App) {
 			response.ToResponse(code.ErrorUserAdminBlock.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
 			return
 		}
@@ -932,7 +925,6 @@ func (h *AdminControlHandler) UpdateUser(c *gin.Context) {
 // @Router /api/admin/users/list [get]
 func (h *AdminControlHandler) GetUsers(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
-	cfg := h.App.Config()
 	logger := h.App.Logger()
 
 	uid := pkgapp.GetUID(c)
@@ -942,7 +934,7 @@ func (h *AdminControlHandler) GetUsers(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -973,7 +965,6 @@ func (h *AdminControlHandler) GetUsers(c *gin.Context) {
 // @Router /api/admin/system/info [get]
 func (h *AdminControlHandler) GetSystemInfo(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
-	cfg := h.App.Config()
 	logger := h.App.Logger()
 
 	uid := pkgapp.GetUID(c)
@@ -983,7 +974,7 @@ func (h *AdminControlHandler) GetSystemInfo(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -1139,7 +1130,7 @@ func (h *AdminControlHandler) Upgrade(c *gin.Context) {
 	cfg := h.App.Config()
 	uid := pkgapp.GetUID(c)
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -1239,10 +1230,9 @@ func (h *AdminControlHandler) Upgrade(c *gin.Context) {
 // @Router /api/admin/restart [get]
 func (h *AdminControlHandler) Restart(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
-	cfg := h.App.Config()
 	uid := pkgapp.GetUID(c)
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -1270,7 +1260,6 @@ func (h *AdminControlHandler) Restart(c *gin.Context) {
 // @Router /api/admin/gc [get]
 func (h *AdminControlHandler) GC(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
-	cfg := h.App.Config()
 	logger := h.App.Logger()
 
 	uid := pkgapp.GetUID(c)
@@ -1279,7 +1268,7 @@ func (h *AdminControlHandler) GC(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -1325,7 +1314,6 @@ func (h *AdminControlHandler) GC(c *gin.Context) {
 // @Router /api/admin/ws_clients [get]
 func (h *AdminControlHandler) GetWSClients(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
-	cfg := h.App.Config()
 	uid := pkgapp.GetUID(c)
 
 	if uid == 0 {
@@ -1333,7 +1321,7 @@ func (h *AdminControlHandler) GetWSClients(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -1354,7 +1342,6 @@ func (h *AdminControlHandler) GetWSClients(c *gin.Context) {
 // @Router /api/admin/ws_client/{traceId} [delete]
 func (h *AdminControlHandler) KickWSClient(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
-	cfg := h.App.Config()
 	uid := pkgapp.GetUID(c)
 
 	if uid == 0 {
@@ -1362,7 +1349,7 @@ func (h *AdminControlHandler) KickWSClient(c *gin.Context) {
 		return
 	}
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}
@@ -1475,10 +1462,9 @@ func (h *AdminControlHandler) extractBinary(tarPath string, destDir string, bina
 // @Router /api/admin/cloudflared_tunnel_download [get]
 func (h *AdminControlHandler) CloudflaredTunnelDownload(c *gin.Context) {
 	response := pkgapp.NewResponse(c)
-	cfg := h.App.Config()
 	uid := pkgapp.GetUID(c)
 
-	if cfg.User.AdminUID != 0 && uid != int64(cfg.User.AdminUID) {
+	if !requireEffectiveAdmin(c.Request.Context(), h.App, uid) {
 		response.ToResponse(code.ErrorUserIsNotAdmin)
 		return
 	}

@@ -3,6 +3,7 @@
 package api_router
 
 import (
+	"context"
 	"net/url"
 
 	"github.com/gin-gonic/gin"
@@ -59,4 +60,45 @@ func (h *Handler) getClientInfo(c *gin.Context) (string, string, string) {
 // 一律不补 ".md"——REST 也被第三方客户端用于写非笔记文件（如 x.canvas）。
 func cleanAPIPath(path string) (string, bool) {
 	return util.CleanVaultPath(path)
+}
+
+// effectiveAdminUID resolves the effective admin UID.
+// When AdminUID > 0 it is used as-is; when AdminUID == 0 the user with the
+// smallest UID among existing (non-deleted) users is treated as admin, so a
+// default single-user deployment keeps working without explicit config while
+// multi-user deployments no longer grant admin to everyone. With no users at
+// all, nobody is admin.
+// effectiveAdminUID 解析当前生效的管理员 UID。
+// AdminUID > 0 时直接使用；AdminUID == 0 时改为"现存用户中 UID 最小者"是管理员，
+// 单用户默认部署无需显式配置仍可用，多用户部署不再人人都是管理员。
+// 没有任何用户时无人是管理员。
+func effectiveAdminUID(ctx context.Context, a *app.App) int64 {
+	cfgAdminUID := int64(a.Config().User.AdminUID)
+	if cfgAdminUID > 0 {
+		return cfgAdminUID
+	}
+	if a == nil || a.Services == nil || a.UserService == nil {
+		return 0
+	}
+	uids, err := a.UserService.GetAllUIDs(ctx)
+	if err != nil || len(uids) == 0 {
+		return 0
+	}
+	smallest := uids[0]
+	for _, uid := range uids[1:] {
+		if uid < smallest {
+			smallest = uid
+		}
+	}
+	return smallest
+}
+
+// requireEffectiveAdmin reports whether the requesting user is the effective
+// admin. AdminUID == 0 no longer means "everyone is admin" (see
+// effectiveAdminUID); callers that must distinguish should use the UID form.
+// requireEffectiveAdmin 判断请求用户是否为生效管理员。
+// AdminUID == 0 不再表示"人人都是管理员"（见 effectiveAdminUID）；
+// 需要区分场景的调用方应使用返回 UID 的形式。
+func requireEffectiveAdmin(ctx context.Context, a *app.App, uid int64) bool {
+	return uid != 0 && uid == effectiveAdminUID(ctx, a)
 }
