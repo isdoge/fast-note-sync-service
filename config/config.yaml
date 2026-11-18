@@ -185,6 +185,16 @@ security:
   # 认证令牌加密混淆 Key
   # Internal key for auth token encryption and obfuscation
   auth-token-key: fast-note-sync-Auth-Token
+  # 令牌稳定签名密钥。设置后登录令牌、API 令牌、分享令牌等所有令牌的签名密钥
+  # 改由该值派生，不再依赖机器标识；迁移机器、重装系统或重建容器后令牌仍然有效。
+  # 留空时首次启动会在 storage 目录生成随机密钥文件（token-signing.key，权限 600），
+  # 只要该文件保留，令牌在重装或迁移后同样继续有效。
+  # Stable signing key for all tokens. When set, token signing keys are derived
+  # from this value instead of the machine ID, so tokens survive machine
+  # migration, OS reinstallation or container rebuilds. When left empty, a random
+  # key file (token-signing.key, mode 600) is generated under the storage
+  # directory on first startup; as long as the file is kept, tokens stay valid.
+  token-signing-key: ""
   # 认证令牌过期时间。例如: 365d, 7d, 24h
   # Expiry duration for authentication tokens. e.g., 365d, 7d, 24h
   token-expiry: "365d"

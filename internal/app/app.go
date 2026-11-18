@@ -71,6 +71,11 @@ func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS) (*App
 		return nil, fmt.Errorf("failed to initialize infra: %w", err)
 	}
 
+	// 1.5 Resolve stable token signing seed before any token is issued or parsed
+	// 1.5 在签发或校验任何令牌之前解析稳定的令牌签名种子
+	a0 := &App{Infra: infra}
+	a0.resolveTokenSigningSeed()
+
 	// 2. Initialize Repositories
 	repos := initRepositories(infra.Dao)
 

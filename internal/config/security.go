@@ -24,6 +24,12 @@ type SecurityConfig struct {
 	// WebGUILoginTokenBindUA whether to bind the User-Agent when issuing WebGUI login tokens
 	// WebGUILoginTokenBindUA 签发 WebGUI 登录 Token 时是否绑定 User-Agent
 	WebGUILoginTokenBindUA *bool `yaml:"webgui-login-token-bind-ua" default:"true"`
+	// TokenSigningKey stable signing key for all tokens. When set, token signing
+	// keys are derived from this value instead of the machine ID.
+	// TokenSigningKey 所有令牌的稳定签名密钥。设置后令牌签名密钥改由该值派生，
+	// 不再依赖机器标识，迁移机器、重装系统或重建容器后令牌仍然有效。
+	// 留空时在 storage 目录生成并持久化随机密钥文件（token-signing.key）。
+	TokenSigningKey string `yaml:"token-signing-key"`
 }
 
 // Validate rejects token lifetimes that are nonpositive or overflow time.Duration.
