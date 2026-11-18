@@ -145,6 +145,7 @@ oauth:
 | `default-fns-scope` | 如果设置，则跳过 OAuth scope mapping，直接给已验证 OAuth 请求授予该 FNS scope。 |
 | `default-client`, `default-client-name`, `default-client-version` | 请求或 token 没提供客户端信息时使用的默认 MCP client headers。 |
 | `default-vault-name` | MCP 操作未提供 vault 参数时使用的默认笔记库名称。 |
+| `vaults` | OAuth 鉴权的 MCP 可访问笔记库白名单。空 = 不限制（映射用户的所有库）；配置后 OAuth 连接器只能访问列出的库。OAuth scope 到功能点的映射：`notes:read→note_r`、`notes:write→note_w`、`notes:purge→note_purge`、`files:read→file_r`、`files:write→file_w`、`files:purge→file_purge`、`vaults:read→vault_r`、`vaults:write→vault_w`。 |
 
 单用户部署最简单的配置是 `fixed_uid`：
 

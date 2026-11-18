@@ -145,8 +145,8 @@ Content-Type: application/json
 | `content`     | string | 笔记文本全文                      |
 | `contentHash` | string | 内容哈希                          |
 | `baseHash`    | string | 修改前的基础哈希 (用于冲突合并)   |
-| `ctime`       | int64  | 创建时间 (秒)                     |
-| `mtime`       | int64  | 修改时间 (秒)                     |
+| `ctime`       | int64  | 创建时间 (毫秒)                   |
+| `mtime`       | int64  | 修改时间 (毫秒)                   |
 | `createOnly`  | bool   | 设置为 true 时，若笔记已存在则报错 |
 
 ---
@@ -213,4 +213,4 @@ Content-Type: application/json
 
 ---
 
-*注：文档中所有 `int64` 时间戳除 `lastTime`(毫秒) 外均默认为 **秒**。*
+*注：3.7.0 起所有 `int64` 时间戳统一按 **毫秒** 处理（存储、下行消息与 `lastTime` 一致）。服务端写入入口会把客户端传入的 (0, 1e11) 区间秒值归一化为毫秒（#461）；客户端仍应直接发送毫秒值。*

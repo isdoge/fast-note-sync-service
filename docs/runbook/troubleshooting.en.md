@@ -32,6 +32,12 @@ Keep service logs, client error codes, and timestamps before changing settings. 
 - **Cause**: Client/server frame formats or negotiation states differ. Upstream also forces JSON fallback frames through the Protobuf decoder after Protobuf has been negotiated.
 - **Action**: Upgrade both ends to plugin 2.5.0 and service 3.7.0. The service recognizes `Action|{...}` JSON text frames even on a negotiated Protobuf connection, and the plugin falls back to JSON for that connection after decode failure. Reconnect afterward. Custom clients should check consistency among `pv`, `pb`, `protocol=protobuf`, and `ClientInfo.protobuf`; see `docs/ws_api.md`.
 
+### Restricted-token calls rejected after upgrading (vault management, recycle-bin purge, recursive folder delete, MCP)
+
+- **Cause**: This release splits vault-level destructive operations out of note/file write permission into dedicated function points: `vault_w` (create/rename/delete vault), `note_purge` / `file_purge` (purging the whole recycle bin), recursive folder delete requires both note and file write, MCP tools require the token's protocol dimension to include `mcp` explicitly (newly issued tokens no longer gain it implicitly), and REST share endpoints require note read/write. `f:*` (unrestricted) tokens are unaffected.
+- **Action**: Error 315 details name the missing function point (for example `vault_w` or `note_purge`) or vault. For manual tokens, add the capability in WebGUI token management or use `*`; add `mcp` to the protocol dimension of MCP tokens; for OAuth connectors, request the matching scope (`vaults:write`, `notes:purge`, `files:purge`). A restricted-token "missing vault" message on WebSocket means a message omitted the vault field; include it.
+- **Do not loosen the checks for old tokens**: these denials are exactly the privilege-escalation surface being fixed; re-issue tokens when the old granularity is genuinely required.
+
 ### Attachment downloads or WebGUI requests return 313
 
 - **Cause**: A WebGUI login token is bound to the User-Agent at issuance, and the browser or proxy-rewritten UA no longer matches.

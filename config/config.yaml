@@ -136,8 +136,9 @@ app:
   # 是否开启 WebSocket 并行处理
   # Whether to enable WebSocket parallel processing
   ws-parallel-enabled: true
-  # WebSocket 并行处理的最大协程限制
-  # Maximum goroutine limit for WebSocket parallel processing
+  # WebSocket 并行处理的最大协程限制。代码默认值为 3，此处示例显式写 5 覆盖默认。
+  # Maximum goroutine limit for WebSocket parallel processing. The code default
+  # is 3; this sample explicitly sets 5 to override it.
   ws-parallel-golimit: 5
   # 是否对 WebSocket 消息进行 UTF-8 校验
   # Whether to perform UTF-8 validation on WebSocket messages
@@ -154,13 +155,17 @@ app:
   # WebSocket 应用层写超时(秒)，防止僵尸连接阻塞写入；显式设为 0 表示不设超时
   # WebSocket application-layer write timeout (seconds); guards against zombie connections blocking writes. Explicit 0 disables the deadline
   ws-write-timeout: 10
-  # WebSocket ping 间隔（秒，默认 25）；0 使用默认值，负数无效。
-  # WebSocket ping interval in seconds (default 25); 0 uses default, negative values are invalid.
+  # WebSocket ping 间隔（秒，默认 25）。取值必须大于 0（校验拒绝 0 与负数，
+  # 想用默认值就保持/写 25，不要写 0）。
+  # WebSocket ping interval in seconds (default 25). Must be greater than 0
+  # (validation rejects 0 and negatives; keep or write 25 for the default).
   ws-ping-interval: 25
   # 上行存活超时（秒，默认 60），pong、ping 或应用数据帧均刷新存活时间。
   # 超时后再发一次 ping，宽限一个 ping 周期后仍无上行响应才断开。
   # Cloudflare Tunnel 可先尝试 180；若始终收不到 pong，仍需插件空闲时发送应用层心跳。
-  # Liveness timeout in seconds (default 60), followed by one ping interval of grace.
+  # 取值必须大于 0（校验拒绝 0 与负数）。
+  # Liveness timeout in seconds (default 60), followed by one ping interval of
+  # grace. Must be greater than 0 (validation rejects 0 and negatives).
   ws-ping-wait: 60
 
   # 数据拉取源设置: auto | github（旧值回落到 GitHub）
@@ -364,8 +369,11 @@ user:
   # 是否开启用户注册功能
   # Whether to enable user registration
   register-is-enable: true
-  # 管理员 UID。0 表示任何用户都不能作为超级管理员或是未指定。
-  # Administrator UID. 0 means no user is designated or restricted.
+  # 管理员 UID。0 表示未显式配置，此时按“现存用户中 UID 最小者”认定管理员
+  # （无任何用户时无人是管理员）；多用户部署建议显式设置。
+  # Administrator UID. 0 means no explicit admin: the user with the smallest
+  # existing UID is treated as admin (nobody when there are no users);
+  # set it explicitly on multi-user deployments.
   admin-uid: 0
 
 tracer:
