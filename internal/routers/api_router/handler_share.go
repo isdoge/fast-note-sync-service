@@ -151,7 +151,7 @@ func (h *ShareHandler) FileGet(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	savePath, contentType, mtime, etag, fileName, err := h.App.ShareService.GetSharedFileInfo(ctx, shareToken, params.ID, params.Password)
+	savePath, contentType, mtime, etag, fileName, isPasswordProtected, err := h.App.ShareService.GetSharedFileInfo(ctx, shareToken, params.ID, params.Password)
 
 	if err != nil {
 		if cObj, ok := err.(*code.Code); ok {
@@ -176,7 +176,17 @@ func (h *ShareHandler) FileGet(c *gin.Context) {
 	if contentType != "" {
 		c.Header("Content-Type", contentType)
 	}
-	c.Header("Cache-Control", "public, s-maxage=31536000, max-age=31536000, must-revalidate")
+	// #342 S-22：带密码的分享是私有资源，禁止共享缓存（CDN/代理）存储；
+	// 浏览器本地缓存保留一年，分享页刷新无需重下附件。公开分享维持一年的强缓存。
+	// #342 S-22: password-protected shares are private resources; shared caches
+	// (CDN/proxies) must not store them. Keep a year of browser-local caching so the
+	// share page can refresh without re-downloading attachments. Public shares keep
+	// the original year-long strong cache.
+	if isPasswordProtected {
+		c.Header("Cache-Control", "private, max-age=31536000, must-revalidate")
+	} else {
+		c.Header("Cache-Control", "public, s-maxage=31536000, max-age=31536000, must-revalidate")
+	}
 	if etag != "" {
 		c.Header("ETag", etag)
 	}

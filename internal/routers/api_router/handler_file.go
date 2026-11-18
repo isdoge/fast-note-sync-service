@@ -140,7 +140,14 @@ func (h *FileHandler) GetInfo(c *gin.Context) {
 	if contentType != "" {
 		c.Header("Content-Type", contentType)
 	}
-	c.Header("Cache-Control", "public, s-maxage=31536000, max-age=31536000, must-revalidate")
+	// #342 S-22：该端点需要用户令牌鉴权，附件是私有资源，禁止 CDN/代理等共享缓存
+	// 存储（否则令牌撤销后缓存期内仍可取回文件）。浏览器本地缓存保留一年——
+	// Obsidian 的云预览依赖它。s-maxage 一并去掉：private 下它无意义。
+	// #342 S-22: this endpoint requires an authenticated user token, attachments are
+	// private resources; shared caches (CDN/proxies) must not store them (otherwise the
+	// file stays retrievable within the cache window after token revocation). Keep a
+	// year of browser-local caching — Obsidian's cloud preview relies on it.
+	c.Header("Cache-Control", "private, max-age=31536000, must-revalidate")
 	if etag != "" {
 		c.Header("ETag", etag)
 	}
