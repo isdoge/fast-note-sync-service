@@ -110,3 +110,44 @@ func TestProcessNotesBatch_RejectsEscapingDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.FileExists(t, outside, "escaping delete path must not remove files outside the workspace")
 }
+
+// TestProcessNotesBatch_RejectsSymlinkTarget 覆盖“目标文件本身是符号链接”的情况：
+// 远端仓库可以带入一个指向工作区外的文件级符号链接，导出时 WriteFile 会顺着它
+// 改写工作区外的文件，删除分支的 Stat 也会顺着它判断存在性。
+func TestProcessNotesBatch_RejectsSymlinkTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires extra privileges on windows")
+	}
+	base := t.TempDir()
+	wsPath := filepath.Join(base, "ws")
+	outsideFile := filepath.Join(base, "outside.md")
+	require.NoError(t, os.MkdirAll(filepath.Join(wsPath, "notes"), 0755))
+	require.NoError(t, os.WriteFile(outsideFile, []byte("original"), 0644))
+	require.NoError(t, os.Symlink(outsideFile, filepath.Join(wsPath, "notes", "a.md")))
+
+	svc := newTestGitSyncService(nil)
+	_, err := svc.processNotesBatch([]*domain.Note{
+		{Path: "notes/a.md", Content: "overwritten via symlink", Action: domain.NoteActionCreate},
+		{Path: "notes/ok.md", Content: "fine", Action: domain.NoteActionCreate},
+	}, wsPath)
+	require.NoError(t, err)
+
+	got, err := os.ReadFile(outsideFile)
+	require.NoError(t, err)
+	require.Equal(t, "original", string(got), "a file-level symlink must not let export overwrite a file outside the workspace")
+	require.FileExists(t, filepath.Join(wsPath, "notes", "ok.md"))
+}
+
+// TestSafeWorkspacePath_AllowsOrdinaryNames 防止校验误伤正常文件名：
+// 带连续点号、百分号、冒号（非 Windows）的笔记名都必须能导出。
+func TestSafeWorkspacePath_AllowsOrdinaryNames(t *testing.T) {
+	ws := t.TempDir()
+	names := []string{"等等...md", "a..b.md", "100%.md", "notes/To be continued...md"}
+	if runtime.GOOS != "windows" {
+		names = append(names, "Q: what.md")
+	}
+	for _, name := range names {
+		_, err := safeWorkspacePath(ws, name)
+		require.NoError(t, err, name)
+	}
+}

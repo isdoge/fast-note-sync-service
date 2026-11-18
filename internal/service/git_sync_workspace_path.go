@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -29,8 +30,9 @@ func safeWorkspacePath(wsPath, rel string) (string, error) {
 	if filepath.IsAbs(rel) || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "\\") {
 		return "", fmt.Errorf("%w: absolute path %q", errWorkspacePathEscapes, rel)
 	}
-	// Windows 盘符路径（C:foo / C:\foo）即使非绝对也拒绝，避免跨平台歧义。
-	if len(rel) >= 2 && rel[1] == ':' {
+	// Windows 上盘符路径（C:foo / C:\foo）即使非绝对也拒绝；其它系统上冒号只是普通
+	// 文件名字符（如 "Q: what.md"），不能因此漏导笔记。
+	if runtime.GOOS == "windows" && len(rel) >= 2 && rel[1] == ':' {
 		return "", fmt.Errorf("%w: drive-letter path %q", errWorkspacePathEscapes, rel)
 	}
 
@@ -62,6 +64,10 @@ func safeWorkspacePath(wsPath, rel string) (string, error) {
 	// 父目录可能部分不存在，向上找最近已存在的祖先做 EvalSymlinks。
 	if err := ensureSymlinkedParentInside(absWs, filepath.Dir(full)); err != nil {
 		return "", err
+	}
+	// 目标本身是符号链接时同样拒绝：写入会顺着链接改写工作区外的文件。
+	if info, err := os.Lstat(full); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: target %q is a symlink", errWorkspacePathEscapes, rel)
 	}
 	return full, nil
 }
