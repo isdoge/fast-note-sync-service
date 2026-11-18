@@ -51,10 +51,6 @@ notes.example.com {
         header_up Host {host}
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-Proto {scheme}
-        transport http {
-            read_timeout 3600s
-            write_timeout 3600s
-        }
     }
 }
 ```
