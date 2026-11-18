@@ -2,11 +2,13 @@ package websocket_router
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,10 +42,28 @@ func (w *syncDeleteResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error)
 	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
 }
 
+// syncWriteHookConn 在服务端每次写出前回调，用来检查"某条消息写出时"的服务端状态。
+type syncWriteHookConn struct {
+	net.Conn
+	onWrite func([]byte)
+}
+
+func (c *syncWriteHookConn) Write(b []byte) (int, error) {
+	if c.onWrite != nil {
+		c.onWrite(b)
+	}
+	return c.Conn.Write(b)
+}
+
 // newSyncDeletePeer 用内存管道驱动真实 WebSocket 收发，不监听端口。
 func newSyncDeletePeer(t *testing.T, testApp *app.App) (*pkgapp.WebsocketClient, <-chan string) {
+	return newSyncDeletePeerWithHook(t, testApp, nil)
+}
+
+func newSyncDeletePeerWithHook(t *testing.T, testApp *app.App, onServerWrite func([]byte)) (*pkgapp.WebsocketClient, <-chan string) {
 	t.Helper()
-	serverConn, peerConn := net.Pipe()
+	rawServerConn, peerConn := net.Pipe()
+	var serverConn net.Conn = &syncWriteHookConn{Conn: rawServerConn, onWrite: onServerWrite}
 	t.Cleanup(func() { _ = serverConn.Close(); _ = peerConn.Close() })
 	wss := pkgapp.NewWebsocketServer(pkgapp.WSConfig{PingWait: 60}, testApp)
 	clients := make(chan *pkgapp.WebsocketClient, 1)
@@ -232,5 +252,45 @@ func TestSyncDelete_IdempotentDoesNotBroadcast(t *testing.T) {
 				vaultSvc.AssertExpectations(t)
 			})
 		}
+	}
+}
+
+// TestSyncEnd_PagedQueueRegisteredBeforeEnd 结束消息写出的那一刻，分页队列必须已经登记：
+// 客户端收到结束消息会立刻回首个分页确认，并行处理下它可能先于登记被处理而被丢弃。
+func TestSyncEnd_PagedQueueRegisteredBeforeEnd(t *testing.T) {
+	for _, kind := range []string{"note", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			noteSvc := new(svcmocks.MockNoteService)
+			fileSvc := new(svcmocks.MockFileService)
+			vaultSvc := new(svcmocks.MockVaultService)
+			vaultSvc.On("GetOrCreate", mock.Anything, int64(1), "vault").Return(nil, nil)
+			testApp := app.NewTestApp(&app.Services{NoteService: noteSvc, FileService: fileSvc, VaultService: vaultSvc})
+			syncContext := "end-order-" + kind
+			endAction := NoteSyncEnd
+			if kind == "file" {
+				endAction = FileSyncEnd
+			}
+			var sawEnd, registeredAtEnd atomic.Bool
+			c, messages := newSyncDeletePeerWithHook(t, testApp, func(b []byte) {
+				if bytes.Contains(b, []byte(endAction+"|")) {
+					sawEnd.Store(true)
+					_, ok := syncDownloadGet(syncContext, kind)
+					registeredAtEnd.Store(ok)
+				}
+			})
+			t.Cleanup(func() { syncDownloadDelete(syncContext, kind) })
+			if kind == "note" {
+				noteSvc.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).
+					Return([]*dto.NoteDTO{{Path: "pending", PathHash: "pending-hash", Action: "delete"}}, nil)
+				NewNoteWSHandler(testApp).doNoteSync(c, &dto.NoteSyncRequest{Context: syncContext, Vault: "vault"})
+			} else {
+				fileSvc.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).
+					Return([]*dto.FileDTO{{Path: "pending", PathHash: "pending-hash", Action: "delete"}}, nil)
+				NewFileWSHandler(testApp).doFileSync(c, &dto.FileSyncRequest{Context: syncContext, Vault: "vault"})
+			}
+			syncDeleteMessage(t, messages, endAction)
+			require.True(t, sawEnd.Load(), "未观察到结束消息写出")
+			require.True(t, registeredAtEnd.Load(), "结束消息写出时分页队列尚未登记")
+		})
 	}
 }

@@ -1208,19 +1208,11 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 
 	c.IsFirstSync = true
 
-	// Send NoteSyncEnd message, containing all counts
-	// 发送 NoteSyncEnd 消息，包含所有统计计数
-	c.ToResponse(code.Success.WithData(
-		dto.NoteSyncEndMessage{
-			LastTime:           lastTime,
-			NeedUploadCount:    needUploadCount,
-			NeedModifyCount:    needModifyCount,
-			NeedSyncMtimeCount: needSyncMtimeCount,
-			NeedDeleteCount:    needDeleteCount,
-		},
-	).WithVault(params.Vault).WithContext(params.Context), NoteSyncEnd)
-
-	// 在 End 消息后，启动受控分页发送流程
+	// 先登记分页队列，再发结束消息：客户端收到结束消息会立刻回首个分页确认，
+	// 开启并行处理时该确认可能抢在登记之前到达，被当作找不到队列丢弃，本轮下载就此卡住。
+	// Register the paged queue before sending the End message: the client acks the first page
+	// as soon as End arrives, and with parallel dispatch that ack could land before the queue
+	// was stored, be dropped as "entry not found" and stall the whole download round.
 	if len(messageQueue) > 0 {
 		pageSize := h.App.Config().App.SyncDownChunkNum
 		if pageSize <= 0 {
@@ -1253,6 +1245,18 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		syncDownloadStore(params.Context, "note", entry)
 		// 默认不自动发送，等待客户端拉取
 	}
+
+	// Send NoteSyncEnd message, containing all counts
+	// 发送 NoteSyncEnd 消息，包含所有统计计数
+	c.ToResponse(code.Success.WithData(
+		dto.NoteSyncEndMessage{
+			LastTime:           lastTime,
+			NeedUploadCount:    needUploadCount,
+			NeedModifyCount:    needModifyCount,
+			NeedSyncMtimeCount: needSyncMtimeCount,
+			NeedDeleteCount:    needDeleteCount,
+		},
+	).WithVault(params.Vault).WithContext(params.Context), NoteSyncEnd)
 }
 
 // NoteSyncPageAck handles WebSocket messages for client page ACK

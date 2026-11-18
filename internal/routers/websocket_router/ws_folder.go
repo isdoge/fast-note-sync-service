@@ -337,17 +337,11 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 		}
 	}
 
-	// Send FolderSyncEnd message
-	// 发送 FolderSyncEnd 消息
-	c.ToResponse(code.Success.WithData(&dto.FolderSyncEndMessage{
-		// Use syncStartTime (recorded before query) to prevent writes during query processing from being missed.
-		// 使用查询前记录 of syncStartTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
-		LastTime:        syncStartTime,
-		NeedModifyCount: needModifyCount,
-		NeedDeleteCount: needDeleteCount,
-	}).WithVault(params.Vault).WithContext(params.Context), FolderSyncEnd)
-
-	// 在 End 消息后，启动受控分页发送流程
+	// 先登记分页队列，再发结束消息：客户端收到结束消息会立刻回首个分页确认，
+	// 开启并行处理时该确认可能抢在登记之前到达，被当作找不到队列丢弃，本轮下载就此卡住。
+	// Register the paged queue before sending the End message: the client acks the first page
+	// as soon as End arrives, and with parallel dispatch that ack could land before the queue
+	// was stored, be dropped as "entry not found" and stall the whole download round.
 	if len(messageQueue) > 0 {
 		pageSize := h.App.Config().App.SyncDownChunkNum
 		if pageSize <= 0 {
@@ -372,6 +366,16 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 		syncDownloadStore(params.Context, "folder", entry)
 		// 默认不自动发送，等待客户端拉取
 	}
+
+	// Send FolderSyncEnd message
+	// 发送 FolderSyncEnd 消息
+	c.ToResponse(code.Success.WithData(&dto.FolderSyncEndMessage{
+		// Use syncStartTime (recorded before query) to prevent writes during query processing from being missed.
+		// 使用查询前记录 of syncStartTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
+		LastTime:        syncStartTime,
+		NeedModifyCount: needModifyCount,
+		NeedDeleteCount: needDeleteCount,
+	}).WithVault(params.Vault).WithContext(params.Context), FolderSyncEnd)
 }
 
 // FolderSyncPageAck handles WebSocket messages for client page ACK
