@@ -377,3 +377,20 @@ func (r *userShareRepository) DeleteByVaultID(ctx context.Context, vaultID, uid 
 // Ensure userShareRepository implements domain.UserShareRepository interface
 // 确保 userShareRepository 实现了 domain.UserShareRepository 接口
 var _ domain.UserShareRepository = (*userShareRepository)(nil)
+
+// GetByPathAndHash 以完整路径定位分享资源，避免碰撞路径串行。
+func (r *userShareRepository) GetByPathAndHash(ctx context.Context, uid int64, vaultID int64, path, pathHash string) (*domain.UserShare, error) {
+	// Get Note (Triggers Notes migration via noteRepo)
+	noteRepo := NewNoteRepository(r.dao)
+	note, err := noteRepo.GetByPathHashAndPath(ctx, pathHash, path, vaultID, uid)
+	if err != nil {
+		return nil, err
+	}
+	if note == nil {
+		return nil, nil
+	}
+
+	// 3. Get UserShare (Triggers UserShare migration via GetByRes -> userShare(uid))
+	// 3. Get UserShare (通过 GetByRes -> userShare(uid) 触发 UserShare 迁移)
+	return r.GetByRes(ctx, uid, "note", note.ID)
+}

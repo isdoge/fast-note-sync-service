@@ -121,7 +121,7 @@ func (s *noteLinkService) GetOutlinks(ctx context.Context, uid int64, params *dt
 
 	// Get note by path to get its ID
 	// 通过路径获取笔记以获取其 ID
-	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	note, err := s.noteRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorNoteNotFound

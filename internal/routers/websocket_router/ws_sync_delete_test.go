@@ -151,8 +151,8 @@ func TestSyncDelete_IdempotentDoesNotBroadcast(t *testing.T) {
 					}
 					noteSvc.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).
 						Return(list, nil)
-					noteSvc.On("ExistsBatch", mock.Anything, int64(1), "vault", []string{"gone-hash"}).
-						Return(map[string]bool{"gone-hash": exists}, nil)
+					noteSvc.On("ExistsPathsBatch", mock.Anything, int64(1), "vault", []string{"gone"}).
+						Return(map[string]bool{"gone": exists}, nil)
 					if exists {
 						noteSvc.On("Delete", mock.Anything, int64(1), mock.Anything).
 							Return(&dto.NoteDTO{Path: "gone", PathHash: "gone-hash", Action: "delete", Unchanged: unchanged}, nil)

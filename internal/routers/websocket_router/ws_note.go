@@ -141,10 +141,10 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			}
 
 			// =========================================================================
-			// Hard Conflict Protection: 
-			// If strategy is manualMerge, the request has no resolution mark, and serverHash 
+			// Hard Conflict Protection:
+			// If strategy is manualMerge, the request has no resolution mark, and serverHash
 			// differs from baseHash, block the override immediately and return 530.
-			// 
+			//
 			// 硬冲突保护：
 			// 如果合并策略为手动合并，请求中未携带解决标记，且云端哈希与客户端基准哈希不匹配，
 			// 直接拦截该覆写并返回 530 错误及冲突明细。
@@ -883,16 +883,11 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		return
 	}
 
-	var cNotes map[string]dto.NoteSyncCheckRequest = make(map[string]dto.NoteSyncCheckRequest, 0)
-	var cNotesKeys map[string]struct{} = make(map[string]struct{}, 0)
-
-	if len(params.Notes) > 0 {
-		for _, note := range params.Notes {
-			note.Ctime = timex.NormalizeMilli(note.Ctime)
-			note.Mtime = timex.NormalizeMilli(note.Mtime)
-			cNotes[note.PathHash] = note
-			cNotesKeys[note.PathHash] = struct{}{}
-		}
+	cNotes := newSyncInventory[dto.NoteSyncCheckRequest]()
+	for _, item := range params.Notes {
+		item.Ctime = timex.NormalizeMilli(item.Ctime)
+		item.Mtime = timex.NormalizeMilli(item.Mtime)
+		cNotes.add(item.Path, item.PathHash, item)
 	}
 
 	// Create message queue for collecting all messages to be sent
@@ -912,17 +907,17 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 	if len(params.DelNotes) > 0 {
 		hasWritePermission := pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "note_w")
 
-		// 批量预查一次性取回全部 pathHash 的存在性，避免逐条 noteSvc.Get 造成的
+		// 批量预查一次性取回全部路径的存在性，避免逐条 noteSvc.Get 造成的
 		// N+1 查询（且每条 Get 还会带上完全用不到的正文文件读取）
-		// Batch pre-check existence for all pathHashes in one query, avoiding the N+1
+		// Batch pre-check existence for all paths in one query, avoiding the N+1
 		// per-item noteSvc.Get calls (each of which also loads content that's never used here)
-		delPathHashes := make([]string, 0, len(params.DelNotes))
+		delPaths := make([]string, 0, len(params.DelNotes))
 		for _, delNote := range params.DelNotes {
-			delPathHashes = append(delPathHashes, delNote.PathHash)
+			delPaths = append(delPaths, delNote.Path)
 		}
-		existsMap, batchErr := noteSvc.ExistsBatch(ctx, c.User.UID, params.Vault, delPathHashes)
+		existsMap, batchErr := noteSvc.ExistsPathsBatch(ctx, c.User.UID, params.Vault, delPaths)
 		if batchErr != nil {
-			h.App.Logger().Warn("websocket_router.note.NoteSync.noteSvc.ExistsBatch",
+			h.App.Logger().Warn("websocket_router.note.NoteSync.noteSvc.ExistsPathsBatch",
 				zap.String(logger.FieldTraceID, c.TraceID),
 				zap.Int64(logger.FieldUID, c.User.UID),
 				zap.Error(batchErr))
@@ -932,7 +927,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		for _, delNote := range params.DelNotes {
 			// If note exists, execute delete
 			// 如果笔记存在，执行删除
-			if existsMap[delNote.PathHash] {
+			if existsMap[delNote.Path] {
 				if !hasWritePermission {
 					h.App.Logger().Warn("websocket_router.note.NoteSync: permission denied for deletion",
 						zap.String(logger.FieldTraceID, c.TraceID),
@@ -956,9 +951,9 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 					continue
 				}
 
-				// Record PathHash deleted by client to avoid duplicate sending
-				// 记录客户端已主动删除的 PathHash，避免重复下发
-				cDelNotesKeys[delNote.PathHash] = struct{}{}
+				// Record paths deleted by client to avoid duplicate sending
+				// 记录客户端已主动删除的路径，避免重复下发
+				cDelNotesKeys[delNote.Path] = struct{}{}
 
 				// 与单条删除入口一致：幂等删除只保留排除记录，不重复广播。
 				if note.Unchanged {
@@ -987,7 +982,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 
 			} else {
 				// 不存在或已删除：仍排除客户端主动删除的路径，但不向其他端广播。
-				cDelNotesKeys[delNote.PathHash] = struct{}{}
+				cDelNotesKeys[delNote.Path] = struct{}{}
 			}
 		}
 	}
@@ -1027,14 +1022,14 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 				})
 				needModifyCount++
 				// 加入排除索引
-				cDelNotesKeys[note.PathHash] = struct{}{}
+				cDelNotesKeys[note.Path] = struct{}{}
 			}
 		}
 	}
 
 	for _, note := range list {
 		// 如果该笔记是客户端刚才通过参数告知删除的，则跳过下发
-		if _, ok := cDelNotesKeys[note.PathHash]; ok {
+		if _, ok := cDelNotesKeys[note.Path]; ok {
 			continue
 		}
 
@@ -1043,9 +1038,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		if note.Action == "delete" {
 			// Server already deleted, notify client to delete (regardless of whether client has it)
 			// 服务端已经删除, 通知客户端删除（不再检查客户端是否存在）
-			if _, ok := cNotes[note.PathHash]; ok {
-				delete(cNotesKeys, note.PathHash)
-			}
+			cNotes.take(note.Path, note.PathHash)
 			// 将消息添加到队列
 			messageQueue = append(messageQueue, dto.WSQueuedMessage{
 				Context: params.Context,
@@ -1063,9 +1056,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		} else {
 			// Check if client has it
 			//检查客户端是否有
-			if cNote, ok := cNotes[note.PathHash]; ok {
-
-				delete(cNotesKeys, note.PathHash)
+			if cNote, ok := cNotes.take(note.Path, note.PathHash); ok {
 
 				if note.ContentHash == cNote.ContentHash && note.Mtime == cNote.Mtime {
 					// Content and modification time match, skip
@@ -1186,9 +1177,8 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 	// during query processing from being permanently missed on the next incremental sync.
 	// 使用查询前记录的 syncStartTime 作为 lastTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
 	lastTime = syncStartTime
-	if len(cNotesKeys) > 0 {
-		for pathHash := range cNotesKeys {
-			note := cNotes[pathHash]
+	if remaining := cNotes.remaining(); len(remaining) > 0 {
+		for _, note := range remaining {
 
 			if c.OfflineSyncStrategy() == "ignoreTimeMerge" || c.OfflineSyncStrategy() == "newTimeMerge" || c.OfflineSyncStrategy() == "manualMerge" {
 				c.DiffMergePathsMu.Lock()

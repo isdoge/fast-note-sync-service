@@ -40,6 +40,7 @@ type UserShareRepository interface {
 	Create(ctx context.Context, uid int64, share *UserShare) error
 	GetByID(ctx context.Context, uid int64, id int64) (*UserShare, error)
 	GetByPath(ctx context.Context, uid int64, vaultID int64, pathHash string) (*UserShare, error)
+	GetByPathAndHash(ctx context.Context, uid int64, vaultID int64, path, pathHash string) (*UserShare, error)
 	GetByRes(ctx context.Context, uid int64, resType string, resID int64) (*UserShare, error)
 	UpdateResources(ctx context.Context, uid int64, id int64, resources map[string][]string) error
 	UpdateStatus(ctx context.Context, uid int64, id int64, status int64) error

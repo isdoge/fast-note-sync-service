@@ -33,7 +33,7 @@ type FolderService interface {
 	EnsurePathFID(ctx context.Context, uid int64, vaultID int64, path string) (int64, error)
 	CleanupEmptyAncestors(ctx context.Context, uid int64, vaultID int64, resourcePath string) error
 	SyncResourceFID(ctx context.Context, uid int64, vaultID int64, noteIDs []int64, fileIDs []int64) error
-	IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64) (bool, error)
+	IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64, paths ...string) (bool, error)
 	GetTree(ctx context.Context, uid int64, params *dto.FolderTreeRequest) (*dto.FolderTreeResponse, error)
 	CleanDuplicateFolders(ctx context.Context, uid int64, vaultID int64) error
 	WithClient(clientType, clientName, clientVersion string) FolderService
@@ -110,7 +110,7 @@ func (s *folderService) List(ctx context.Context, uid int64, params *dto.FolderL
 		if params.PathHash == "" {
 			params.PathHash = util.EncodeHash32(params.Path)
 		}
-		f, err := s.folderRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+		f, err := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 		if err == nil {
 			fid = f.ID
 		}
@@ -175,13 +175,17 @@ func (s *folderService) UpdateOrCreate(ctx context.Context, uid int64, params *d
 // IsStaleRevive 报告客户端上报的目录是否为对墓碑记录的陈旧复活：与笔记/文件同一
 // mtime/ctime 规则（目录上报不带 ctime）。记录不存在或未删除时返回 false。
 // 供 doFolderSync 拦截陈旧上报，同时放行删除之后重新创建的目录。
-func (s *folderService) IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64) (bool, error) {
+func (s *folderService) IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64, paths ...string) (bool, error) {
+	path := ""
+	if len(paths) > 0 {
+		path = paths[0]
+	}
 	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
 	if err != nil {
 		return false, err
 	}
 
-	f, err := s.folderRepo.GetByPathHash(ctx, pathHash, vaultID, uid)
+	f, err := s.folderRepo.GetByPathHashAndPath(ctx, pathHash, path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, nil
@@ -207,7 +211,7 @@ func (s *folderService) Delete(ctx context.Context, uid int64, params *dto.Folde
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
 
-	f, err := s.folderRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	f, err := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorFolderNotFound
@@ -249,7 +253,7 @@ func (s *folderService) DeleteTree(ctx context.Context, uid int64, params *dto.F
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
 
-	rootFolders, err := s.folderRepo.GetAllByPathHash(ctx, params.PathHash, vaultID, uid)
+	rootFolders, err := s.folderRepo.GetAllByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorFolderNotFound
@@ -342,11 +346,11 @@ func (s *folderService) ListByUpdatedTimestamp(ctx context.Context, uid int64, v
 	var res []*dto.FolderDTO
 	cache := make(map[string]bool)
 	for _, f := range folders {
-		if cache[f.PathHash] {
+		if cache[f.Path] {
 			continue
 		}
 		res = append(res, s.domainToDTO(f))
-		cache[f.PathHash] = true
+		cache[f.Path] = true
 	}
 
 	return res, nil
@@ -376,7 +380,7 @@ func (s *folderService) Rename(ctx context.Context, uid int64, params *dto.Folde
 
 	// Rename renames a folder
 	// Rename 重命名文件夹
-	oldFolder, err := s.folderRepo.GetByPathHash(ctx, params.OldPathHash, vaultID, uid)
+	oldFolder, err := s.folderRepo.GetByPathHashAndPath(ctx, params.OldPathHash, params.OldPath, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			newFolder, err := s.UpdateOrCreate(ctx, uid, &dto.FolderCreateRequest{
@@ -394,7 +398,7 @@ func (s *folderService) Rename(ctx context.Context, uid int64, params *dto.Folde
 
 	// 1. Check if target path has valid folder
 	// 1. 判断目标路径是否存在有效文件夹
-	existFolder, _ := s.folderRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	existFolder, _ := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if existFolder != nil && existFolder.Action != domain.FolderActionDelete {
 		newFolder, err := s.Delete(ctx, uid, &dto.FolderDeleteRequest{
 			Path:     params.OldPath,
@@ -458,7 +462,7 @@ func (s *folderService) Get(ctx context.Context, uid int64, params *dto.FolderGe
 		return nil, code.ErrorInvalidParams.WithDetails("path or pathHash is required")
 	}
 
-	f, err := s.folderRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	f, err := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorFolderNotFound
@@ -484,7 +488,7 @@ func (s *folderService) ListNotes(ctx context.Context, uid int64, params *dto.Fo
 		if params.PathHash == "" {
 			params.PathHash = util.EncodeHash32(params.Path)
 		}
-		f, err := s.folderRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+		f, err := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 		if err == nil {
 			fid = f.ID
 		}
@@ -533,7 +537,7 @@ func (s *folderService) ListFiles(ctx context.Context, uid int64, params *dto.Fo
 		if params.PathHash == "" {
 			params.PathHash = util.EncodeHash32(params.Path)
 		}
-		f, err := s.folderRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+		f, err := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 		if err == nil {
 			fid = f.ID
 		}
@@ -584,11 +588,12 @@ func (s *folderService) ListFiles(ctx context.Context, uid int64, params *dto.Fo
 //
 // A proper fix would be to either:
 //   - Use singleflight keyed by (vaultID, path) to coalesce concurrent creates
-//   - Add a UNIQUE constraint on (vault_id, path_hash) and handle conflict
+//   - Add a UNIQUE constraint on (vault_id, path) and handle conflict
+//
 // ensurePathFIDSingle performs the underlying lookup or creation of a folder.
 // ensurePathFIDSingle 执行底层的文件夹查询或创建。
 func (s *folderService) ensurePathFIDSingle(ctx context.Context, uid int64, vaultID int64, pathHash string, currentPath string, currentFID int64, level int) (any, error) {
-	f, err := s.folderRepo.GetByPathHash(ctx, pathHash, vaultID, uid)
+	f, err := s.folderRepo.GetByPathHashAndPath(ctx, pathHash, currentPath, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			newFolder := &domain.Folder{
@@ -644,7 +649,7 @@ func (s *folderService) EnsurePathFID(ctx context.Context, uid int64, vaultID in
 		currentPath := strings.Join(parts[:i+1], "/")
 		pathHash := util.EncodeHash32(currentPath)
 
-		key := fmt.Sprintf("ensure_folder_%d_%d_%s", uid, vaultID, pathHash)
+		key := fmt.Sprintf("ensure_folder_%d_%d_%s", uid, vaultID, currentPath)
 		var val any
 		var err error
 		if s.sf != nil {
@@ -674,7 +679,7 @@ func (s *folderService) CleanupEmptyAncestors(ctx context.Context, uid int64, va
 	parent := path[:strings.LastIndex(path, "/")]
 	for parent != "" {
 		pathHash := util.EncodeHash32(parent)
-		folders, err := s.folderRepo.GetAllByPathHash(ctx, pathHash, vaultID, uid)
+		folders, err := s.folderRepo.GetAllByPathHashAndPath(ctx, pathHash, parent, vaultID, uid)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil
@@ -983,16 +988,16 @@ func (s *folderService) CleanDuplicateFolders(ctx context.Context, uid int64, va
 		return err
 	}
 
-	// 2. Group by PathHash
-	// 2. 按 PathHash 分组
+	// 2. Group by path
+	// 2. 按完整路径分组
 	grouped := make(map[string][]*domain.Folder)
 	for _, f := range folders {
-		grouped[f.PathHash] = append(grouped[f.PathHash], f)
+		grouped[f.Path] = append(grouped[f.Path], f)
 	}
 
 	// 3. Traverse groups and identify duplicates
 	// 3. 遍历分组，识别重复项
-	for pathHash, list := range grouped {
+	for path, list := range grouped {
 		if len(list) <= 1 {
 			continue
 		}
@@ -1013,7 +1018,7 @@ func (s *folderService) CleanDuplicateFolders(ctx context.Context, uid int64, va
 			for _, f := range list {
 				if f.Action != domain.FolderActionDelete {
 					if s.sf != nil {
-						s.sf.Forget(fmt.Sprintf("ensure_folder_%d_%d_%s", uid, vaultID, pathHash))
+						s.sf.Forget(fmt.Sprintf("ensure_folder_%d_%d_%s", uid, vaultID, path))
 					}
 					_ = s.folderRepo.Delete(ctx, f.ID, uid)
 				}
@@ -1031,7 +1036,7 @@ func (s *folderService) CleanDuplicateFolders(ctx context.Context, uid int64, va
 			for _, f := range list {
 				if f.ID != maxID {
 					if s.sf != nil {
-						s.sf.Forget(fmt.Sprintf("ensure_folder_%d_%d_%s", uid, vaultID, pathHash))
+						s.sf.Forget(fmt.Sprintf("ensure_folder_%d_%d_%s", uid, vaultID, path))
 					}
 					_ = s.folderRepo.Delete(ctx, f.ID, uid)
 				}

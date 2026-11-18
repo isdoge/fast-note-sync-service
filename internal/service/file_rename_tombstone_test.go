@@ -70,13 +70,13 @@ func TestFileService_Rename_PrefersLiveRowOverTombstone(t *testing.T) {
 
 	vaultSvc.On("MustGetID", mock.Anything, int64(1), "vault").Return(int64(1), nil)
 	// 新路径无记录
-	fileRepo.On("GetByPathHash", mock.Anything, "newh", int64(1), int64(1)).
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "newh", mock.Anything, int64(1), int64(1)).
 		Return(nil, gorm.ErrRecordNotFound)
 	// 旧路径：First 命中墓碑行（无 ORDER BY，ID 41 先插入）
-	fileRepo.On("GetByPathHash", mock.Anything, "oldh", int64(1), int64(1)).
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "oldh", mock.Anything, int64(1), int64(1)).
 		Return(fileTombstoneFixture(), nil)
 	// 回退：列出全部行，服务层必须从中挑活跃行
-	fileRepo.On("ListByPathHash", mock.Anything, "oldh", int64(1), int64(1)).
+	fileRepo.On("ListByPathHashAndPath", mock.Anything, "oldh", mock.Anything, int64(1), int64(1)).
 		Return([]*domain.File{fileTombstoneFixture(), fileLiveRowFixture()}, nil)
 
 	folderSvc.On("EnsurePathFID", mock.Anything, int64(1), int64(1), mock.Anything).Return(int64(0), nil).Maybe()
@@ -139,10 +139,10 @@ func TestFileService_Rename_ReverseMoveBackToOwnRow(t *testing.T) {
 	}
 
 	// 新路径：First 命中活跃行
-	fileRepo.On("GetByPathHash", mock.Anything, "newh", int64(1), int64(1)).
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "newh", mock.Anything, int64(1), int64(1)).
 		Return(tombstoneAtNew, nil)
 	// 旧路径：活跃行
-	fileRepo.On("GetByPathHash", mock.Anything, "oldh", int64(1), int64(1)).
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "oldh", mock.Anything, int64(1), int64(1)).
 		Return(live, nil)
 
 	folderSvc.On("EnsurePathFID", mock.Anything, int64(1), int64(1), mock.Anything).Return(int64(0), nil).Maybe()

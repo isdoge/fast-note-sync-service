@@ -105,7 +105,17 @@ func (s *FileUploadBinaryChunkSession) Cleanup() {
 // GetPathHash returns the path hash of the session
 // GetPathHash 返回会话的路径哈希值
 func (s *FileUploadBinaryChunkSession) GetPathHash() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.PathHash
+}
+
+// GetPathIdentity returns the vault and full path used to distinguish collisions.
+// GetPathIdentity 返回库名和完整路径，用于区分碰撞路径。
+func (s *FileUploadBinaryChunkSession) GetPathIdentity() (string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Vault, s.Path
 }
 
 func (s *FileUploadBinaryChunkSession) GetCreatedAt() time.Time {
@@ -538,7 +548,7 @@ func (h *FileWSHandler) FileRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 
 	// Check if there is an active upload session for the old path hash
 	// 检查旧路径哈希是否存在活跃的上传会话
-	activeSession := c.Server.GetSessionByPathHash(uidStr, params.OldPathHash)
+	activeSession := c.Server.GetSessionByPathHash(uidStr, params.OldPathHash, params.Vault, params.OldPath)
 	if activeSession != nil {
 		if sess, ok := activeSession.(*FileUploadBinaryChunkSession); ok {
 			sess.mu.Lock()
@@ -785,16 +795,11 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 
 	// Build client file index
 	// 构建客户端文件索引
-	var cFiles map[string]dto.FileSyncCheckRequest = make(map[string]dto.FileSyncCheckRequest, 0)
-	var cFilesKeys map[string]struct{} = make(map[string]struct{}, 0)
-
-	if len(params.Files) > 0 {
-		for _, file := range params.Files {
-			file.Ctime = timex.NormalizeMilli(file.Ctime)
-			file.Mtime = timex.NormalizeMilli(file.Mtime)
-			cFiles[file.PathHash] = file
-			cFilesKeys[file.PathHash] = struct{}{}
-		}
+	cFiles := newSyncInventory[dto.FileSyncCheckRequest]()
+	for _, item := range params.Files {
+		item.Ctime = timex.NormalizeMilli(item.Ctime)
+		item.Mtime = timex.NormalizeMilli(item.Mtime)
+		cFiles.add(item.Path, item.PathHash, item)
 	}
 
 	// Create message queue for collecting all messages to be sent
@@ -849,9 +854,9 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 					continue
 				}
 
-				// Record PathHash deleted by client to avoid duplicate sending
-				// 记录客户端已主动删除的 PathHash，避免重复下发
-				cDelFilesKeys[delFile.PathHash] = struct{}{}
+				// Record paths deleted by client to avoid duplicate sending
+				// 记录客户端已主动删除的路径，避免重复下发
+				cDelFilesKeys[delFile.Path] = struct{}{}
 
 				// 与单条删除入口一致：幂等删除只保留排除记录，不重复广播。
 				if fileSvc.Unchanged {
@@ -880,7 +885,7 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 
 			} else {
 				// 不存在或已删除：仍排除客户端主动删除的路径，但不向其他端广播。
-				cDelFilesKeys[delFile.PathHash] = struct{}{}
+				cDelFilesKeys[delFile.Path] = struct{}{}
 			}
 		}
 	}
@@ -925,7 +930,7 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 				})
 				needModifyCount++
 				// 加入排除索引
-				cDelFilesKeys[fileSvc.PathHash] = struct{}{}
+				cDelFilesKeys[fileSvc.Path] = struct{}{}
 			}
 		}
 	}
@@ -934,7 +939,7 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 	// 遍历服务端文件列表进行处理
 	for _, file := range list {
 		// 如果该文件是客户端刚才通过参数告知删除的，则跳过下发
-		if _, ok := cDelFilesKeys[file.PathHash]; ok {
+		if _, ok := cDelFilesKeys[file.Path]; ok {
 			continue
 		}
 
@@ -944,9 +949,7 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 		if file.Action == "delete" {
 			// Server already deleted, notify client to delete (regardless of whether client has it)
 			// 服务端已删除，通知客户端删除（不再检查客户端是否存在）
-			if _, ok := cFiles[file.PathHash]; ok {
-				delete(cFilesKeys, file.PathHash)
-			}
+			cFiles.take(file.Path, file.PathHash)
 			// 将消息添加到队列
 			messageQueue = append(messageQueue, dto.WSQueuedMessage{
 				Context: params.Context,
@@ -964,10 +967,9 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 
 		} else {
 
-			if cFile, ok := cFiles[file.PathHash]; ok {
+			if cFile, ok := cFiles.take(file.Path, file.PathHash); ok {
 				// Client has this file
 				// 客户端存在该文件
-				delete(cFilesKeys, file.PathHash)
 
 				if file.ContentHash == cFile.ContentHash && file.Mtime == cFile.Mtime {
 					// Content and time match, no action
@@ -1072,10 +1074,9 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 	lastTime = syncStartTime
 	// Handle files that exist on client but not synced on server (request client upload)
 	// 处理客户端存在但服务端未同步的文件（请求客户端上传）
-	if len(cFilesKeys) > 0 {
+	if remaining := cFiles.remaining(); len(remaining) > 0 {
 		hasWritePermission := pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "file_w")
-		for pathHash := range cFilesKeys {
-			file := cFiles[pathHash]
+		for _, file := range remaining {
 			// Create upload session and return FileUpload message
 			// 创建上传会话并返回 FileUpload 消息
 			if hasWritePermission {
@@ -1230,9 +1231,9 @@ func (h *FileWSHandler) handleFileUploadSessionTimeout(c *pkgapp.WebsocketClient
 // handleFileUploadSession initializes a file upload session and returns upload message.
 // handleFileUploadSession 初始化一个文件上传会话并返回上传消息.
 func (h *FileWSHandler) handleFileUploadSessionCreate(c *pkgapp.WebsocketClient, vault, path, pathHash, contentHash string, size, ctime, mtime int64, context string) (*FileUploadBinaryChunkSession, error) {
-	// Check if there is an active session for the same path hash, reuse it if attributes match
-	// 检查是否已存在相同路径哈希的活跃会话，如果属性一致则直接复用
-	if existingSession := c.Server.GetSessionByPathHash(c.User.ID, pathHash); existingSession != nil {
+	// Reuse a session only for the same vault and full path with matching attributes.
+	// 仅复用同一库、同一完整路径且属性一致的会话。
+	if existingSession := c.Server.GetSessionByPathHash(c.User.ID, pathHash, vault, path); existingSession != nil {
 		if session, ok := existingSession.(*FileUploadBinaryChunkSession); ok {
 			if session.ContentHash == contentHash && session.Vault == vault && session.Size == size {
 				h.App.Logger().Info("FileUploadSessionCreate: reusing existing active session for path hash",
@@ -1247,14 +1248,14 @@ func (h *FileWSHandler) handleFileUploadSessionCreate(c *pkgapp.WebsocketClient,
 		}
 	}
 
-	// Clean up any existing stale sessions for the same file path hash to prevent resource leak and duplication
+	// Clean up any existing stale sessions for the same vault and full path to prevent resource leak and duplication
 	h.App.Logger().Info("FileUploadSessionCreate: cleaning existing stale sessions for path hash",
 		zap.String("traceId", c.TraceID),
 		zap.Int64("uid", c.User.UID),
 		zap.String("pathHash", pathHash),
 		zap.String("path", path),
 	)
-	c.Server.CleanSessionsByPathHash(c.User.ID, pathHash)
+	c.Server.CleanSessionsByPathHash(c.User.ID, pathHash, vault, path)
 
 	sessionID := uuid.New().String()
 	h.App.Logger().Info("FileUploadSessionCreate: creating upload session",
