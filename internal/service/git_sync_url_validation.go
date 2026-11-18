@@ -35,9 +35,10 @@ func newGitRepoURLValidator(allowedPrivateHosts []string, lookupIP func(context.
 	return &gitRepoURLValidator{allowedPrivateHosts: allowedPrivateHosts, lookupIP: lookupIP}
 }
 
-// validateRepoURL validates git repository URL format and protocols to prevent file:// and SSRF.
-// Private addresses are allowed only when both the configured host rule and resolved IPs match.
-// validateRepoURL 校验 git 仓库 URL 格式和协议，防止 file:// 及 SSRF；白名单同时约束主机名和 DNS 解析结果。
+// validateRepoURL validates git repository URL format and protocols to prevent file://, unsupported
+// non-HTTP transports, and SSRF. Private addresses are allowed only when both the configured host
+// rule and resolved IPs match.
+// validateRepoURL 校验 git 仓库 URL 格式和协议，仅放行 http/https 以防止 file://、不可用协议及 SSRF；白名单同时约束主机名和 DNS 解析结果。
 func (v *gitRepoURLValidator) validateRepoURL(rawURL string) error {
 	if rawURL == "" {
 		return code.ErrorGitSyncValidateFailed.WithDetails("repository URL is empty")
@@ -48,7 +49,7 @@ func (v *gitRepoURLValidator) validateRepoURL(rawURL string) error {
 	}
 
 	if strings.Contains(rawURL, "@") && strings.Contains(rawURL, ":") && !strings.Contains(rawURL, "://") {
-		return nil
+		return code.ErrorGitSyncValidateFailed.WithDetails("unsupported git protocol: ssh (only http and https are supported)")
 	}
 
 	u, err := url.Parse(rawURL)
@@ -58,13 +59,10 @@ func (v *gitRepoURLValidator) validateRepoURL(rawURL string) error {
 
 	scheme := strings.ToLower(u.Scheme)
 	if scheme == "" {
-		return code.ErrorGitSyncValidateFailed.WithDetails("repository URL must specify protocol (e.g., https/ssh)")
-	}
-	if scheme != "http" && scheme != "https" && scheme != "ssh" && scheme != "git" {
-		return code.ErrorGitSyncValidateFailed.WithDetails("unsupported git protocol: " + scheme)
+		return code.ErrorGitSyncValidateFailed.WithDetails("repository URL must specify protocol (only http and https are supported)")
 	}
 	if scheme != "http" && scheme != "https" {
-		return nil
+		return code.ErrorGitSyncValidateFailed.WithDetails("unsupported git protocol: " + scheme + " (only http and https are supported)")
 	}
 
 	host := u.Hostname()
