@@ -285,6 +285,7 @@ type WebsocketClient struct {
 	clientPlatform      map[string]bool           // Client platform details; access via ClientPlatform() // 客户端平台详情；请通过 ClientPlatform() 访问
 	clientVersion       string                    // Client version number (e.g., "1.2.4"); access via ClientVersion() // 客户端版本号；请通过 ClientVersion() 访问
 	offlineSyncStrategy string                    // Offline device sync strategy "newTimeMerge" | "ignoreTimeMerge"; access via OfflineSyncStrategy() // 离线设备同步策略；请通过 OfflineSyncStrategy() 访问
+	acceptProtobuf      bool                      // pv2 inbound negotiation, guarded by infoMu // pv2 入站协商结果，由 infoMu 保护
 	useProtobuf         bool                      // Whether to use protobuf protocol; access via UseProtobuf() // 是否使用 protobuf 协议；请通过 UseProtobuf() 访问
 	StartTime           timex.Time                // Connection start time // 连接开始时间
 	IsFirstSync         bool                      // Whether it's the first sync // 是否是第一次同步过
@@ -348,12 +349,26 @@ func (c *WebsocketClient) OfflineSyncStrategy() string {
 	return c.offlineSyncStrategy
 }
 
-// UseProtobuf reports whether this connection negotiated the protobuf protocol.
-// UseProtobuf 返回该连接是否已协商使用 protobuf 协议。
+// UseProtobuf reports whether outbound messages use the protobuf protocol.
+// UseProtobuf 返回出站消息是否使用 protobuf 协议。
 func (c *WebsocketClient) UseProtobuf() bool {
 	c.infoMu.RLock()
 	defer c.infoMu.RUnlock()
 	return c.useProtobuf
+}
+
+// acceptsProtobuf also accepts the legacy ClientInfo upgrade's outbound state.
+// acceptsProtobuf 同时兼容旧客户端通过 ClientInfo 设置的协议状态。
+func (c *WebsocketClient) acceptsProtobuf() bool {
+	c.infoMu.RLock()
+	defer c.infoMu.RUnlock()
+	return c.acceptProtobuf || c.useProtobuf
+}
+
+func (c *WebsocketClient) setAcceptProtobuf(accept bool) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	c.acceptProtobuf = accept
 }
 
 // setClientInfo atomically updates all client-reported connection metadata under infoMu,
@@ -371,6 +386,9 @@ func (c *WebsocketClient) setClientInfo(name, clientType, version string, platfo
 	c.clientPlatform = platform
 	c.offlineSyncStrategy = knownOfflineSyncStrategy(offlineSyncStrategy)
 	c.useProtobuf = useProtobuf
+	// ClientInfo completes negotiation; subsequent inbound frames follow its final state.
+	// ClientInfo 完成协商，后续入站帧遵循它最终设置的协议状态。
+	c.acceptProtobuf = false
 }
 
 // knownOfflineSyncStrategy returns the strategy if it is one the sync handlers recognize, and
@@ -491,7 +509,7 @@ func (c *WebsocketClient) BindAndValid(data []byte, obj any) (bool, ValidErrors)
 func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj any) (bool, ValidErrors) {
 	var errs ValidErrors
 
-	if c.UseProtobuf() && c.Server.ProtobufDecoder != nil {
+	if c.acceptsProtobuf() && c.Server.ProtobufDecoder != nil {
 		decoded, err := c.Server.ProtobufDecoder(action, data, obj)
 		if err != nil {
 			errs = append(errs, &ValidError{
@@ -687,7 +705,9 @@ func (c *WebsocketClient) ToResponse(code *code.Code, action ...string) {
 	}
 
 	if c.app.IsReturnSuccess() || actionType != "" || code.Code() > 200 || code.HaveData() || code.HaveDetails() {
-		if c.UseProtobuf() && c.Server.ProtobufEncoder != nil && actionType != "" {
+		// Authorization must stay JSON even if parallel ClientInfo has enabled outbound pb.
+		// 即使并行 ClientInfo 已开启出站 pb，鉴权应答也必须保持 JSON 文本帧。
+		if actionType != "Authorization" && c.UseProtobuf() && c.Server.ProtobufEncoder != nil && actionType != "" {
 			pbBytes, err := c.Server.ProtobufEncoder(actionType, &content)
 			if err == nil {
 				c.writeMessage(gws.OpcodeBinary, pbBytes)
@@ -1275,15 +1295,15 @@ func (w *WebsocketServer) Authorization(c *WebsocketClient, msg *WebSocketMessag
 
 		versionInfo := w.app.Version()
 
-		// Handshake merge (§2.3/§5.1): auth response is always JSON text (useProtobuf is only
-		// ever set by ClientInfo/pv2-early-upgrade, never before this point), so adding keys
-		// here is a plain JSON-object addition — old clients (no pv or pv<2) JSON.parse and
-		// ignore the unknown keys, producing byte-identical output to pre-3.6.0 since the base
-		// four keys never change. Only pv>=2 connections get the negotiation block.
-		// 握手合并（§2.3/§5.1）：auth 响应恒为 JSON 文本（useProtobuf 只会被 ClientInfo/pv2 提前升级设置，
-		// 在此之前绝不会被设置），因此这里加 key 只是普通的 JSON object 加字段——旧客户端（无 pv 或
-		// pv<2）JSON.parse 后忽略未知 key，因为基础四个 key 从不变化，输出与 3.6.0 前逐字节相同。
-		// 只有 pv>=2 的连接才会拿到协商块。
+		// Handshake merge (§2.3/§5.1): auth response is always JSON text (ToResponse keeps the
+		// Authorization frame as JSON even when a parallel ClientInfo already enabled outbound pb),
+		// so adding keys here is a plain JSON-object addition — old clients (no pv or pv<2)
+		// JSON.parse and ignore the unknown keys, producing byte-identical output to pre-3.6.0
+		// since the base four keys never change. Only pv>=2 connections get the negotiation block.
+		// 握手合并（§2.3/§5.1）：auth 响应恒为 JSON 文本（即使并行处理的 ClientInfo 已开启出站 pb，
+		// ToResponse 也保证鉴权帧为 JSON），因此这里加 key 只是普通的 JSON object 加字段——旧客户端
+		// （无 pv 或 pv<2）JSON.parse 后忽略未知 key，因为基础四个 key 从不变化，输出与 3.6.0 前
+		// 逐字节相同。只有 pv>=2 的连接才会拿到协商块。
 		authData := map[string]interface{}{
 			"version":   versionInfo.Version,
 			"gitTag":    versionInfo.GitTag,
@@ -1301,13 +1321,17 @@ func (w *WebsocketServer) Authorization(c *WebsocketClient, msg *WebSocketMessag
 			authData["pipelineWindowUp"] = pipelineWindowUp
 			authData["pipelineWindowDown"] = pipelineWindowDown
 			authData["protobufAck"] = protobufAck
+			// Publish inbound acceptance before the peer can see protobufAck.
+			// 在客户端能看到 protobufAck 前发布入站接受状态，关闭并行处理窗口。
+			c.setAcceptProtobuf(protobufAck)
 		}
 
 		c.ToResponse(code.Success.WithData(authData), "Authorization")
 
-		// pb 提前升级：必须在 auth 响应发出之后才切换，确保该响应本身仍以 JSON 文本帧发送
-		// (early pb upgrade must happen strictly after the auth response is sent, so that
-		// response itself is always transmitted as a JSON text frame).
+		// Auth's outbound switch follows the response write; parallel ClientInfo may already
+		// have enabled pb. ToResponse explicitly keeps the auth frame as JSON in either case.
+		// 鉴权流程在应答写完后切换出站协议；并行 ClientInfo 可能已开启 pb，
+		// 两种情况下 ToResponse 都显式保证鉴权帧为 JSON。
 		if c.ProtoVersion >= 2 {
 			c.setUseProtobuf(protobufAck)
 		}
@@ -1832,8 +1856,8 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 				return
 			}
 		} else if prefix == "pb" {
-			if !c.UseProtobuf() {
-				log(LogWarn, "WS OnMessage received Protobuf but UseProtobuf is false", zap.String("uid", uid))
+			if c.User == nil || !c.acceptsProtobuf() {
+				log(LogWarn, "WS OnMessage received Protobuf without authenticated negotiation", zap.String("uid", uid))
 				return
 			}
 			if w.EnvelopeDecoder == nil {

@@ -955,6 +955,11 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 				// 记录客户端已主动删除的 PathHash，避免重复下发
 				cDelNotesKeys[delNote.PathHash] = struct{}{}
 
+				// 与单条删除入口一致：幂等删除只保留排除记录，不重复广播。
+				if note.Unchanged {
+					continue
+				}
+
 				// Broadcast deletion to other clients
 				// 将删除消息广播给其他客户端
 				// 异步 fire-and-forget：DB 删除已在上面同步完成，广播只用于通知其他设备，
@@ -976,33 +981,8 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 				})
 
 			} else {
-				// Note does not exist, but we still need to record exclusion and broadcast delete message to ensure data consistency
-				// 笔记不存在，但仍需记录排除并广播删除消息，以确保数据一致性
-
-				h.App.Logger().Debug("websocket_router.note.NoteSync.noteSvc.Get check failed (not found or already deleted), broadcasting delete anyway",
-					zap.String(logger.FieldTraceID, c.TraceID),
-					zap.String("pathHash", delNote.PathHash))
-
-				// Record PathHash
-				// 记录 PathHash
+				// 不存在或已删除：仍排除客户端主动删除的路径，但不向其他端广播。
 				cDelNotesKeys[delNote.PathHash] = struct{}{}
-
-				// Broadcast deletion with available info (Path/PathHash)
-				// 使用现有信息(Path/PathHash)广播删除
-				// 同上，异步 fire-and-forget，避免逐条等待广播
-				// Same as above, async fire-and-forget, avoids waiting on the broadcast per item
-				safego.Go(h.App.Logger(), func() {
-					c.BroadcastResponse(code.Success.WithData(
-						dto.NoteSyncDeleteMessage{
-							Path:             delNote.Path,
-							PathHash:         delNote.PathHash,
-							Ctime:            0,
-							Mtime:            0,
-							Size:             0,
-							UpdatedTimestamp: 0,
-						},
-					).WithVault(params.Vault), true, NoteSyncDelete)
-				})
 			}
 		}
 	}

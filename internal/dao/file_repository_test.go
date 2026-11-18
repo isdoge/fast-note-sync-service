@@ -142,3 +142,34 @@ func TestFileRepository_Update_RenameFailure_AbortsBeforeDBWrite(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, "content-hash-b-v1", got.ContentHash, "DB row must not have been overwritten when rename failed")
 }
+
+// TestFileRepository_Update_UploadMovesTempFile 验证非删除更新仍将上传临时文件移动到标准路径。
+func TestFileRepository_Update_UploadMovesTempFile(t *testing.T) {
+	fileRepo, cleanup := setupFileRepoTestEnv(t)
+	defer cleanup()
+	ctx := context.Background()
+	created, err := fileRepo.Create(ctx, &domain.File{
+		VaultID: 1, Path: "upload.png", PathHash: "upload-hash",
+		ContentHash: "old-hash", Action: domain.FileActionCreate,
+	}, 1)
+	require.NoError(t, err)
+	finalPath := created.SavePath
+	tempPath := filepath.Join(t.TempDir(), "upload.dat")
+	require.NoError(t, os.WriteFile(tempPath, []byte("new content"), 0600))
+	created.SavePath = tempPath
+	created.Action = domain.FileActionModify
+	created.ContentHash = "new-hash"
+
+	updated, err := fileRepo.Update(ctx, created, 1)
+	require.NoError(t, err)
+	require.Equal(t, finalPath, updated.SavePath)
+	content, err := os.ReadFile(finalPath)
+	require.NoError(t, err)
+	require.Equal(t, "new content", string(content))
+	_, err = os.Stat(tempPath)
+	require.True(t, os.IsNotExist(err), "临时文件应已移动")
+	stored, err := fileRepo.GetByPathHash(ctx, created.PathHash, 1, 1)
+	require.NoError(t, err)
+	require.Equal(t, "new-hash", stored.ContentHash)
+	require.Equal(t, domain.FileActionModify, stored.Action)
+}
