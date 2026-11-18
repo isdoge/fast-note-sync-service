@@ -3,6 +3,7 @@ package mcp_router
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
@@ -85,6 +86,20 @@ func checkPermission(ctx context.Context, function string) error {
 		return fmt.Errorf("permission denied: %s", function)
 	}
 	return nil
+}
+
+// checkPermissionAny passes when at least one of the functions is permitted.
+// Used by read paths that several restricted read-only token shapes must keep
+// working (e.g. vault_list accepts vault_r, note_r or file_r).
+// checkPermissionAny 任一功能点有权限即通过。用于多种受限只读令牌都必须
+// 继续可用的读路径（例如 vault_list 接受 vault_r、note_r 或 file_r）。
+func checkPermissionAny(ctx context.Context, functions ...string) error {
+	for _, function := range functions {
+		if err := checkPermission(ctx, function); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("permission denied: %s", strings.Join(functions, "|"))
 }
 
 // checkVaultAccess verifies whether the target vault is permitted by the token's vault allowlist.

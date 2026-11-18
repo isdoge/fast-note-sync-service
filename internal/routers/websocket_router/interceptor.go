@@ -47,6 +47,26 @@ func checkAuth(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, logger i
 	return true
 }
 
+// vaultOptionalMessageTypes lists receive actions whose payloads are
+// user-level and carry no vault field. For these, a vault-restricted token is
+// still allowed to proceed (the message simply has nothing to check). Every
+// other message type MUST carry a vault field when the token is restricted:
+// omitting it no longer bypasses the restriction (B11).
+// vaultOptionalMessageTypes 列出负载属于用户级、不带 vault 字件的接收动作。
+// 对这些动作，受限令牌仍可继续（消息本身没有可校验的库）。其它消息类型在
+// 令牌受限时必须携带 vault 字段，缺字段不再绕过限制（B11）。
+var vaultOptionalMessageTypes = map[WebSocketReceiveAction]struct{}{
+	// Connection lifecycle messages handled before business interceptors; kept
+	// here for completeness so the guard stays explicit if routing changes.
+	// 连接生命周期消息在业务拦截器之前处理；此处显式列出以便路由变化时
+	// 守卫仍然明确。
+	ClientReceiveInfo:    {},
+	ClientReceiveAuth:    {},
+	VaultFileMsgType:     {}, // binary frames: session-bound, vault checked at session creation
+	SettingReceiveCheck:  {}, // per-item check payload is user-level (path only)
+	SettingReceiveRePush: {}, // per-item repush payload is user-level (path only)
+}
+
 // checkVaultAccess 针对活跃 WebSocket 连接校验笔记库访问权限限制。
 // checkVaultAccess validates that the requested vault is within the client's allowed scope.
 func checkVaultAccess(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, logger interface {
@@ -59,7 +79,17 @@ func checkVaultAccess(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, l
 		Vault string `json:"vault"`
 	}
 	if err := json.Unmarshal(msg.Data, &vaultInfo); err != nil || vaultInfo.Vault == "" {
-		return true
+		if _, optional := vaultOptionalMessageTypes[msg.Type]; optional {
+			return true
+		}
+		// A restricted token must not reach vault-scoped handlers by omitting
+		// the vault field; fail closed instead of passing through (B11).
+		// 受限令牌不得靠省略 vault 字段进入库级处理；直接拒绝而不是放行（B11）。
+		logger.Warn("WS OnMessage Vault Missing",
+			zap.String("Type", msg.Type),
+			zap.String("uid", c.User.ID))
+		c.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: missing vault"), msg.Type+"Ack")
+		return false
 	}
 	if !util.VerifyVaultAccess(c.Vaults, vaultInfo.Vault) {
 		logger.Warn("WS OnMessage Vault Restricted",

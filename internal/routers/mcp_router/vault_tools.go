@@ -35,7 +35,10 @@ func registerVaultTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		mcp.WithOutputSchema[mcpVaultListOutput](),
 	)
 	srv.AddTool(readOnlyMCPTool(toolListVaults, cfg, "vaults:read"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := checkPermission(ctx, "note_r"); err != nil {
+		// Any read capability is enough: a token restricted to note or file
+		// read-only access must still be able to discover vaults.
+		// 任一读权限即可：仅限笔记或附件只读的令牌也必须能发现库。
+		if err := checkPermissionAny(ctx, "vault_r", "note_r", "file_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		uid, uidErr := requireMCPUID(ctx)
@@ -85,7 +88,7 @@ func registerVaultTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		mcp.WithOutputSchema[mcpVaultOutput](),
 	)
 	srv.AddTool(readOnlyMCPTool(toolGetVault, cfg, "vaults:read"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := checkPermission(ctx, "note_r"); err != nil {
+		if err := checkPermissionAny(ctx, "vault_r", "note_r", "file_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		uid, uidErr := requireMCPUID(ctx)
@@ -119,8 +122,11 @@ func registerVaultTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		mcp.WithNumber("id", mcp.Description("Vault ID for update. Omit or 0 to create new vault.")),
 		mcp.WithOutputSchema[mcpVaultMutationOutput](),
 	)
-	srv.AddTool(writeMCPTool(toolCreateUpdateVault, cfg, false, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := checkPermission(ctx, "note_w"); err != nil {
+	srv.AddTool(writeMCPTool(toolCreateUpdateVault, cfg, false, "vaults:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Vault create/rename is a vault-level destructive operation and
+		// requires the dedicated vault_w capability, not just note_w.
+		// 库的新建/改名是库级操作，需要专属的 vault_w 能力，不再是 note_w。
+		if err := checkPermission(ctx, "vault_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		uid, uidErr := requireMCPUID(ctx)
@@ -177,8 +183,8 @@ func registerVaultTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		mcp.WithNumber("id", mcp.Required(), mcp.Description("Vault ID")),
 		mcp.WithOutputSchema[mcpVaultMutationOutput](),
 	)
-	srv.AddTool(writeMCPTool(toolDeleteVault, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := checkPermission(ctx, "note_w"); err != nil {
+	srv.AddTool(writeMCPTool(toolDeleteVault, cfg, true, "vaults:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if err := checkPermission(ctx, "vault_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		uid, uidErr := requireMCPUID(ctx)

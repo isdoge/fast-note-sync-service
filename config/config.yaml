@@ -504,6 +504,14 @@ oauth:
   # 映射默认的主笔记库 (Vault) 名称
   # Default vault name to map
   default-vault-name: ""
+  # OAuth 鉴权的 MCP 可访问的笔记库白名单。
+  # 默认空 = 不限制（映射用户的所有库）；配置后 OAuth 连接器只能访问列出的库。
+  # 仅影响 OAuth 鉴权路径，静态令牌按令牌自身的库限制。
+  # Vault allowlist for OAuth-authenticated MCP access.
+  # Empty by default = unrestricted (all vaults of the mapped user); once
+  # configured, OAuth connectors can only access the listed vaults.
+  # Affects the OAuth path only; static tokens keep their own vault limits.
+  vaults: []
   # 默认的 FNS 权限作用域范围
   # Default FNS scope
   default-fns-scope: ""

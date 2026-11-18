@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,12 +49,16 @@ func runMCPMixedAuthMiddleware(t *testing.T, cfg config.OAuthConfig, tokenServic
 		DefaultClient:        cfg.DefaultClient,
 		DefaultClientName:    cfg.DefaultClientName,
 		DefaultClientVersion: cfg.DefaultClientVersion,
+		OAuthVaults:          strings.Join(cfg.Vaults, ","),
 	}))
 	router.Any("/api/mcp", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"uid":    pkgapp.GetUID(c),
-			"scope":  c.GetString("scope"),
-			"client": c.GetHeader("X-Client"),
+			"uid":        pkgapp.GetUID(c),
+			"scope":      c.GetString("scope"),
+			"client":     c.GetHeader("X-Client"),
+			"vaults":     c.GetString("vaults"),
+			"issueType":  c.GetInt("token_issue_type"),
+			"clientType": c.GetString("token_client_type"),
 		})
 	})
 
@@ -169,4 +174,59 @@ func TestRequiredOAuthScopes_UsesConfiguredScopesWithoutDefaultFNSScope(t *testi
 	})
 
 	assert.Equal(t, []string{"notes:read"}, got)
+}
+
+// #3：OAuth 鉴权路径注入 oauth.vaults 白名单；默认空 = 不限制。
+func TestMCPMixedAuthWithConfig_OAuthInjectsConfiguredVaults(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/mcp", nil)
+	req.Header.Set("Authorization", "Bearer oauth-token")
+
+	recorder := runMCPMixedAuthMiddleware(t, config.OAuthConfig{
+		Enabled:       true,
+		Resource:      "https://example.test/api/mcp",
+		DefaultClient: "ChatGPT",
+		Vaults:        []string{"vault-a", "vault-b"},
+	}, validMCPStaticTokenService(), &fakeMCPOAuthVerifier{claims: &MCPOAuthClaims{
+		UID:   7,
+		Scope: "p:mcp c:ChatGPT f:note_r",
+	}}, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"vaults":"vault-a,vault-b"`)
+}
+
+func TestMCPMixedAuthWithConfig_OAuthEmptyVaultsUnrestricted(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/mcp", nil)
+	req.Header.Set("Authorization", "Bearer oauth-token")
+
+	recorder := runMCPMixedAuthMiddleware(t, config.OAuthConfig{
+		Enabled:       true,
+		Resource:      "https://example.test/api/mcp",
+		DefaultClient: "ChatGPT",
+	}, validMCPStaticTokenService(), &fakeMCPOAuthVerifier{claims: &MCPOAuthClaims{
+		UID:   7,
+		Scope: "p:mcp c:ChatGPT f:note_r",
+	}}, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"vaults":""`)
+}
+
+// B8：OAuth 分支同样注入令牌类型与客户端类型。
+func TestMCPMixedAuthWithConfig_OAuthInjectsTokenAttributes(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/mcp", nil)
+	req.Header.Set("Authorization", "Bearer oauth-token")
+	req.Header.Set("X-Client", "ChatGPT")
+
+	recorder := runMCPMixedAuthMiddleware(t, config.OAuthConfig{
+		Enabled:  true,
+		Resource: "https://example.test/api/mcp",
+	}, validMCPStaticTokenService(), &fakeMCPOAuthVerifier{claims: &MCPOAuthClaims{
+		UID:   7,
+		Scope: "p:mcp c:ChatGPT f:note_r",
+	}}, req)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"issueType":0`)
+	assert.Contains(t, recorder.Body.String(), `"clientType":"ChatGPT"`)
 }

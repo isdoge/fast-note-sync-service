@@ -47,6 +47,10 @@ type MCPMixedAuthConfig struct {
 	// StrictEmptyProtocol 拒绝协议维度为空的 scope，不再当通配处理
 	// （security.strict-empty-protocol）。
 	StrictEmptyProtocol bool
+	// OAuthVaults is the vault allowlist injected for OAuth-authenticated
+	// requests (oauth.vaults). Empty means unrestricted.
+	// OAuthVaults 是 OAuth 鉴权请求注入的库白名单（oauth.vaults）。空 = 不限制。
+	OAuthVaults string
 }
 
 func MCPOAuthWithConfig(oauthCfg config.OAuthConfig, secretKey string, tokenService service.TokenService, userRepo domain.UserRepository) gin.HandlerFunc {
@@ -67,6 +71,7 @@ func MCPOAuthWithConfigStrict(oauthCfg config.OAuthConfig, secretKey string, tok
 		DefaultClientName:    oauthCfg.DefaultClientName,
 		DefaultClientVersion: oauthCfg.DefaultClientVersion,
 		StrictEmptyProtocol:  strictEmptyProtocol,
+		OAuthVaults:          strings.Join(oauthCfg.Vaults, ","),
 	})
 }
 
@@ -156,6 +161,20 @@ func MCPMixedAuthWithConfig(secretKey string, tokenService service.TokenService,
 
 		c.Set("user_token", &pkgapp.UserEntity{UID: uid})
 		c.Set("scope", scope)
+		// Inject the configured OAuth vault allowlist; empty means all vaults
+		// of the mapped user (existing connectors keep working).
+		// 注入配置的 OAuth 库白名单；空表示映射用户的全部库
+		// （现有连接器不受影响）。
+		c.Set("vaults", cfg.OAuthVaults)
+		// Keep token attributes consistent with the static-token branch (B8):
+		// OAuth tokens are not database rows, so issue type 0 marks
+		// "not a login/manual DB token" and the client type comes from the
+		// verified headers above.
+		// 与静态令牌分支保持一致的令牌属性注入（B8）：OAuth 令牌不是数据库
+		// 行，issue type 用 0 表示"非登录/手动库内令牌"，客户端类型来自上方
+		// 已校验的请求头。
+		c.Set("token_issue_type", 0)
+		c.Set("token_client_type", c.GetHeader("X-Client"))
 		c.Next()
 	}
 }
