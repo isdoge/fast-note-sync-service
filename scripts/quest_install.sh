@@ -22,16 +22,25 @@ GITHUB_SCRIPT_URL="https://raw.githubusercontent.com/isdoge/fast-note-sync-servi
 SUDO=""
 
 # --- Color system // 颜色系统 ---
-_RED=$(tput setaf 1)
-_GREEN=$(tput setaf 2)
-_YELLOW=$(tput setaf 3)
-_BLUE=$(tput setaf 4)
-_MAGENTA=$(tput setaf 5)
-_CYAN=$(tput setaf 6)
-_BOLD=$(tput bold)
-_ITALIC=$(tput sitm)
-_DIM=$(tput dim)
-_RESET=$(tput sgr0)
+# 非交互/无 TTY 环境 (如 ssh 远程执行) 下 tput 不可用，颜色置空
+_init_colors() {
+    if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+        _RED=$(tput setaf 1 2>/dev/null || echo "")
+        _GREEN=$(tput setaf 2 2>/dev/null || echo "")
+        _YELLOW=$(tput setaf 3 2>/dev/null || echo "")
+        _BLUE=$(tput setaf 4 2>/dev/null || echo "")
+        _MAGENTA=$(tput setaf 5 2>/dev/null || echo "")
+        _CYAN=$(tput setaf 6 2>/dev/null || echo "")
+        _BOLD=$(tput bold 2>/dev/null || echo "")
+        _ITALIC=$(tput sitm 2>/dev/null || echo "")
+        _DIM=$(tput dim 2>/dev/null || echo "")
+        _RESET=$(tput sgr0 2>/dev/null || echo "")
+    else
+        _RED=""; _GREEN=""; _YELLOW=""; _BLUE=""
+        _MAGENTA=""; _CYAN=""; _BOLD=""; _ITALIC=""; _DIM=""; _RESET=""
+    fi
+}
+_init_colors
 
 # --- Visual decorations // 视觉装饰 ---
 _INFO="  [i] "
@@ -626,8 +635,9 @@ start_service() {
         return
     fi
     step "$L_STARTING (nohup)"
-    # 保持 bash -c 包装以解决重定向权限问题
-    $SUDO bash -c "set -m; cd $INSTALL_DIR && nohup $BIN_PATH run >> $LOG_FILE 2>&1 &"
+    # 保持 bash -c 包装以解决重定向权限问题；子 shell + </dev/null 确保后台进程不继承
+    # ssh 会话的 stdin/stdout，否则远程非交互执行时 ssh 会一直等待通道 EOF
+    $SUDO bash -c "set -m; cd $INSTALL_DIR && (nohup $BIN_PATH run </dev/null >> $LOG_FILE 2>&1 &)"
     
     sleep 2
     if pgrep -f "$BIN_PATH" >/dev/null 2>&1; then
@@ -747,7 +757,14 @@ install_self() {
         src_url="$GITHUB_SCRIPT_URL"
     fi
     
-    if [ -n "$src_url" ]; then
+    if [ -n "$src_url" ] && [ -f "$src_url" ]; then
+        # 参数是本地脚本文件时直接复制（离线/远程部署场景）
+        if [ ! "$src_url" -ef "$INSTALLER_SELF_PATH" ]; then
+            step "$L_CP_SCRIPT"
+            $SUDO mkdir -p "$(dirname "$INSTALLER_SELF_PATH")"
+            $SUDO cp -f "$src_url" "$INSTALLER_SELF_PATH"
+        fi
+    elif [ -n "$src_url" ]; then
         step "$L_DL_SCRIPT"
         $SUDO mkdir -p "$(dirname "$INSTALLER_SELF_PATH")"
         $SUDO curl -fsSL "$src_url" -o "$INSTALLER_SELF_PATH" || { error "$L_ERR_DL_SCRIPT"; return 1; }
@@ -858,7 +875,12 @@ install_cmd() {
     fi
     install_binary_from_tar "$tarball"
     save_version "$ver"
-    install_self >&2
+    # 非交互模式优先复制当前脚本，避免离线环境还要从 GitHub 下载
+    if [ "$NONINTERACTIVE" -eq 1 ] && [ -f "$0" ]; then
+        install_self "$0" >&2
+    else
+        install_self >&2
+    fi
     
     # Enable auto-start by default on install/update
     enable_autostart

@@ -103,9 +103,9 @@ if [ -n "$SSH_KEY" ]; then
     SSH_OPTS+=(-i "$SSH_KEY")
 fi
 
-SSH_CTRL_DIR="$(mktemp -d)"
-SSH_CTRL="$SSH_CTRL_DIR/cm-%r@%h:%p"
-cleanup() { ssh -o ControlPath="$SSH_CTRL" -O exit "$SSH_USER@$HOST" -p "$SSH_PORT" >/dev/null 2>&1 || true; rm -rf "$SSH_CTRL_DIR"; }
+# ControlMaster socket 路径必须足够短 (macOS Unix domain socket 上限约 104 字节)
+SSH_CTRL="/tmp/fns-rd-%r@%h:%p.$$"
+cleanup() { ssh -o ControlPath="$SSH_CTRL" -O exit "$SSH_USER@$HOST" -p "$SSH_PORT" >/dev/null 2>&1 || true; rm -f "$SSH_CTRL".* 2>/dev/null || true; }
 trap cleanup EXIT
 
 SSH_BASE=(ssh "${SSH_OPTS[@]}" -o ControlMaster=auto -o ControlPersist=300 -o ControlPath="$SSH_CTRL" -p "$SSH_PORT" "$SSH_USER@$HOST")
@@ -131,18 +131,40 @@ fi
 ok "SSH 连接成功: $SSH_USER@$HOST:$SSH_PORT"
 
 # --- 远端环境检查 ---
-REMOTE_INFO="$(run_ssh 'echo "$(uname -m)|$(cat /etc/os-release 2>/dev/null | grep ^ID= | cut -d= -f2 || echo unknown)|$(id -u)|$(command -v sudo >/dev/null 2>&1 && echo sudo || echo none)|$(command -v systemctl >/dev/null 2>&1 && echo systemd || echo none)')" \
-    || die "无法读取远端系统信息"
-IFS='|' read -r REMOTE_ARCH REMOTE_OS REMOTE_UID HAS_SUDO HAS_SYSTEMD <<< "$REMOTE_INFO"
-ok "远端系统: ${REMOTE_OS:-unknown} ($REMOTE_ARCH), systemd: $HAS_SYSTEMD"
+# 探测脚本先上传再执行，避免多层引号嵌套被远端 shell 二次解析
+probe_remote() {
+    run_scp -q "$PROBE_LOCAL" "$SSH_USER@$HOST:/tmp/fns-probe.sh" || return 1
+    run_ssh "bash /tmp/fns-probe.sh; rm -f /tmp/fns-probe.sh"
+}
+PROBE_LOCAL="$(mktemp)"
+cat > "$PROBE_LOCAL" <<'PROBE'
+arch="$(uname -m)"
+kernel="$(uname -s)"
+os="$(grep '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 || echo unknown)"
+uid="$(id -u)"
+if command -v sudo >/dev/null 2>&1; then hassudo=sudo; else hassudo=none; fi
+if command -v systemctl >/dev/null 2>&1; then hassys=systemd; else hassys=none; fi
+echo "$kernel|$arch|$os|$uid|$hassudo|$hassys"
+PROBE
+REMOTE_INFO="$(probe_remote)" || { rm -f "$PROBE_LOCAL"; die "无法读取远端系统信息"; }
+rm -f "$PROBE_LOCAL"
+IFS='|' read -r REMOTE_KERNEL REMOTE_ARCH REMOTE_OS REMOTE_UID HAS_SUDO HAS_SYSTEMD <<< "$REMOTE_INFO"
+ok "远端系统: ${REMOTE_OS:-unknown}/$REMOTE_KERNEL ($REMOTE_ARCH), systemd: $HAS_SYSTEMD"
 
-[ "$REMOTE_OS" = "linux" ] || die "远端不是 Linux 系统，本脚本仅支持 Linux 服务器"
+[ "$REMOTE_KERNEL" = "Linux" ] || die "远端不是 Linux 系统，本脚本仅支持 Linux 服务器"
+SUDO_CMD=""
 if [ "$REMOTE_UID" != "0" ]; then
     [ "$HAS_SUDO" = "sudo" ] || die "远端用户 $SSH_USER 不是 root 且没有 sudo，无法安装"
-    warn "远端用户 $SSH_USER 不是 root，将通过 sudo 执行"
+    # sudo -n 探测是否需要密码；需要密码时给 ssh 加 -tt 让 sudo 能交互提示
+    if run_ssh "sudo -n true >/dev/null 2>&1"; then
+        warn "远端用户 $SSH_USER 不是 root，将通过免密 sudo 执行"
+    elif [ -t 0 ]; then
+        warn "远端用户 $SSH_USER 不是 root，sudo 需要密码，将在执行时提示输入"
+        SSH_BASE+=(-tt)
+    else
+        die "远端用户 $SSH_USER 不是 root 且 sudo 需要密码，而当前环境无法交互输入；请改用 root 登录或配置 sudo 免密 (NOPASSWD)"
+    fi
     SUDO_CMD="sudo"
-else
-    SUDO_CMD=""
 fi
 
 # 已安装检测
@@ -173,21 +195,23 @@ if [ "$DEPLOY_MODE" = "binary" ]; then
     fi
 
     step "上传安装脚本与安装包..."
-    run_ssh "$SUDO_CMD mkdir -p $INSTALL_DIR" || die "远端创建 $INSTALL_DIR 失败"
-    run_scp -q "$INSTALLER" "$SSH_USER@$HOST:/tmp/fns-quest_install.sh" || die "上传 quest_install.sh 失败"
+    REMOTE_TMP="$(run_ssh "mktemp -d /tmp/fns-rd.XXXXXX")" || die "远端创建临时目录失败"
+    run_scp -q "$INSTALLER" "$SSH_USER@$HOST:$REMOTE_TMP/quest_install.sh" || die "上传 quest_install.sh 失败"
 
     REMOTE_TARBALL_ARG=""
     if [ -n "$TARBALL" ]; then
-        run_scp -q "$TARBALL" "$SSH_USER@$HOST:/tmp/fns-package.tar.gz" || die "上传安装包失败"
-        REMOTE_TARBALL_ARG="--tarball /tmp/fns-package.tar.gz"
+        # 保留原始文件名，quest_install.sh 依赖包名推断版本号
+        run_scp -q "$TARBALL" "$SSH_USER@$HOST:$REMOTE_TMP/$(basename "$TARBALL")" || die "上传安装包失败"
+        REMOTE_TARBALL_ARG="--tarball $REMOTE_TMP/$(basename "$TARBALL")"
     fi
 
+    # 安装与自启注册合并为一次远端执行：sudo 需要密码时只提示一次
+    AUTOSTART_ARG=""
+    [ "$HAS_SYSTEMD" = "systemd" ] && AUTOSTART_ARG="&& bash $REMOTE_TMP/quest_install.sh enable-autostart"
     step "远端执行非交互安装..."
-    run_ssh "$SUDO_CMD bash /tmp/fns-quest_install.sh install --yes $REMOTE_TARBALL_ARG" \
+    run_ssh "$SUDO_CMD bash $REMOTE_TMP/quest_install.sh install --yes $REMOTE_TARBALL_ARG $AUTOSTART_ARG" \
         || die "远端安装失败（已完成的步骤: 环境检查、上传）"
-    if [ "$HAS_SYSTEMD" = "systemd" ]; then
-        run_ssh "$SUDO_CMD bash /tmp/fns-quest_install.sh enable-autostart" >/dev/null || warn "注册 systemd 自启失败"
-    fi
+    run_ssh "rm -rf '$REMOTE_TMP'" || true
 else
     step "部署方式: Docker Compose"
     run_ssh "command -v docker >/dev/null 2>&1" || die "远端没有安装 docker（请先安装 docker，本脚本不会擅自安装）"
@@ -225,7 +249,9 @@ if [ "$DEPLOY_MODE" = "binary" ] && [ -n "$HTTP_PORT" ]; then
     if [ "$HAS_SYSTEMD" = "systemd" ]; then
         run_ssh "$SUDO_CMD systemctl restart fast-note.service || true"
     else
-        run_ssh "$SUDO_CMD pkill -f $INSTALL_DIR/fast-note-sync-service || true; $SUDO_CMD bash -c 'cd $INSTALL_DIR && nohup $INSTALL_DIR/fast-note-sync-service run >> /var/log/fast-note.log 2>&1 &'" || true
+        # set -m + 子 shell + </dev/null：脱离会话进程组避免 ssh 断开时被 SIGHUP，且不继承 ssh 通道
+        # pkill 用 ^ 锚定，防止匹配到携带同样路径的 ssh 会话命令行而误杀自身
+        run_ssh "$SUDO_CMD pkill -f '^$INSTALL_DIR/fast-note-sync-service run' || true; sleep 1; $SUDO_CMD bash -c 'set -m; cd $INSTALL_DIR && (nohup ./fast-note-sync-service run </dev/null >> /var/log/fast-note.log 2>&1 &)'" || true
     fi
 fi
 
@@ -248,7 +274,7 @@ ok "健康检查通过，服务已就绪"
 ok "访问地址: http://$HOST:$HEALTH_PORT"
 
 # --- 收尾提示 ---
-run_ssh "rm -f /tmp/fns-quest_install.sh /tmp/fns-package.tar.gz" || true
+run_ssh "rm -rf /tmp/fns-rd.* 2>/dev/null" || true
 
 cat <<EOF
 
