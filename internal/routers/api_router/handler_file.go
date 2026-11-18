@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
+	"github.com/haierkeys/fast-note-sync-service/internal/domain"
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	"github.com/haierkeys/fast-note-sync-service/internal/middleware"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
@@ -288,6 +289,16 @@ func (h *FileHandler) Get(c *gin.Context) {
 
 	if file == nil {
 		response.ToResponse(code.ErrorNoteNotFound)
+		return
+	}
+
+	// A soft-deleted row is "not on the server" unless the caller asks for the recycle bin:
+	// the response carries no action field, so a tombstone would look like a live file whose
+	// size/mtime/hash still match (clients use this to decide whether a local copy can go).
+	// 未指定 isRecycle 时，软删除记录视为"服务端不存在"：响应里没有 action 字段，墓碑会被当成
+	// 大小、时间、哈希都对得上的正常文件（客户端据此判断本地副本能否清理）。
+	if !params.IsRecycle && file.Action == string(domain.FileActionDelete) {
+		response.ToResponse(code.ErrorFileNotFound)
 		return
 	}
 

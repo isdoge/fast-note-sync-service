@@ -71,6 +71,36 @@ func TestFileHandler_Get_Success(t *testing.T) {
 	assertResponseCode(t, w, code.Success.Code())
 }
 
+// TestFileHandler_Get_TombstoneIsNotFound verifies a soft-deleted row is reported as missing
+// unless the recycle bin is requested.
+// TestFileHandler_Get_TombstoneIsNotFound 软删除记录在未指定 isRecycle 时按"不存在"返回，
+// 否则墓碑会被当成大小、时间、哈希都匹配的正常文件。
+func TestFileHandler_Get_TombstoneIsNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{"default", "", code.ErrorFileNotFound.Code()},
+		{"isRecycle=false", "&isRecycle=false", code.ErrorFileNotFound.Code()},
+		{"isRecycle=true", "&isRecycle=true", code.Success.Code()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mockSvc := new(svcmocks.MockFileService)
+			mockSvc.On("Get", mock.Anything, int64(1), mock.AnythingOfType("*dto.FileGetRequest")).
+				Return(&dto.FileDTO{ID: 1, Path: "file1.jpg", PathHash: "h1", Size: 3, Mtime: 1700000000000, ContentHash: "c1", Action: "delete"}, nil)
+
+			handler := newTestFileHandler(mockSvc)
+			c, w := newFileTestContext("GET", "/api/file/info?vault=main&path=file1.jpg"+tc.query, "", 1)
+
+			handler.Get(c)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			assertResponseCode(t, w, tc.want)
+		})
+	}
+}
+
 // TestFileHandler_List_Success verifies successful file list fetch
 // TestFileHandler_List_Success 验证成功获取文件列表
 func TestFileHandler_List_Success(t *testing.T) {

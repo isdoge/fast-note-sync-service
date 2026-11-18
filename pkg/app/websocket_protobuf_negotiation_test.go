@@ -282,3 +282,56 @@ func TestWebsocketProtobufNegotiation_LegacyClientInfo(t *testing.T) {
 	require.True(t, c.UseProtobuf())
 	require.Equal(t, "legacy", c.ClientName())
 }
+
+// TestWebsocketProtobufNegotiation_JSONTextFrameOnProtobufConnection 已协商 Protobuf 的连接上，
+// 客户端降级时发来的 JSON 文本帧必须按 JSON 处理：ClientInfo(protobuf=false) 要能关闭本连接的
+// Protobuf 并以文本帧应答，而不是被当成 Protobuf 解码失败拒绝。
+func TestWebsocketProtobufNegotiation_JSONTextFrameOnProtobufConnection(t *testing.T) {
+	w, c, _, frames := newNegotiationClient(t)
+	c.User = &UserEntity{UID: 1}
+	c.setAcceptProtobuf(true)
+	c.setUseProtobuf(true)
+	encoded := make(chan string, 4)
+	installNegotiationHooks(w, encoded)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		dispatchNegotiation(w, c, gws.OpcodeText, []byte(`ClientInfo|{"name":"fallback","type":"desktop","version":"1.0","protobuf":false}`))
+	}()
+	select {
+	case frame := <-frames:
+		require.Equal(t, gws.OpcodeText, frame.opcode, "downgrade must be answered as a JSON text frame: %s", frame.data)
+		_, payload, ok := bytes.Cut(frame.data, []byte("|"))
+		require.True(t, ok, "unexpected reply %s", frame.data)
+		var res struct {
+			Code int `json:"code"`
+		}
+		require.NoError(t, json.Unmarshal(payload, &res))
+		require.Equal(t, code.Success.Code(), res.Code)
+	case <-time.After(time.Second):
+		t.Fatal("ClientInfo downgrade got no reply")
+	}
+	<-done
+	require.False(t, c.UseProtobuf())
+	require.False(t, c.acceptsProtobuf())
+	require.Equal(t, "fallback", c.ClientName())
+	require.Empty(t, encoded, "nothing may be Protobuf-encoded after the downgrade")
+}
+
+func TestIsJSONObjectPayload(t *testing.T) {
+	inner, err := proto.Marshal(&v1.ClientInfoMessage{Name: "{\"a\":1}", Protobuf: true})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		data []byte
+		want bool
+	}{
+		{[]byte(`{"protobuf":false}`), true},
+		{[]byte(`{}`), true},
+		{[]byte(`{not json`), false},
+		{[]byte(`[1,2]`), false},
+		{nil, false},
+		{inner, false},
+	} {
+		require.Equal(t, tc.want, isJSONObjectPayload(tc.data), "%q", tc.data)
+	}
+}

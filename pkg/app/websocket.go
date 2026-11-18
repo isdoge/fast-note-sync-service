@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	stdjson "encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -498,6 +499,16 @@ func (c *WebsocketClient) ClearAllDiffMergePaths() int {
 	return count
 }
 
+// isJSONObjectPayload reports whether a message payload is a JSON object rather than Protobuf.
+// A proto3 message never starts with '{' (0x7B is the tag of a field-15 start-group, which
+// proto3 does not emit), so a leading '{' plus valid JSON identifies a text-frame payload.
+// isJSONObjectPayload 判断载荷是 JSON 对象而不是 Protobuf。proto3 消息不会以 '{' 开头
+// （0x7B 是 15 号字段的 start-group 标签，proto3 不产生），首字节为 '{' 且整体是合法 JSON
+// 即可认定为文本帧载荷。
+func isJSONObjectPayload(data []byte) bool {
+	return len(data) > 0 && data[0] == '{' && stdjson.Valid(data)
+}
+
 // WebSocket version of parameter binding and validation utility functions based on global validator
 // 基于全局验证器的 WebSocket 版本参数绑定和验证工具函数
 func (c *WebsocketClient) BindAndValid(data []byte, obj any) (bool, ValidErrors) {
@@ -509,7 +520,13 @@ func (c *WebsocketClient) BindAndValid(data []byte, obj any) (bool, ValidErrors)
 func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj any) (bool, ValidErrors) {
 	var errs ValidErrors
 
-	if c.acceptsProtobuf() && c.Server.ProtobufDecoder != nil {
+	// A Protobuf connection may still receive JSON text frames: the client's fallback after a
+	// decode failure and its ClientInfo(protobuf=false) downgrade are sent as "Action|{json}".
+	// Handlers only see the payload, so tell the two apart here instead of forcing Protobuf.
+	// 已协商 Protobuf 的连接仍会收到 JSON 文本帧：客户端解码失败后的降级、关闭 Protobuf 时发的
+	// ClientInfo(protobuf=false) 都是 "Action|{json}"。处理函数只拿到载荷，这里按内容区分，
+	// 不能一律按 Protobuf 解码（否则降级帧被拒绝，连接卡死）。
+	if c.acceptsProtobuf() && c.Server.ProtobufDecoder != nil && !isJSONObjectPayload(data) {
 		decoded, err := c.Server.ProtobufDecoder(action, data, obj)
 		if err != nil {
 			errs = append(errs, &ValidError{
@@ -1364,7 +1381,9 @@ func (w *WebsocketServer) ClientInfo(c *WebsocketClient, msg *WebSocketMessage) 
 	// 原子更新全部连接元数据，避免并发读方看到只更新了一部分字段的中间状态
 	// Atomically update all connection metadata, avoiding concurrent readers observing a partially-updated state
 	c.setClientInfo(info.Name, info.Type, info.Version, platform, info.OfflineSyncStrategy, useProtobuf)
+	c.DiffMergePathsMu.Lock()
 	c.DiffMergePaths = make(map[string]DiffMergeEntry)
+	c.DiffMergePathsMu.Unlock()
 	if c.OfflineSyncStrategy() != info.OfflineSyncStrategy {
 		log(LogWarn, "WS ClientInfo unknown offlineSyncStrategy, falling back to default strategy",
 			zap.String("offlineSyncStrategy", info.OfflineSyncStrategy),
