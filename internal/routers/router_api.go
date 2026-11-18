@@ -114,6 +114,24 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 			// 版本源延迟探测（需认证：会触发真实的外部网络请求）
 			auth.GET("/version/probe", versionHandler.ProbeSources)
 
+			// Admin status check: any authenticated token may call; reports
+			// whether the caller is the effective admin so clients (Obsidian
+			// plugin's upgrade dialog) can decide whether to show admin-only
+			// features. Vault restrictions do not apply (user-level route).
+			// 管理员状态查询：任何已认证令牌均可调用，报告调用者是否为生效
+			// 管理员，供客户端（Obsidian 插件的升级对话框）决定是否展示
+			// 管理员专属功能。不适用库限制（用户级路由）。
+			auth.GET("/admin/check", adminControlHandler.CheckAdmin)
+
+			// Server self-upgrade: stays in the plain auth group for client
+			// compatibility (WebGUI login tokens and admin-owned manual tokens
+			// with config_w both work). The handler requires the effective
+			// admin; the route function is classified as config write.
+			// 服务端自升级：为兼容既有客户端保留在普通鉴权组（WebGUI 登录令牌
+			// 与管理员名下含 config_w 的手动令牌均可使用）。handler 内部要求
+			// 生效管理员；路由功能点归类为配置写。
+			auth.GET("/admin/upgrade", adminControlHandler.Upgrade)
+
 			auth.GET("/user/info", userHandler.UserInfo)
 			auth.POST("/oauth/stytch/authorize/start", stytchOAuthHandler.AuthorizeStart)
 			auth.POST("/oauth/stytch/authorize/submit", stytchOAuthHandler.AuthorizeSubmit)
@@ -208,13 +226,13 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 
 				// Admin system control moved from the plain auth group into the
 				// WebGUI group: manual API tokens (p:rest) must not be able to
-				// trigger self-upgrade/restart or manage WS clients, and
-				// /api/admin/check only reports admin status (no admin needed).
+				// manage WS clients. /api/admin/check and /api/admin/upgrade
+				// stay in the plain auth group for client compatibility (see
+				// the comments there).
 				// 管理系统控制接口从普通鉴权组移入 WebGUI 组：手动 API 令牌
-				// （p:rest）不得触发自升级/重启或管理 WS 客户端；
-				// /api/admin/check 仅报告是否管理员（不要求管理员）。
-				webguiGroup.GET("/admin/check", adminControlHandler.CheckAdmin)
-				webguiGroup.GET("/admin/upgrade", adminControlHandler.Upgrade)
+				// （p:rest）不得管理 WS 客户端。/api/admin/check 与
+				// /api/admin/upgrade 为兼容既有客户端保留在普通鉴权组
+				// （见上方注释）。
 				webguiGroup.GET("/admin/ws_clients", adminControlHandler.GetWSClients)
 				webguiGroup.DELETE("/admin/ws_client/:traceId", adminControlHandler.KickWSClient)
 

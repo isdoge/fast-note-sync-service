@@ -293,6 +293,24 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 	case strings.HasPrefix(path, "/api/oauth/stytch/"):
 		return "", nil
 
+	// ---------------- Admin status & upgrade (plain group) ----------------
+	// /api/admin/check only reports whether the caller is the effective admin:
+	// no function point (any authenticated token may ask). /api/admin/upgrade
+	// is classified as a config write: together with the effective-admin check
+	// in the handler this admits WebGUI login tokens (f:*) and admin-owned
+	// manual tokens carrying config_w, and rejects restricted tokens with only
+	// note/file scopes. Vault restrictions do not apply to either route — the
+	// upgrade handler does not touch vault data and check is user-level.
+	// /api/admin/check 仅报告调用者是否为生效管理员：无功能点（任何已认证
+	// 令牌均可查询）。/api/admin/upgrade 归类为配置写：配合 handler 内部的
+	// 生效管理员校验，WebGUI 登录令牌（f:*）与管理员名下含 config_w 的手动
+	// 令牌可用，仅笔记/附件权限的受限令牌被拒。两个接口均不适用库限制：
+	// 升级 handler 不触碰库内数据，check 属用户级。
+	case path == "/api/admin/check":
+		return "", nil
+	case path == "/api/admin/upgrade":
+		return "config_w", nil
+
 	// ---------------- WebGUI group ----------------
 	// Routes mounted under the WebGUI group are additionally guarded by
 	// RequireWebGUI (login token + webgui client) and, for admin routes, the
