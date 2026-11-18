@@ -38,7 +38,10 @@ func registerVaultTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 
 		vaults, err := vaultSvc.List(ctx, uid)
 		if err != nil {
@@ -85,7 +88,10 @@ func registerVaultTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		id := getInt64Arg(args, "id")
 
@@ -117,7 +123,10 @@ func registerVaultTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vaultName, _ := args["vault"].(string)
 		id := getInt64Arg(args, "id")
@@ -172,7 +181,10 @@ func registerVaultTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		id := getInt64Arg(args, "id")
 

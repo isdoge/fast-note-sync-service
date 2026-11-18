@@ -147,6 +147,15 @@ func NewServer(runEnv *runFlags) (*Server, error) {
 	}
 	s.app = app
 
+	// AdminUID not set: log how the effective admin is resolved so operators
+	// notice the fallback (smallest existing UID) instead of assuming everyone
+	// is admin. Explicit configuration is recommended.
+	// 未配置 AdminUID：打日志说明当前按“现存最小 UID 用户”认定管理员，
+	// 建议显式配置，避免误以为仍是“人人都是管理员”的旧行为。
+	if appConfig.User.AdminUID == 0 {
+		s.logger.Warn("user.admin-uid is 0: the user with the smallest existing UID is treated as admin; set user.admin-uid explicitly to pin the administrator")
+	}
+
 	// Auto-execute migration tasks (using injected config)
 	// 自动执行迁移任务（使用注入的配置）
 	if err := upgrade.Execute(

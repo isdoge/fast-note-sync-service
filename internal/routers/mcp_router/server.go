@@ -11,13 +11,27 @@ import (
 	mcpsrv "github.com/mark3labs/mcp-go/server"
 )
 
-func getUIDFromContext(ctx context.Context) int64 {
+// requireMCPUID resolves the authenticated uid from the request context.
+// Unlike the legacy helper it returns 0 instead of silently defaulting to
+// uid=1 (the first user): a path that reaches a tool without authentication
+// context must fail loudly instead of acting on the first user's data.
+// requireMCPUID 从请求上下文解析已认证的 uid。
+// 与旧实现不同，取不到时返回 0 而不是静默回退到 uid=1（首个用户）：
+// 未经认证上下文却进入工具处理的路径必须显式失败，而不是操作第一个用户的数据。
+func requireMCPUID(ctx context.Context) (int64, error) {
 	if val := ctx.Value("uid"); val != nil {
-		if uid, ok := val.(int64); ok {
-			return uid
+		if uid, ok := val.(int64); ok && uid > 0 {
+			return uid, nil
 		}
 	}
-	return 1
+	return 0, fmt.Errorf("permission denied: missing authenticated user context")
+}
+
+// getUIDFromContext keeps the historical name for read-only lookup.
+// getUIDFromContext 保留原有名称用于只读查询（无认证上下文时返回 0）。
+func getUIDFromContext(ctx context.Context) int64 {
+	uid, _ := requireMCPUID(ctx)
+	return uid
 }
 
 func getClientInfoFromContext(ctx context.Context) (string, string, string) {

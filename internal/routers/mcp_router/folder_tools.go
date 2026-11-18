@@ -28,7 +28,10 @@ func registerFolderTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkga
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {

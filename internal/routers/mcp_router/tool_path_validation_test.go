@@ -49,6 +49,13 @@ func newMCPTestServer(t *testing.T, noteSvc *svcmocks.MockNoteService, fileSvc *
 	return srv
 }
 
+// mcpTestAuthContext 构造带已认证 uid 的上下文，模拟通过 MCP 鉴权后的请求。
+// mcpTestAuthContext builds a context with an authenticated uid, simulating a
+// request that passed MCP authentication.
+func mcpTestAuthContext() context.Context {
+	return context.WithValue(context.Background(), "uid", int64(1))
+}
+
 // callMCPTool 通过 JSON-RPC 调用工具并返回 CallToolResult。
 func callMCPTool(ctx context.Context, srv *mcpsrv.MCPServer, name string, args map[string]any) (*mcp.CallToolResult, error) {
 	payload, err := json.Marshal(map[string]any{
@@ -126,7 +133,7 @@ func TestMCPNoteCreateOrUpdate_PathCleaning(t *testing.T) {
 			newNoteModifyCapture(t, noteSvc, capture)
 
 			srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-			result, err := callMCPTool(context.Background(), srv, "note_create_or_update", map[string]any{
+			result, err := callMCPTool(mcpTestAuthContext(), srv, "note_create_or_update", map[string]any{
 				"path": tt.input, "content": "hello",
 			})
 			require.NoError(t, err)
@@ -156,7 +163,7 @@ func TestMCPNoteCreateOrUpdate_RejectsBadPath(t *testing.T) {
 				Return(false, nil, fmt.Errorf("must not be called")).Times(0)
 
 			srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-			result, err := callMCPTool(context.Background(), srv, "note_create_or_update", map[string]any{
+			result, err := callMCPTool(mcpTestAuthContext(), srv, "note_create_or_update", map[string]any{
 				"path": bad, "content": "hello",
 			})
 			require.NoError(t, err)
@@ -184,7 +191,7 @@ func TestMCPFileWrite_PathCleaning(t *testing.T) {
 		Return(false, &dto.FileDTO{Path: "images/pic.png"}, nil)
 
 	srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-	result, err := callMCPTool(context.Background(), srv, "file_write", map[string]any{
+	result, err := callMCPTool(mcpTestAuthContext(), srv, "file_write", map[string]any{
 		"path": "/images/pic.png", "content": "",
 	})
 	require.NoError(t, err)
@@ -203,7 +210,7 @@ func TestMCPFileWrite_RejectsBadPath(t *testing.T) {
 			fileSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(fileSvc)
 
 			srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-			result, err := callMCPTool(context.Background(), srv, "file_write", map[string]any{
+			result, err := callMCPTool(mcpTestAuthContext(), srv, "file_write", map[string]any{
 				"path": bad, "content": "",
 			})
 			require.NoError(t, err)
@@ -230,7 +237,7 @@ func TestMCPFolderDelete_PathCleaning(t *testing.T) {
 		Return(&dto.FolderDTO{Path: "projects"}, nil)
 
 	srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-	result, err := callMCPTool(context.Background(), srv, "folder_delete", map[string]any{
+	result, err := callMCPTool(mcpTestAuthContext(), srv, "folder_delete", map[string]any{
 		"path": "/projects",
 	})
 	require.NoError(t, err)
@@ -238,7 +245,7 @@ func TestMCPFolderDelete_PathCleaning(t *testing.T) {
 	assert.Equal(t, "projects", captured)
 
 	// 越界路径必须被拒
-	result, err = callMCPTool(context.Background(), srv, "folder_delete", map[string]any{
+	result, err = callMCPTool(mcpTestAuthContext(), srv, "folder_delete", map[string]any{
 		"path": "../projects",
 	})
 	require.NoError(t, err)
@@ -266,7 +273,7 @@ func TestMCPNoteRename_BothPathsCleaned(t *testing.T) {
 		Return(oldNote, newNote, nil)
 
 	srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-	result, err := callMCPTool(context.Background(), srv, "note_rename", map[string]any{
+	result, err := callMCPTool(mcpTestAuthContext(), srv, "note_rename", map[string]any{
 		"oldPath": "/old", "newPath": "/sub/new",
 	})
 	require.NoError(t, err)
@@ -294,7 +301,7 @@ func TestMCPNoteRename_ExtensionlessOldPath(t *testing.T) {
 		Return(&dto.NoteDTO{Path: "folder/foo"}, &dto.NoteDTO{Path: "folder/foo.md"}, nil)
 
 	srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-	result, err := callMCPTool(context.Background(), srv, "note_rename", map[string]any{
+	result, err := callMCPTool(mcpTestAuthContext(), srv, "note_rename", map[string]any{
 		"oldPath": "folder/foo", "newPath": "folder/foo",
 	})
 	require.NoError(t, err)
@@ -327,7 +334,7 @@ func TestMCPNoteTools_OtherWriteToolsValidate(t *testing.T) {
 			case "note_patch_frontmatter":
 				args["updates"] = "{}"
 			}
-			result, err := callMCPTool(context.Background(), srv, tool, args)
+			result, err := callMCPTool(mcpTestAuthContext(), srv, tool, args)
 			require.NoError(t, err)
 			assert.True(t, result.IsError, "%s must reject traversal path", tool)
 		})
@@ -342,7 +349,7 @@ func TestMCPNoteTools_OtherWriteToolsValidate(t *testing.T) {
 		noteSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(noteSvc)
 
 		srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-		result, err := callMCPTool(context.Background(), srv, "note_recycle_clear", map[string]any{
+		result, err := callMCPTool(mcpTestAuthContext(), srv, "note_recycle_clear", map[string]any{
 			"path": "../../etc",
 		})
 		require.NoError(t, err)
@@ -360,7 +367,7 @@ func TestMCPNoteTools_OtherWriteToolsValidate(t *testing.T) {
 			fileSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(fileSvc)
 
 			srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-			result, err := callMCPTool(context.Background(), srv, tool, map[string]any{
+			result, err := callMCPTool(mcpTestAuthContext(), srv, tool, map[string]any{
 				"path": "../etc/passwd",
 			})
 			require.NoError(t, err)
@@ -374,7 +381,7 @@ func TestMCPNoteTools_OtherWriteToolsValidate(t *testing.T) {
 		vaultSvc := new(svcmocks.MockVaultService)
 		fileSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(fileSvc)
 		srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-		result, err := callMCPTool(context.Background(), srv, "file_rename", map[string]any{
+		result, err := callMCPTool(mcpTestAuthContext(), srv, "file_rename", map[string]any{
 			"oldPath": "a.png", "newPath": "../b.png",
 		})
 		require.NoError(t, err)
@@ -400,7 +407,7 @@ func TestMCPNoteDelete_ExtensionlessPath(t *testing.T) {
 		Return(&dto.NoteDTO{Path: "folder/foo", PathHash: "h"}, nil)
 
 	srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-	result, err := callMCPTool(context.Background(), srv, "note_delete", map[string]any{
+	result, err := callMCPTool(mcpTestAuthContext(), srv, "note_delete", map[string]any{
 		"path": "folder/foo",
 	})
 	require.NoError(t, err)
@@ -427,7 +434,7 @@ func TestMCPNoteAppend_AcceptsOrdinaryFilenames(t *testing.T) {
 				Return(&dto.NoteDTO{Path: p}, nil)
 
 			srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
-			result, err := callMCPTool(context.Background(), srv, "note_append", map[string]any{
+			result, err := callMCPTool(mcpTestAuthContext(), srv, "note_append", map[string]any{
 				"path": p, "content": "x",
 			})
 			require.NoError(t, err)

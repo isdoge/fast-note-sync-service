@@ -110,13 +110,6 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 			auth.POST("/share/short_link", shareHandler.CreateShortLink)
 			auth.GET("/shares", shareHandler.List)
 
-			// Admin config interface
-			// 管理员配置接口
-			auth.GET("/admin/upgrade", adminControlHandler.Upgrade)
-			auth.GET("/admin/check", adminControlHandler.CheckAdmin)
-			auth.GET("/admin/ws_clients", adminControlHandler.GetWSClients)
-			auth.DELETE("/admin/ws_client/:traceId", adminControlHandler.KickWSClient)
-
 			// Version source latency probe (auth required: triggers real outbound requests)
 			// 版本源延迟探测（需认证：会触发真实的外部网络请求）
 			auth.GET("/version/probe", versionHandler.ProbeSources)
@@ -194,8 +187,8 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.POST("/vault/rebuild-index", vaultHandler.RebuildIndex)
 				webguiGroup.POST("/vault/force-delete-item", vaultHandler.ForceDeleteDataItem)
 
-				// Admin config interface
-				// 管理员配置接口
+				// Admin config interface (effective admin required)
+				// 管理员配置接口（需生效管理员）
 				webguiGroup.GET("/admin/config", adminControlHandler.GetConfig)
 				webguiGroup.POST("/admin/config", adminControlHandler.UpdateConfig)
 				webguiGroup.GET("/admin/config/user_database", adminControlHandler.GetUserDatabaseConfig)
@@ -212,6 +205,18 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.GET("/admin/users/list", adminControlHandler.GetUsers)
 				webguiGroup.POST("/admin/users/create", adminControlHandler.CreateUser)
 				webguiGroup.POST("/admin/users/update", adminControlHandler.UpdateUser)
+
+				// Admin system control moved from the plain auth group into the
+				// WebGUI group: manual API tokens (p:rest) must not be able to
+				// trigger self-upgrade/restart or manage WS clients, and
+				// /api/admin/check only reports admin status (no admin needed).
+				// 管理系统控制接口从普通鉴权组移入 WebGUI 组：手动 API 令牌
+				// （p:rest）不得触发自升级/重启或管理 WS 客户端；
+				// /api/admin/check 仅报告是否管理员（不要求管理员）。
+				webguiGroup.GET("/admin/check", adminControlHandler.CheckAdmin)
+				webguiGroup.GET("/admin/upgrade", adminControlHandler.Upgrade)
+				webguiGroup.GET("/admin/ws_clients", adminControlHandler.GetWSClients)
+				webguiGroup.DELETE("/admin/ws_client/:traceId", adminControlHandler.KickWSClient)
 
 				// Storage management routes
 				// 存储配置接口
