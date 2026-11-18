@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
@@ -14,6 +15,36 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// enableLocalGitRepoPaths enables local remotes only for this test's service, restoring on cleanup.
+// enableLocalGitRepoPaths 只对当前测试的服务实例放行本地远端，测试结束后恢复。
+func enableLocalGitRepoPaths(t *testing.T, svc *gitSyncService) {
+	t.Helper()
+	previous := svc.allowLocalRepoPathsForTest.Swap(true)
+	t.Cleanup(func() { svc.allowLocalRepoPathsForTest.Store(previous) })
+}
+
+func TestGitSyncProtocolValidation_LocalPathsTestSwitch(t *testing.T) {
+	t.Parallel()
+	svc := newTestGitSyncService(new(domainmocks.MockGitSyncRepository))
+	other := newTestGitSyncService(new(domainmocks.MockGitSyncRepository))
+	rawURLs := []string{t.TempDir(), "repo.git", "./x", "../x"}
+
+	t.Run("enabled", func(t *testing.T) {
+		enableLocalGitRepoPaths(t, svc)
+		for _, rawURL := range rawURLs {
+			require.NoError(t, svc.repoURLValidator().validateRepoURL(rawURL))
+			require.Error(t, other.repoURLValidator().validateRepoURL(rawURL), "switch must be instance scoped")
+			require.Error(t, validateRepoURL(rawURL, nil), "default validator must stay closed")
+		}
+		for _, rawURL := range []string{"file:///x", "git@example.com:repo.git", "ssh://git@example.com/repo.git"} {
+			require.Error(t, svc.repoURLValidator().validateRepoURL(rawURL))
+		}
+	})
+	for _, rawURL := range rawURLs {
+		require.Error(t, svc.repoURLValidator().validateRepoURL(rawURL), "cleanup must restore default rejection")
+	}
+}
 
 func TestGitSyncProtocolValidation_RejectsNonHTTPProtocols(t *testing.T) {
 	restoreLookup := installGitRepoLookupForTest(gitRepoTestLookup(map[string][]string{
@@ -30,7 +61,7 @@ func TestGitSyncProtocolValidation_RejectsNonHTTPProtocols(t *testing.T) {
 	}{
 		{name: "https allowed", rawURL: "https://example.com/repo.git", wantAllow: true},
 		{name: "http allowed", rawURL: "http://example.com/repo.git", wantAllow: true},
-		{name: "local path allowed for tests", rawURL: t.TempDir(), wantAllow: true},
+		{name: "local path rejected by default", rawURL: t.TempDir(), wantAllow: false},
 		{name: "git scheme rejected", rawURL: "git://example.com/repo.git", wantAllow: false},
 		{name: "git scheme uppercase rejected", rawURL: "GIT://127.0.0.1/repo.git", wantAllow: false},
 		{name: "ssh scheme rejected", rawURL: "ssh://git@example.com/repo.git", wantAllow: false},
@@ -49,6 +80,63 @@ func TestGitSyncProtocolValidation_RejectsNonHTTPProtocols(t *testing.T) {
 			require.Equal(t, code.ErrorGitSyncValidateFailed.Code(), tokenErrorCode(t, err))
 			require.Contains(t, err.Error(), "http")
 		})
+	}
+}
+
+func TestGitSyncProtocolValidation_RejectsLocalPathsByDefault(t *testing.T) {
+	for _, rawURL := range []string{t.TempDir(), "repo.git", "./x", "../x", "file:///x", "https:repo.git"} {
+		t.Run(rawURL, func(t *testing.T) {
+			err := validateRepoURL(rawURL, nil)
+			require.Error(t, err)
+			require.Equal(t, code.ErrorGitSyncValidateFailed.Code(), tokenErrorCode(t, err))
+			if rawURL == "file:///x" {
+				require.Contains(t, err.Error(), "unsupported git protocol: file")
+			} else {
+				require.Contains(t, err.Error(), "repository URL must specify protocol (only http and https are supported)")
+			}
+		})
+	}
+}
+
+func TestGitSyncService_RejectsLocalPathsAtEveryEntry(t *testing.T) {
+	for _, rawURL := range []string{filepath.Join(t.TempDir(), "missing.git"), "missing.git", "./x", "../x", "file:///x"} {
+		for _, entry := range []string{"create", "update", "validate", "execute", "sync"} {
+			t.Run(entry+"/"+rawURL, func(t *testing.T) {
+				ctx := context.Background()
+				conf := &domain.GitSyncConfig{ID: 1, UID: 1, RepoURL: rawURL}
+				repo := new(domainmocks.MockGitSyncRepository)
+				repo.On("GetByID", mock.Anything, conf.ID, conf.UID).Return(conf, nil)
+				repo.On("Save", mock.Anything, mock.Anything, conf.UID).Return(&domain.GitSyncConfig{}, nil)
+				repo.On("CreateHistory", mock.Anything, mock.Anything, conf.UID).Return(&domain.GitSyncHistory{}, nil)
+				svc := newTestGitSyncService(repo)
+				t.Cleanup(func() { require.NoError(t, svc.Shutdown(ctx)) })
+
+				var err error
+				switch entry {
+				case "create", "update":
+					params := &dto.GitSyncConfigRequest{RepoURL: rawURL}
+					if entry == "update" {
+						params.ID = conf.ID
+					}
+					_, err = svc.UpdateConfig(ctx, conf.UID, params)
+				case "validate":
+					err = svc.Validate(ctx, &dto.GitSyncValidateRequest{RepoURL: rawURL})
+				case "execute":
+					err = svc.ExecuteSync(ctx, conf.UID, conf.ID)
+				case "sync":
+					err = svc.doSync(ctx, conf)
+				}
+				require.Error(t, err)
+				require.Equal(t, code.ErrorGitSyncValidateFailed.Code(), tokenErrorCode(t, err))
+				if rawURL == "file:///x" {
+					require.Contains(t, err.Error(), "unsupported git protocol: file")
+				} else {
+					require.Contains(t, err.Error(), "repository URL must specify protocol (only http and https are supported)")
+				}
+				repo.AssertNotCalled(t, "Save", mock.Anything, mock.Anything, mock.Anything)
+				repo.AssertNotCalled(t, "CreateHistory", mock.Anything, mock.Anything, mock.Anything)
+			})
+		}
 	}
 }
 

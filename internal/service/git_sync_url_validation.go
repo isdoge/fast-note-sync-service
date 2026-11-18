@@ -24,8 +24,9 @@ var gitRepoHTTPClientsMu sync.Mutex
 var errGitRepoPrivateNetwork = errors.New("private network access not allowed for repository URL")
 
 type gitRepoURLValidator struct {
-	allowedPrivateHosts []string
-	lookupIP            func(context.Context, string, string) ([]net.IP, error)
+	allowedPrivateHosts    []string
+	lookupIP               func(context.Context, string, string) ([]net.IP, error)
+	allowLocalPathsForTest bool
 }
 
 func newGitRepoURLValidator(allowedPrivateHosts []string, lookupIP func(context.Context, string, string) ([]net.IP, error)) *gitRepoURLValidator {
@@ -43,13 +44,13 @@ func (v *gitRepoURLValidator) validateRepoURL(rawURL string) error {
 	if rawURL == "" {
 		return code.ErrorGitSyncValidateFailed.WithDetails("repository URL is empty")
 	}
-	if !strings.Contains(rawURL, "://") && !(strings.Contains(rawURL, "@") && strings.Contains(rawURL, ":")) {
-		// Local paths are not network requests and are already supported by existing sync tests.
-		return nil
-	}
-
-	if strings.Contains(rawURL, "@") && strings.Contains(rawURL, ":") && !strings.Contains(rawURL, "://") {
-		return code.ErrorGitSyncValidateFailed.WithDetails("unsupported git protocol: ssh (only http and https are supported)")
+	if !strings.Contains(rawURL, "://") {
+		// Local remotes are allowed only by an instance-scoped test switch; never allow SCP.
+		// 本地远端仅供实例级测试开关使用；SCP 地址始终拒绝。
+		if v.allowLocalPathsForTest && !(strings.Contains(rawURL, "@") && strings.Contains(rawURL, ":")) {
+			return nil
+		}
+		return code.ErrorGitSyncValidateFailed.WithDetails("repository URL must specify protocol (only http and https are supported)")
 	}
 
 	u, err := url.Parse(rawURL)
@@ -235,7 +236,9 @@ func (s *gitSyncService) repoURLValidator() *gitRepoURLValidator {
 	if s.gitConf != nil {
 		allowed = s.gitConf.AllowedPrivateHosts
 	}
-	return newGitRepoURLValidator(allowed, nil)
+	validator := newGitRepoURLValidator(allowed, nil)
+	validator.allowLocalPathsForTest = s.allowLocalRepoPathsForTest.Load()
+	return validator
 }
 
 func installGitRepoLookupForTest(lookup func(context.Context, string, string) ([]net.IP, error)) func() {

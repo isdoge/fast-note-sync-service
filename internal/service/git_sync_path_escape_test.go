@@ -142,12 +142,23 @@ func TestProcessNotesBatch_RejectsSymlinkTarget(t *testing.T) {
 // 带连续点号、百分号、冒号（非 Windows）的笔记名都必须能导出。
 func TestSafeWorkspacePath_AllowsOrdinaryNames(t *testing.T) {
 	ws := t.TempDir()
-	names := []string{"等等...md", "a..b.md", "100%.md", "notes/To be continued...md"}
+	names := []string{"等等...md", "a..b.md", "100%.md", "notes/To be continued...md",
+		".gitignore", ".github/workflows/a.yml", "notes/a.git", ".gitkeep"}
 	if runtime.GOOS != "windows" {
 		names = append(names, "Q: what.md")
 	}
 	for _, name := range names {
 		_, err := safeWorkspacePath(ws, name)
 		require.NoError(t, err, name)
+	}
+}
+
+func TestSafeWorkspacePath_RejectsGitAliases(t *testing.T) {
+	ws := t.TempDir()
+	for _, name := range []string{".GIT/config", ".Git/hooks/x", "a/.gIt/b", ".git./config", ".git /config", "a/.GiT. ./config"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := safeWorkspacePath(ws, name)
+			require.ErrorIs(t, err, errWorkspacePathEscapes)
+		})
 	}
 }

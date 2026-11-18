@@ -15,13 +15,14 @@ var errWorkspacePathEscapes = errors.New("workspace path escapes or targets .git
 // safeWorkspacePath 把 DB 里的相对路径解析为工作区内的绝对路径，并校验：
 //  1. 不是绝对路径；
 //  2. Clean 后不以 ".." 越出工作区；
-//  3. 任何一级路径段都不是 ".git"（防止改写工作区 Git 配置，service#342 S-8）；
+//  3. 任何一级路径段忽略大小写与末尾点、空格后都不是 ".git"（防止改写 Git 配置，service#342 S-8）；
 //  4. 工作区内已存在的父目录经符号链接解析后仍在工作区内（远端仓库可能带符号链接）。
 //
 // 失败时返回 errWorkspacePathEscapes 包装的具体原因；调用方应跳过该条目并记警告，
 // 不要让整次同步失败。
 // safeWorkspacePath resolves rel against wsPath, rejecting absolute paths, ".." escapes,
-// any ".git" segment, and symlinked parents that resolve outside the workspace.
+// any ".git" segment (case-insensitive, ignoring trailing dots/spaces), and symlinked
+// parents that resolve outside the workspace.
 func safeWorkspacePath(wsPath, rel string) (string, error) {
 	if rel == "" {
 		return "", fmt.Errorf("%w: empty path", errWorkspacePathEscapes)
@@ -41,9 +42,9 @@ func safeWorkspacePath(wsPath, rel string) (string, error) {
 		return "", fmt.Errorf("%w: path escapes workspace %q", errWorkspacePathEscapes, rel)
 	}
 
-	// 任何一级为 .git 都拒绝，包括 a/.git/b 与 .git 本身。
+	// 任何一级为 .git 都拒绝；同时防御大小写不敏感与 Windows 忽略末尾点、空格的别名。
 	for _, seg := range strings.Split(clean, string(filepath.Separator)) {
-		if seg == ".git" {
+		if strings.EqualFold(strings.TrimRight(seg, ". "), ".git") {
 			return "", fmt.Errorf("%w: .git segment in %q", errWorkspacePathEscapes, rel)
 		}
 	}
