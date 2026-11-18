@@ -10,6 +10,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -85,6 +86,27 @@ func (h *WSHandler) logWarn(c *pkgapp.WebsocketClient, method string, fields ...
 	}
 	allFields := append([]zap.Field{zap.String("traceId", traceID)}, fields...)
 	h.App.Logger().Warn(method, allFields...)
+}
+
+// cleanWSPath normalizes a vault-relative path for WebSocket write entry points:
+// strips leading "/" and rejects empty, absolute, ".." and NUL paths via
+// util.ValidatePath (#342 S-8). Backslashes are not converted.
+// cleanWSPath 为 WebSocket 写入口规范化库相对路径：去掉前导 "/"，并用
+// util.ValidatePath 拒绝空路径、绝对路径、".." 与 NUL（#342 S-8）。
+// 反斜杠不做转换。
+func cleanWSPath(path string) (string, bool) {
+	return util.CleanVaultPath(path)
+}
+
+// cleanWSNotePath additionally appends ".md" (case-insensitive) to note paths
+// so notes synced to Obsidian are visible markdown files (#244).
+// cleanWSNotePath 额外给笔记路径补 ".md" 后缀（大小写不敏感）（#244）。
+func cleanWSNotePath(path string) (string, bool) {
+	cleaned, ok := util.CleanVaultPath(path)
+	if !ok {
+		return "", false
+	}
+	return util.EnsureMDExt(cleaned), true
 }
 
 // extractMsgMeta extracts context/vault/path from raw WebSocket JSON payload for error tracing.

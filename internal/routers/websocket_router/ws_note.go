@@ -83,6 +83,14 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
 
+	// 校验并清洗路径：去前导 "/"、拒绝越界与 NUL、保证笔记以 .md 结尾（#342 S-8, #244）
+	cleaned, ok := cleanWSNotePath(params.Path)
+	if !ok {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
+		return
+	}
+	params.Path = cleaned
+
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "NoteModify", params.Path, params.Vault)
 
 	ctx := c.Context()
@@ -604,6 +612,14 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		return
 	}
 
+	// 校验并清洗路径（#342 S-8, #244）
+	cleaned, ok := cleanWSNotePath(params.Path)
+	if !ok {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
+		return
+	}
+	params.Path = cleaned
+
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "NoteDelete", params.Path, params.Vault)
 
 	ctx := c.Context()
@@ -669,6 +685,16 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		h.respondErrorWithData(c, code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()), errs, errs.MapsToString(), "websocket_router.note.NoteRename.BindAndValid", msg)
 		return
 	}
+
+	// 校验并清洗新旧两个路径（#342 S-8, #244）
+	newPath, ok := cleanWSNotePath(params.Path)
+	oldPath, okOld := cleanWSNotePath(params.OldPath)
+	if !ok || !okOld {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
+		return
+	}
+	params.Path = newPath
+	params.OldPath = oldPath
 
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "NoteRename", params.Path, params.Vault)
 
