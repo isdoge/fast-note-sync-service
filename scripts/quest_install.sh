@@ -204,6 +204,14 @@ load_lang() {
         L_AUTO_WIN="Windows 暂不支持自动配置服务，请手动添加计划任务。"
         L_AUTO_DONE="开机自启配置完成"
         L_AUTO_FAIL="开机自启配置失败"
+
+        L_USAGE_OPTIONS="选项"
+        L_OPT_YES="跳过确认提示，非交互执行 (卸载时不再询问)"
+        L_OPT_TARBALL="使用本地 tar.gz 安装包安装，不从 GitHub 下载"
+        L_MENU_NONINTERACTIVE="非交互模式下不可使用交互菜单，请使用子命令 (见 --help)"
+        L_ERR_NO_TARBALL="指定的本地安装包不存在"
+        L_TARBALL_MODE="使用本地安装包"
+        L_ERR_CONFIRM_REQUIRED="此操作需要确认：重新加上 --yes 参数执行"
     else
         L_MENU_1="Install / Update Service"
         L_MENU_1_D="Download service and install manager to system"
@@ -285,6 +293,14 @@ load_lang() {
         L_AUTO_WIN="Windows does not support auto-service config yet. Please add manually."
         L_AUTO_DONE="Auto-start configured successfully"
         L_AUTO_FAIL="Auto-start configuration failed"
+
+        L_USAGE_OPTIONS="Options"
+        L_OPT_YES="skip confirmation prompts, run non-interactively"
+        L_OPT_TARBALL="install from a local tar.gz package instead of GitHub download"
+        L_MENU_NONINTERACTIVE="Interactive menu is unavailable in non-interactive mode; use a subcommand (see --help)"
+        L_ERR_NO_TARBALL="specified local tarball does not exist"
+        L_TARBALL_MODE="Using local package"
+        L_ERR_CONFIRM_REQUIRED="this operation requires confirmation: re-run with --yes"
     fi
 }
 # Initial load // 初始加载
@@ -667,8 +683,18 @@ status_service() {
 full_uninstall() {
     ensure_root
     warn "$L_UN_WARN"
-    read -rp "  $(echo -e "${_BOLD}$L_UN_CONFIRM [y/N]: ${_RESET}")" yn
-    yn="${yn:-N}"
+    local yn="N"
+    if [ "$NONINTERACTIVE" -eq 1 ]; then
+        # 非交互模式：缺 --yes 时直接报错，不等待输入
+        if [ "$ASSUME_YES" != "1" ]; then
+            error "$L_ERR_CONFIRM_REQUIRED"
+            return 1
+        fi
+        yn="y"
+    else
+        read -rp "  $(echo -e "${_BOLD}$L_UN_CONFIRM [y/N]: ${_RESET}")" yn
+        yn="${yn:-N}"
+    fi
     if [[ ! "$yn" =~ ^[Yy]$ ]]; then
         info "$L_UN_CANCEL"
         return 0
@@ -776,9 +802,13 @@ show_menu() {
     echo -e "\n${_BLUE} ================================================ ${_RESET}"
     
     while true; do
+        if [ "$NONINTERACTIVE" -eq 1 ]; then
+            warn "$L_MENU_NONINTERACTIVE"
+            exit 1
+        fi
         read -rp "  $(echo -e "${_BOLD}$L_SELECT [0-7, L]: ${_RESET}")" opt
         case "$opt" in
-            1) read -rp "  $(echo -e "${_BOLD}$L_INPUT_VER: ${_RESET}")" v; v="${v:-latest}"; install_cmd "$v";;
+            1) if [ "$NONINTERACTIVE" -eq 1 ]; then warn "$L_MENU_NONINTERACTIVE"; exit 1; fi; read -rp "  $(echo -e "${_BOLD}$L_INPUT_VER: ${_RESET}")" v; v="${v:-latest}"; install_cmd "$v";;
             2) start_service;;
             3) stop_service;;
             4) status_service;;
@@ -801,17 +831,31 @@ show_menu() {
 
 install_cmd() {
     local ver="${1:-latest}"
-    local os arch tarball
+    local tarball="${2:-}"
+    local os arch
     os="$(detect_os)"
     arch="$(_arch_map)"
-    
+
     stop_service
-    
-    step "$L_PRE_DL ${_BOLD}$ver${_RESET} ($os/$arch)..."
-    if [ "$ver" = "latest" ]; then
-        ver="$(get_latest_tag || echo latest)"
+
+    if [ -n "$tarball" ]; then
+        # 本地安装包模式：离线安装 / 未发布版本
+        if [ ! -f "$tarball" ]; then
+            error "$L_ERR_NO_TARBALL: $tarball"
+            return 1
+        fi
+        step "$L_TARBALL_MODE: ${_BOLD}$tarball${_RESET} ($os/$arch)..."
+        # 从包名推断版本（fast-note-sync-service-<ver>-<os>-<arch>.tar.gz），失败不影响安装
+        local guess_ver
+        guess_ver="$(basename "$tarball" | sed -nE "s/^${BIN_BASE}-([^/]+)-(linux|darwin|windows)-[^.]+\.tar\.gz$/\1/p" || true)"
+        [ -n "$guess_ver" ] && ver="$guess_ver"
+    else
+        step "$L_PRE_DL ${_BOLD}$ver${_RESET} ($os/$arch)..."
+        if [ "$ver" = "latest" ]; then
+            ver="$(get_latest_tag || echo latest)"
+        fi
+        tarball="$(download_release_asset "$ver" "$os" "$arch")" || { error "$L_ERR_NO_REL"; return 1; }
     fi
-    tarball="$(download_release_asset "$ver" "$os" "$arch")" || { error "$L_ERR_NO_REL"; return 1; }
     install_binary_from_tar "$tarball"
     save_version "$ver"
     install_self >&2
@@ -828,12 +872,92 @@ install_cmd() {
 }
 
 # main dispatcher // 主调度器
-_dispatch_args=("$@")
+
+# --- Non-interactive options // 非交互选项 ---
+NONINTERACTIVE=0
+ASSUME_YES=0
+OPT_TARBALL=""
+
+show_usage() {
+    cat <<EOF
+$L_USAGE: $0 {install|uninstall|full-uninstall|start|stop|status|update|install-self|enable-autostart|menu} [--yes] [--tarball <path>]
+
+$L_USAGE_OPTIONS:
+  -y, --yes          $L_OPT_YES
+      --tarball <path>  $L_OPT_TARBALL
+  -h, --help         $L_USAGE
+EOF
+}
+
+# 解析子命令之后的全局参数
+# 支持环境变量: FNS_INSTALL_TARBALL 等价于 --tarball；FNS_ASSUME_YES=1 等价于 --yes
+_dispatch_args=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -y|--yes)
+            NONINTERACTIVE=1
+            ASSUME_YES=1
+            shift
+        ;;
+        --tarball)
+            if [ -z "${2:-}" ]; then
+                echo "--tarball requires an argument" >&2
+                exit 1
+            fi
+            NONINTERACTIVE=1
+            OPT_TARBALL="$2"
+            shift 2
+        ;;
+        --tarball=*)
+            NONINTERACTIVE=1
+            OPT_TARBALL="${1#*=}"
+            shift
+        ;;
+        -h|--help)
+            show_usage
+            exit 0
+        ;;
+        --*)
+            echo "Unknown option: $1" >&2
+            show_usage >&2
+            exit 1
+        ;;
+        *)
+            _dispatch_args+=("$1")
+            shift
+        ;;
+    esac
+done
+
+# 环境变量兜底 (远程部署等场景便于传参)
+if [ -z "$OPT_TARBALL" ] && [ -n "${FNS_INSTALL_TARBALL:-}" ]; then
+    OPT_TARBALL="$FNS_INSTALL_TARBALL"
+    NONINTERACTIVE=1
+fi
+if [ "${FNS_ASSUME_YES:-}" = "1" ]; then
+    NONINTERACTIVE=1
+    ASSUME_YES=1
+fi
+
 cmd="${_dispatch_args[0]:-menu}"
+
+# 非交互模式默认命令为 install，避免无参数时卡在菜单
+if [ "$NONINTERACTIVE" -eq 1 ] && [ "${#_dispatch_args[@]}" -eq 0 ]; then
+    cmd="install"
+fi
+
 case "$cmd" in
     install)
         ensure_root
-        install_cmd "${_dispatch_args[1]:-latest}"
+        if [ -n "$OPT_TARBALL" ]; then
+            if [ ! -f "$OPT_TARBALL" ]; then
+                error "$L_ERR_NO_TARBALL: $OPT_TARBALL"
+                exit 1
+            fi
+            install_cmd "" "$OPT_TARBALL"
+        else
+            install_cmd "${_dispatch_args[1]:-latest}"
+        fi
     ;;
     uninstall|full-uninstall|full_uninstall)
         full_uninstall
@@ -849,7 +973,15 @@ case "$cmd" in
     ;;
     update)
         ensure_root
-        install_cmd "latest"
+        if [ -n "$OPT_TARBALL" ]; then
+            if [ ! -f "$OPT_TARBALL" ]; then
+                error "$L_ERR_NO_TARBALL: $OPT_TARBALL"
+                exit 1
+            fi
+            install_cmd "" "$OPT_TARBALL"
+        else
+            install_cmd "latest"
+        fi
     ;;
     install-self)
         install_self "${_dispatch_args[1]:-}"
@@ -858,9 +990,17 @@ case "$cmd" in
         enable_autostart
     ;;
     menu)
+        if [ "$NONINTERACTIVE" -eq 1 ]; then
+            warn "$L_MENU_NONINTERACTIVE"
+            exit 1
+        fi
         show_menu
     ;;
     *)
+        if [ "$NONINTERACTIVE" -eq 1 ]; then
+            show_usage
+            exit 1
+        fi
         draw_banner
         echo -e "$L_USAGE: $0 {install|uninstall|full-uninstall|start|stop|status|update|install-self|enable-autostart|menu}"
         exit 1
