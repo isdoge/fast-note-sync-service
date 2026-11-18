@@ -7,7 +7,7 @@ This reference follows the 3.7.0 implementation in `internal/config/*.go`, `inte
 - Generate a key with `openssl rand -base64 32` and set `security.auth-token-key`; do not keep the default. Changing it invalidates existing tokens. Existing user and share tokens also become invalid when the machine identity changes, even if this key stays unchanged.
 - Set `security.share-token-key` to a separate random value as well.
 - Set `user.register-is-enable: false` unless public registration is required.
-- Set `user.admin-uid` to the intended administrator UID. `0` means no administrator is designated, not that everyone is an administrator.
+- Set `user.admin-uid` to the intended administrator UID during deployment. **The implementation treats `0` as unrestricted administrator access: every authenticated user with a nonzero UID passes the administrator check, so the default is unsafe.** With `admin-uid: 0`, registration also stops accepting new users once any user exists, even when registration is enabled.
 - `server.trusted-proxies` trusts only loopback proxies by default. For a proxy on another host or a container gateway, add the source IP/CIDR actually observed by the application. Do not use `0.0.0.0/0`.
 - WebGUI login tokens bind to IP and UA by default. Disable `webgui-login-token-bind-ip` if the access path changes client IPs, or `webgui-login-token-bind-ua` if a proxy rewrites UA and causes error 313. Each switch disables its corresponding check.
 
@@ -118,7 +118,7 @@ Both sections use the same structure. An empty `user-database.type` uses the mai
 | `log.file` | path | `storage/logs/log.log` | Log file path. |
 | `log.production` | bool | `false` | JSON logs when true; the sample YAML explicitly enables it. |
 | `user.register-is-enable` | bool | `false` | Registration switch; the sample YAML explicitly enables it. |
-| `user.admin-uid` | int | `0` | Administrator UID. |
+| `user.admin-uid` | int | `0` | Every nonzero UID passes admin checks when zero; set the intended administrator UID. Also limits registration once users exist. |
 | `tracer.enabled` | bool | `true` | Request tracing. |
 | `tracer.header` | string | `X-Trace-ID` | Trace ID request header. |
 

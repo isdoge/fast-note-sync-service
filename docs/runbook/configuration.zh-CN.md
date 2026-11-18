@@ -7,7 +7,7 @@
 - 用 `openssl rand -base64 32` 生成并设置 `security.auth-token-key`，不要保留默认值。修改它会使既有令牌失效；即使不修改，机器标识变化也会使既有用户令牌和分享令牌失效。
 - 同时把 `security.share-token-key` 改成独立随机值。
 - 无需开放注册时设置 `user.register-is-enable: false`。
-- `user.admin-uid` 应设为指定管理员的 UID；`0` 表示未指定管理员，不是“任何人都是管理员”。
+- 部署时必须把 `user.admin-uid` 设为指定管理员的 UID。**代码实际行为是 `0` 不限制管理员访问，任何非零 UID 的已认证用户都可通过管理员检查，不能保持默认。** 此外 `admin-uid: 0` 时，即使开启注册，已有用户后也不再允许新注册。
 - `server.trusted-proxies` 默认只信任回环代理。跨主机代理或容器网关必须按应用实际看到的来源 IP/CIDR 配置，不要填 `0.0.0.0/0`。
 - WebGUI 登录令牌默认绑定 IP 和 UA。链路改变客户端 IP 时可关闭 `webgui-login-token-bind-ip`；代理改写 UA 导致 313 时可关闭 `webgui-login-token-bind-ua`。关闭后对应维度的校验不再生效。
 
@@ -118,7 +118,7 @@
 | `log.file` | path | `storage/logs/log.log` | 日志文件路径。 |
 | `log.production` | bool | `false` | `true` 使用 JSON 日志；示例 YAML 显式为 `true`。 |
 | `user.register-is-enable` | bool | `false` | 开放注册开关；示例 YAML 显式为 `true`。不需要公开注册时应关闭。 |
-| `user.admin-uid` | int | `0` | 管理员 UID；设为实际管理员 UID。 |
+| `user.admin-uid` | int | `0` | `0` 时任何非零 UID 均通过管理员检查，部署时必须设为指定管理员 UID；也影响已有用户后的注册。 |
 | `tracer.enabled` | bool | `true` | 请求链路追踪。 |
 | `tracer.header` | string | `X-Trace-ID` | Trace ID 请求头名。 |
 
