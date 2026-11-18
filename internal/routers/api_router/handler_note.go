@@ -199,7 +199,7 @@ func (h *NoteHandler) CreateOrUpdate(c *gin.Context) {
 	// Validate and clean the path: strip leading "/", reject traversal/NUL,
 	// ensure notes end in .md (#342 S-8, #244)
 	// 校验并清洗路径：去前导 "/"、拒绝越界与 NUL、保证笔记以 .md 结尾（#342 S-8, #244）
-	cleaned, ok := cleanAPINotePath(params.Path)
+	cleaned, ok := cleanAPIPath(params.Path)
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
@@ -304,7 +304,7 @@ func (h *NoteHandler) Delete(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPINotePath(params.Path)
+	cleaned, ok := cleanAPIPath(params.Path)
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
@@ -386,7 +386,7 @@ func (h *NoteHandler) Restore(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPINotePath(params.Path)
+	cleaned, ok := cleanAPIPath(params.Path)
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
@@ -470,7 +470,7 @@ func (h *NoteHandler) PatchFrontmatter(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPINotePath(params.Path)
+	cleaned, ok := cleanAPIPath(params.Path)
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
@@ -538,7 +538,7 @@ func (h *NoteHandler) Append(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPINotePath(params.Path)
+	cleaned, ok := cleanAPIPath(params.Path)
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
@@ -606,7 +606,7 @@ func (h *NoteHandler) Prepend(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPINotePath(params.Path)
+	cleaned, ok := cleanAPIPath(params.Path)
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
@@ -674,7 +674,7 @@ func (h *NoteHandler) Replace(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPINotePath(params.Path)
+	cleaned, ok := cleanAPIPath(params.Path)
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
@@ -745,8 +745,8 @@ func (h *NoteHandler) Rename(c *gin.Context) {
 	// Validate and clean both paths: strip leading "/", reject traversal/NUL,
 	// ensure notes end in .md (#342 S-8, #244)
 	// 校验并清洗新旧两个路径：去前导 "/"、拒绝越界与 NUL、保证笔记以 .md 结尾（#342 S-8, #244）
-	newPath, ok := cleanAPINotePath(params.Path)
-	oldPath, okOld := cleanAPINotePath(params.OldPath)
+	newPath, ok := cleanAPIPath(params.Path)
+	oldPath, okOld := cleanAPIPath(params.OldPath)
 	if !ok || !okOld {
 		response.ToResponse(code.ErrorInvalidPath)
 		return

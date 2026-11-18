@@ -161,13 +161,11 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
 
-	// 校验并清洗路径（#342 S-8）
-	cleaned, ok := cleanWSPath(params.Path)
-	if !ok {
+	// 只校验、不改写路径（#342 S-8）：同步协议要求按客户端上报的原样路径落库
+	if !validWSPath(params.Path) {
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path"))
 		return
 	}
-	params.Path = cleaned
 
 	ctx := c.Context()
 
@@ -471,13 +469,11 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		return
 	}
 
-	// 校验并清洗路径（#342 S-8）
-	cleaned, ok := cleanWSPath(params.Path)
-	if !ok {
+	// 只校验、不改写路径（#342 S-8）：不去前导 "/"，仅按段拒绝越界与 NUL
+	if !validWSPath(params.Path) {
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path"))
 		return
 	}
-	params.Path = cleaned
 
 	ctx := c.Context()
 
@@ -534,15 +530,11 @@ func (h *FileWSHandler) FileRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	uid := c.User.UID
 	uidStr := strconv.FormatInt(uid, 10)
 
-	// 校验并清洗新旧两个路径（#342 S-8）
-	newPath, ok := cleanWSPath(params.Path)
-	oldPath, okOld := cleanWSPath(params.OldPath)
-	if !ok || !okOld {
+	// 只校验、不改写新旧两个路径（#342 S-8）
+	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path"))
 		return
 	}
-	params.Path = newPath
-	params.OldPath = oldPath
 
 	// Check if there is an active upload session for the old path hash
 	// 检查旧路径哈希是否存在活跃的上传会话

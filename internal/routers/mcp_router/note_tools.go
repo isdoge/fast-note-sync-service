@@ -137,7 +137,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNotePath(path)
+		path, err := cleanNewNotePath(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -173,7 +173,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolDeleteNote := mcp.NewTool("note_delete",
 		mcp.WithDescription("Delete a note"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolDeleteNote, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -190,7 +190,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNotePath(path)
+		path, err := cleanToolPath(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -219,7 +219,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolRenameNote := mcp.NewTool("note_rename",
 		mcp.WithDescription("Rename a note"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("oldPath", mcp.Required(), mcp.Description("Old note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
+		mcp.WithString("oldPath", mcp.Required(), mcp.Description("Old note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
 		mcp.WithString("newPath", mcp.Required(), mcp.Description("New note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
 	)
@@ -238,11 +238,11 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		}
 		oldPath, _ := args["oldPath"].(string)
 		newPath, _ := args["newPath"].(string)
-		oldPath, err := cleanNotePath(oldPath)
+		oldPath, err := cleanToolPath(oldPath)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		newPath, err = cleanNotePath(newPath)
+		newPath, err = cleanNewNotePath(newPath)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -283,7 +283,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolRestoreNote := mcp.NewTool("note_restore",
 		mcp.WithDescription("Restore a deleted note from recycle bin"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolRestoreNote, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -300,7 +300,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNotePath(path)
+		path, err := cleanToolPath(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -328,7 +328,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolRecycleClear := mcp.NewTool("note_recycle_clear",
 		mcp.WithDescription("Permanently delete a note from recycle bin (or all if path is empty)"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically. If empty, potentially clear all (based on service logic)")),
+		mcp.WithString("path", mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added). If empty, potentially clear all (based on service logic)")),
 		mcp.WithOutputSchema[mcpNoteRecycleClearOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolRecycleClear, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -347,7 +347,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		path, _ := args["path"].(string)
 		if path != "" {
 			var cerr error
-			path, cerr = cleanNotePath(path)
+			path, cerr = cleanToolPath(path)
 			if cerr != nil {
 				return mcp.NewToolResultError(cerr.Error()), nil
 			}
@@ -373,7 +373,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolPatchFrontmatter := mcp.NewTool("note_patch_frontmatter",
 		mcp.WithDescription("Patch (update or remove) frontmatter of a note"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
 		mcp.WithString("updates", mcp.Description("JSON string for fields to update (e.g. {\"tags\":[\"t1\"]})")),
 		mcp.WithString("remove", mcp.Description("JSON string array for fields to remove (e.g. [\"old_tag\"])")),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
@@ -392,7 +392,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNotePath(path)
+		path, err := cleanToolPath(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -438,7 +438,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolAppend := mcp.NewTool("note_append",
 		mcp.WithDescription("Append content to the end of a note"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Content to append")),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
 	)
@@ -456,7 +456,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNotePath(path)
+		path, err := cleanToolPath(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -486,7 +486,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolPrepend := mcp.NewTool("note_prepend",
 		mcp.WithDescription("Prepend content to the beginning of a note (after frontmatter)"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Content to prepend")),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
 	)
@@ -504,7 +504,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNotePath(path)
+		path, err := cleanToolPath(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -534,7 +534,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	toolReplace := mcp.NewTool("note_replace",
 		mcp.WithDescription("Find and replace text in a note"),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
 		mcp.WithString("find", mcp.Required(), mcp.Description("Content to find")),
 		mcp.WithString("replace", mcp.Required(), mcp.Description("Content to replace with")),
 		mcp.WithBoolean("regex", mcp.Description("Use regex matching (default false)")),
@@ -556,7 +556,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNotePath(path)
+		path, err := cleanToolPath(path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

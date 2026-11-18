@@ -10,7 +10,6 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
-	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -88,25 +87,31 @@ func (h *WSHandler) logWarn(c *pkgapp.WebsocketClient, method string, fields ...
 	h.App.Logger().Warn(method, allFields...)
 }
 
-// cleanWSPath normalizes a vault-relative path for WebSocket write entry points:
-// strips leading "/" and rejects empty, absolute, ".." and NUL paths via
-// util.ValidatePath (#342 S-8). Backslashes are not converted.
-// cleanWSPath 为 WebSocket 写入口规范化库相对路径：去掉前导 "/"，并用
-// util.ValidatePath 拒绝空路径、绝对路径、".." 与 NUL（#342 S-8）。
-// 反斜杠不做转换。
-func cleanWSPath(path string) (string, bool) {
-	return util.CleanVaultPath(path)
-}
-
-// cleanWSNotePath additionally appends ".md" (case-insensitive) to note paths
-// so notes synced to Obsidian are visible markdown files (#244).
-// cleanWSNotePath 额外给笔记路径补 ".md" 后缀（大小写不敏感）（#244）。
-func cleanWSNotePath(path string) (string, bool) {
-	cleaned, ok := util.CleanVaultPath(path)
-	if !ok {
-		return "", false
+// validWSPath validates a client-reported vault-relative path WITHOUT
+// rewriting it (#342 S-8): the sync protocol requires the server to store the
+// exact path the client reported (clients key their baseline and hashes by
+// their own path), so the WebSocket entry only rejects — never strips the
+// leading "/" nor appends ".md". The check itself is segment-wise: empty,
+// NUL, or any segment (split on "/" and "\") equal to ".." is rejected;
+// ordinary names like "a..b.md", "等等...md", "100%.md" pass.
+// validWSPath 只校验、不改写客户端上报的库相对路径（#342 S-8）：同步协议
+// 要求服务端按客户端上报的原样路径落库（客户端按自己的路径记基线与哈希），
+// 因此 WebSocket 入口只做拒绝——不去前导 "/"、不补 ".md"。校验本身按段进行：
+// 空路径、含 NUL、任一段（"/" 与 "\" 都算分隔符）等于 ".." 拒绝；
+// "a..b.md"、"等等...md"、"100%.md" 等正常笔记名合法。
+func validWSPath(path string) bool {
+	if path == "" {
+		return false
 	}
-	return util.EnsureMDExt(cleaned), true
+	if strings.Contains(path, "\x00") {
+		return false
+	}
+	for _, seg := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // extractMsgMeta extracts context/vault/path from raw WebSocket JSON payload for error tracing.

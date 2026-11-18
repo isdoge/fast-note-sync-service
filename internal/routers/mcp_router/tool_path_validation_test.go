@@ -1,11 +1,14 @@
 package mcp_router
 
 // #342 S-8 / haierkeys/obsidian-fast-note-sync#244：
-// MCP 写入工具必须校验路径——去掉前导 "/"，拒绝空路径、绝对路径、".."、NUL；
-// 笔记工具缺 ".md"（大小写不敏感）时自动补上。带前导 "/" 的路径原样入库会让
-// Git 导出等下游按它写文件；缺 .md 的笔记同步到 Obsidian 后不可见，再同步被
-// 当成附件。本文件用 mcp-go 的 HandleMessage 直接调用注册好的工具，断言
-// 服务层收到的 Path 已被清洗，非法路径在进入服务层前被拒。
+// MCP 写入工具路径规则：去掉前导 "/"，按路径段（"/" 与 "\" 都算分隔符）拒绝
+// 整段 ".."、空路径与 NUL，不做 URL 解码（"a..b.md"、"等等...md"、"100%.md"
+// 等正常笔记名合法）。补 ".md" 只发生在产生"新路径"的地方：note_create_or_update
+// 的 path 与 note_rename 的 newPath；对已有笔记操作的工具（删除/恢复/追加/前插/
+// 替换/改 frontmatter/改名的旧路径）不补，否则旧版本遗留的无扩展名坏数据
+// （正是 #244 产生的那批）无法删除或改名修正。
+// 本文件用 mcp-go 的 HandleMessage 直接调用注册好的工具，断言服务层收到的
+// Path 符合上述规则，非法路径在进入服务层前被拒。
 
 import (
 	"context"
@@ -96,7 +99,8 @@ func newNoteModifyCapture(t *testing.T, noteSvc *svcmocks.MockNoteService, captu
 		Return(false, &dto.NoteDTO{Path: "ok.md", PathHash: "h"}, nil).Maybe()
 }
 
-// TestMCPNoteCreateOrUpdate_PathCleaning：前导 "/" 被去掉、缺 .md 补后缀、大小写不敏感
+// TestMCPNoteCreateOrUpdate_PathCleaning：前导 "/" 被去掉、缺 .md 补后缀、大小写不敏感；
+// 文件名里的 ..、省略号、% 不影响合法性
 func TestMCPNoteCreateOrUpdate_PathCleaning(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -108,6 +112,9 @@ func TestMCPNoteCreateOrUpdate_PathCleaning(t *testing.T) {
 		{"uppercase .MD kept as-is", "/notes/TODO.MD", "notes/TODO.MD"},
 		{"plain path with .md", "notes/todo.md", "notes/todo.md"},
 		{"plain path without .md", "notes/todo", "notes/todo.md"},
+		{"dot-dot inside filename is legal", "a..b.md", "a..b.md"},
+		{"ellipsis filename is legal", "等等...md", "等等...md"},
+		{"percent filename is legal", "100%.md", "100%.md"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -238,7 +245,8 @@ func TestMCPFolderDelete_PathCleaning(t *testing.T) {
 	assert.True(t, result.IsError, "'..' path must be rejected")
 }
 
-// TestMCPNoteRename_BothPathsCleaned：改名的两个路径都清洗
+// TestMCPNoteRename_BothPathsCleaned：改名的旧路径只去前导 "/"（不补 .md），
+// 新路径去前导 "/" 且补 ".md"——旧路径指向已存在的记录，必须按原样匹配
 func TestMCPNoteRename_BothPathsCleaned(t *testing.T) {
 	noteSvc := new(svcmocks.MockNoteService)
 	fileSvc := new(svcmocks.MockFileService)
@@ -263,8 +271,36 @@ func TestMCPNoteRename_BothPathsCleaned(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, result.IsError)
-	assert.Equal(t, "old.md", capturedOld)
-	assert.Equal(t, "sub/new.md", capturedNew)
+	assert.Equal(t, "old", capturedOld, "rename 的旧路径只去前导 /，不补 .md")
+	assert.Equal(t, "sub/new.md", capturedNew, "rename 的新路径补 .md")
+}
+
+// TestMCPNoteRename_ExtensionlessOldPath：旧路径无扩展名时必须原样传给服务层
+// （旧版本遗留的无扩展名记录要能改名修正，补了 .md 就找不到了）
+func TestMCPNoteRename_ExtensionlessOldPath(t *testing.T) {
+	noteSvc := new(svcmocks.MockNoteService)
+	fileSvc := new(svcmocks.MockFileService)
+	folderSvc := new(svcmocks.MockFolderService)
+	vaultSvc := new(svcmocks.MockVaultService)
+
+	var capturedOld, capturedNew string
+	noteSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(noteSvc)
+	noteSvc.On("Rename", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			params := args.Get(2).(*dto.NoteRenameRequest)
+			capturedOld = params.OldPath
+			capturedNew = params.Path
+		}).
+		Return(&dto.NoteDTO{Path: "folder/foo"}, &dto.NoteDTO{Path: "folder/foo.md"}, nil)
+
+	srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
+	result, err := callMCPTool(context.Background(), srv, "note_rename", map[string]any{
+		"oldPath": "folder/foo", "newPath": "folder/foo",
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	assert.Equal(t, "folder/foo", capturedOld, "旧路径必须原样（不补 .md）")
+	assert.Equal(t, "folder/foo.md", capturedNew, "新路径补 .md")
 }
 
 // TestMCPNoteTools_OtherWriteToolsValidate：追加/前插/替换/删除/恢复/回收清理/改 frontmatter 的拒绝路径
@@ -344,4 +380,59 @@ func TestMCPNoteTools_OtherWriteToolsValidate(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.IsError, "file_rename must reject traversal newPath")
 	})
+}
+
+// TestMCPNoteDelete_ExtensionlessPath：删除"已有笔记"不补 .md——无扩展名路径
+// 必须原样传给服务层（旧版本坏数据要能删）
+func TestMCPNoteDelete_ExtensionlessPath(t *testing.T) {
+	noteSvc := new(svcmocks.MockNoteService)
+	fileSvc := new(svcmocks.MockFileService)
+	folderSvc := new(svcmocks.MockFolderService)
+	vaultSvc := new(svcmocks.MockVaultService)
+
+	captured := ""
+	noteSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(noteSvc)
+	noteSvc.On("Delete", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			params := args.Get(2).(*dto.NoteDeleteRequest)
+			captured = params.Path
+		}).
+		Return(&dto.NoteDTO{Path: "folder/foo", PathHash: "h"}, nil)
+
+	srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
+	result, err := callMCPTool(context.Background(), srv, "note_delete", map[string]any{
+		"path": "folder/foo",
+	})
+	require.NoError(t, err)
+	require.False(t, result.IsError)
+	assert.Equal(t, "folder/foo", captured, "note_delete 对已有笔记不得补 .md")
+}
+
+// TestMCPNoteAppend_AcceptsOrdinaryFilenames：对已有笔记的操作接受带 ..、省略号、% 的正常文件名
+func TestMCPNoteAppend_AcceptsOrdinaryFilenames(t *testing.T) {
+	for _, p := range []string{"a..b.md", "等等...md", "100%.md", "To be continued...md"} {
+		t.Run("accept "+p, func(t *testing.T) {
+			noteSvc := new(svcmocks.MockNoteService)
+			fileSvc := new(svcmocks.MockFileService)
+			folderSvc := new(svcmocks.MockFolderService)
+			vaultSvc := new(svcmocks.MockVaultService)
+
+			captured := ""
+			noteSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(noteSvc)
+			noteSvc.On("AppendContent", mock.Anything, mock.Anything, mock.Anything).
+				Run(func(args mock.Arguments) {
+					params := args.Get(2).(*dto.NoteAppendRequest)
+					captured = params.Path
+				}).
+				Return(&dto.NoteDTO{Path: p}, nil)
+
+			srv := newMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc)
+			result, err := callMCPTool(context.Background(), srv, "note_append", map[string]any{
+				"path": p, "content": "x",
+			})
+			require.NoError(t, err)
+			require.False(t, result.IsError, "正常文件名 %q 不得被拒绝", p)
+			assert.Equal(t, p, captured, "正常文件名 %q 必须原样传给服务层", p)
+		})
+	}
 }

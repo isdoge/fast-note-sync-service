@@ -50,24 +50,13 @@ func (h *Handler) getClientInfo(c *gin.Context) (string, string, string) {
 	return clientType, clientName, clientVersion
 }
 
-// cleanAPIPath normalizes a vault-relative path for REST/WS-facing write entry
-// points: strips leading "/" and rejects empty, absolute, ".." and NUL paths
-// via util.ValidatePath (#342 S-8). Backslashes are not converted.
-// cleanAPIPath 为 REST 写入口规范化库相对路径：去掉前导 "/"，并用
-// util.ValidatePath 拒绝空路径、绝对路径、".." 与 NUL（#342 S-8）。
-// 反斜杠不做转换。
+// cleanAPIPath normalizes a vault-relative path for REST write entry points:
+// strips leading "/" and rejects empty, absolute, ".."-segment and NUL paths
+// (segment-wise, no URL decoding; #342 S-8). It never appends ".md" — REST is
+// also used by third-party clients writing non-note files (e.g. x.canvas).
+// cleanAPIPath 为 REST 写入口规范化库相对路径：去掉前导 "/"，按路径段拒绝
+// 空路径、绝对路径、整段 ".." 与 NUL（不做 URL 解码；#342 S-8）。
+// 一律不补 ".md"——REST 也被第三方客户端用于写非笔记文件（如 x.canvas）。
 func cleanAPIPath(path string) (string, bool) {
 	return util.CleanVaultPath(path)
-}
-
-// cleanAPINotePath additionally appends ".md" (case-insensitive) to note paths
-// so notes synced to Obsidian are visible markdown files (#244).
-// cleanAPINotePath 额外给笔记路径补 ".md" 后缀（大小写不敏感），
-// 避免无扩展名笔记同步到 Obsidian 后不可见、再同步被当成附件（#244）。
-func cleanAPINotePath(path string) (string, bool) {
-	cleaned, ok := util.CleanVaultPath(path)
-	if !ok {
-		return "", false
-	}
-	return util.EnsureMDExt(cleaned), true
 }

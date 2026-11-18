@@ -1025,25 +1025,6 @@ func (w *WebsocketServer) clientsByTraceID(traceID string) (*WebsocketClient, bo
 // NewWebsocketServer 创建 WebSocket 服务器实例
 // c: WebSocket config // c: WebSocket 配置
 // app: App Container (Required) // app: App Container（必须）
-// NewWebsocketTestClient creates a WebsocketClient bound to an existing server
-// without a real network connection. It is intended for unit tests of
-// websocket_router handlers: the client carries app/Server/WsCtx so BindAndValid
-// and ToResponse work; conn stays nil and writes are discarded (writeMessage
-// returns "connection is nil"). WsCtx must be cancelled by the caller.
-// NewWebsocketTestClient 创建绑定到既有服务器的 WebsocketClient，但不建立真实
-// 网络连接。供 websocket_router 的单元测试使用：client 携带 app/Server/WsCtx，
-// BindAndValid 与 ToResponse 可正常工作；conn 保持 nil，写入被丢弃
-// （writeMessage 返回 "connection is nil"）。调用方负责取消 WsCtx。
-func NewWebsocketTestClient(server *WebsocketServer, ctx context.Context) *WebsocketClient {
-	return &WebsocketClient{
-		Server:   server,
-		app:      server.app,
-		WsCtx:    ctx,
-		done:     make(chan struct{}),
-		SF:       new(singleflight.Group),
-		StartTime: timex.Now(),
-	}
-}
 
 func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 	if app == nil {

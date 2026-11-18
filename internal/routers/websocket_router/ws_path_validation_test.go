@@ -2,13 +2,16 @@ package websocket_router
 
 // #342 S-8 / haierkeys/obsidian-fast-note-sync#244：
 // WebSocket 写入入口（NoteModify/NoteDelete/NoteRename、FileUploadCheck/
-// FileDelete/FileRename、FolderModify/FolderDelete/FolderRename）统一路径
-// 清洗——去前导 "/"、拒绝空/绝对/".."/NUL 路径、笔记补 .md。
-// 本文件构造最小 WebsocketClient 直接调用 handler，断言服务层收到的
-// Path 已被清洗、非法路径在进入服务层前被拒（ErrorInvalidPath）。
+// FileDelete/FileRename、FolderModify/FolderDelete/FolderRename）统一路径校验。
+// 同步协议要求服务端不改写客户端上报的路径：客户端按自己的路径记基线和哈希，
+// 服务端存成另一个路径两边就对不上。因此这里只校验——按路径段（"/" 与 "\"
+// 都算分隔符）拒绝整段 ".."、空路径与 NUL，不做 URL 解码（"a..b.md"、
+// "等等...md"、"100%.md" 等正常笔记名合法）——不去前导 "/"、不补 ".md"，
+// 通过则原样传给服务层。
+// 本文件用 server.NewTestClient 构造 client 直接调用 handler，断言服务层
+// 收到的 Path 与客户端上报的原样一致、非法路径在进入服务层前被拒。
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -16,19 +19,14 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	svcmocks "github.com/haierkeys/fast-note-sync-service/internal/service/mocks"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
-	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
 )
 
 // newWSPathTestClient 构造可直接调用 handler 的 WebsocketClient（无真实连接）。
+// 用主分支提供的 (w *WebsocketServer) NewTestClient。
 func newWSPathTestClient(testApp *app.App) *pkgapp.WebsocketClient {
-	ws, cancel := context.WithCancel(context.Background())
-	tcpClient := pkgapp.NewWebsocketTestClient(pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, testApp), ws)
-	tcpClient.WsCancel = cancel
-	tcpClient.User = &pkgapp.UserEntity{UID: 1}
-	return tcpClient
+	return pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, testApp).NewTestClient(1)
 }
 
 // newWSPathTestApp 构造带 mock 服务的 App（VaultService 提供最小 GetOrCreate stub）
@@ -49,27 +47,19 @@ func wsMsg(action string, payload any) *pkgapp.WebSocketMessage {
 	return &pkgapp.WebSocketMessage{Type: action, Data: data}
 }
 
-// decodeWSResponse 解析 ToResponse 发出的 JSON（捕获自 conn=nil 的丢弃路径不可行，
-// 因此这里不断言响应体，改为断言服务层未被调用 / 收到的参数已清洗）
-func decodeWSResponse(t *testing.T, b []byte) map[string]any {
-	t.Helper()
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(b, &m))
-	return m
-}
-
-var _ = decodeWSResponse
-
-// TestWSNoteModify_PathCleaning：NoteModify 清洗路径（去前导/、补 .md）
-func TestWSNoteModify_PathCleaning(t *testing.T) {
+// TestWSNoteModify_PassesClientPathAsIs：NoteModify 不改写客户端路径——
+// 前导斜杠、无扩展名都原样传给服务层（服务端改写会导致客户端基线对不上）
+func TestWSNoteModify_PassesClientPathAsIs(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
-		want  string
 	}{
-		{"leading slash + no ext", "/notes/todo", "notes/todo.md"},
-		{"leading slash + ext", "/notes/todo.md", "notes/todo.md"},
-		{"plain + no ext", "notes/todo", "notes/todo.md"},
+		{"leading slash + ext kept as-is", "/notes/todo.md"},
+		{"no extension kept as-is", "notes/todo"},
+		{"leading slash + no extension kept as-is", "/notes/todo"},
+		{"dot-dot inside filename kept as-is", "a..b.md"},
+		{"ellipsis filename kept as-is", "等等...md"},
+		{"percent filename kept as-is", "100%.md"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,14 +85,14 @@ func TestWSNoteModify_PathCleaning(t *testing.T) {
 				"mtime": 1700000000000, "ctime": 1700000000000,
 			}))
 
-			assert.Equal(t, tt.want, captured)
+			assert.Equal(t, tt.input, captured, "WebSocket 入口必须原样传递客户端路径")
 		})
 	}
 }
 
 // TestWSNoteModify_RejectsBadPath：NoteModify 拒绝越界路径且不进入服务层
 func TestWSNoteModify_RejectsBadPath(t *testing.T) {
-	for _, bad := range []string{"../etc/passwd", "notes/../../x"} {
+	for _, bad := range []string{"../etc/passwd", "notes/../../x", `a\..\x`} {
 		t.Run("reject "+bad, func(t *testing.T) {
 			noteSvc := new(svcmocks.MockNoteService)
 			noteSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(noteSvc)
@@ -138,8 +128,8 @@ func TestWSNoteDelete_RejectsBadPath(t *testing.T) {
 	noteSvc.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything, mock.Anything)
 }
 
-// TestWSNoteRename_BothPathsCleaned：NoteRename 新旧路径都清洗
-func TestWSNoteRename_BothPathsCleaned(t *testing.T) {
+// TestWSNoteRename_PassesClientPathsAsIs：NoteRename 新旧路径都原样传递
+func TestWSNoteRename_PassesClientPathsAsIs(t *testing.T) {
 	var capturedNew, capturedOld string
 	noteSvc := new(svcmocks.MockNoteService)
 	noteSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(noteSvc)
@@ -159,12 +149,12 @@ func TestWSNoteRename_BothPathsCleaned(t *testing.T) {
 		"vault": "v", "path": "/sub/new", "oldPath": "/old",
 	}))
 
-	assert.Equal(t, "old.md", capturedOld)
-	assert.Equal(t, "sub/new.md", capturedNew)
+	assert.Equal(t, "/old", capturedOld, "NoteRename 旧路径必须原样")
+	assert.Equal(t, "/sub/new", capturedNew, "NoteRename 新路径必须原样")
 }
 
-// TestWSFileUploadCheck_PathCleaning：FileUploadCheck 去前导 "/"（不补 .md）
-func TestWSFileUploadCheck_PathCleaning(t *testing.T) {
+// TestWSFileUploadCheck_PassesClientPathAsIs：FileUploadCheck 原样传递（含前导 "/"）
+func TestWSFileUploadCheck_PassesClientPathAsIs(t *testing.T) {
 	captured := ""
 	fileSvc := new(svcmocks.MockFileService)
 	fileSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(fileSvc)
@@ -184,7 +174,7 @@ func TestWSFileUploadCheck_PathCleaning(t *testing.T) {
 		"mtime": 1700000000000, "ctime": 1700000000000,
 	}))
 
-	assert.Equal(t, "images/pic.png", captured)
+	assert.Equal(t, "/images/pic.png", captured, "FileUploadCheck 必须原样传递客户端路径")
 }
 
 // TestWSFileUploadCheck_RejectsBadPath：FileUploadCheck 拒绝越界路径
@@ -220,8 +210,8 @@ func TestWSFileDelete_RejectsBadPath(t *testing.T) {
 	fileSvc.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything, mock.Anything)
 }
 
-// TestWSFileRename_BothPathsCleaned：FileRename 新旧路径都清洗
-func TestWSFileRename_BothPathsCleaned(t *testing.T) {
+// TestWSFileRename_PassesClientPathsAsIs：FileRename 新旧路径原样传递
+func TestWSFileRename_PassesClientPathsAsIs(t *testing.T) {
 	var capturedNew, capturedOld string
 	fileSvc := new(svcmocks.MockFileService)
 	fileSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(fileSvc)
@@ -241,12 +231,12 @@ func TestWSFileRename_BothPathsCleaned(t *testing.T) {
 		"vault": "v", "path": "/new.png", "oldPath": "/old.png",
 	}))
 
-	assert.Equal(t, "old.png", capturedOld)
-	assert.Equal(t, "new.png", capturedNew)
+	assert.Equal(t, "/old.png", capturedOld)
+	assert.Equal(t, "/new.png", capturedNew)
 }
 
-// TestWSFolderModifyDelete_PathCleaning：FolderModify/FolderDelete 去前导 "/"，拒绝越界
-func TestWSFolderModifyDelete_PathCleaning(t *testing.T) {
+// TestWSFolderModifyDelete_PassesClientPathAsIs：FolderModify/FolderDelete 原样传递，拒绝越界
+func TestWSFolderModifyDelete_PassesClientPathAsIs(t *testing.T) {
 	capturedModify, capturedDelete := "", ""
 	folderSvc := new(svcmocks.MockFolderService)
 	folderSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(folderSvc)
@@ -270,12 +260,12 @@ func TestWSFolderModifyDelete_PathCleaning(t *testing.T) {
 	handler.FolderModify(client, wsMsg("FolderModify", map[string]any{
 		"vault": "v", "path": "/projects",
 	}))
-	assert.Equal(t, "projects", capturedModify)
+	assert.Equal(t, "/projects", capturedModify, "FolderModify 必须原样传递")
 
 	handler.FolderDelete(client, wsMsg("FolderDelete", map[string]any{
 		"vault": "v", "path": "/projects",
 	}))
-	assert.Equal(t, "projects", capturedDelete)
+	assert.Equal(t, "/projects", capturedDelete, "FolderDelete 必须原样传递")
 
 	// 越界拒绝
 	handler.FolderModify(client, wsMsg("FolderModify", map[string]any{
@@ -286,8 +276,8 @@ func TestWSFolderModifyDelete_PathCleaning(t *testing.T) {
 	}))
 }
 
-// TestWSFolderRename_BothPathsCleaned：FolderRename 新旧路径都清洗
-func TestWSFolderRename_BothPathsCleaned(t *testing.T) {
+// TestWSFolderRename_PassesClientPathsAsIs：FolderRename 新旧路径原样传递
+func TestWSFolderRename_PassesClientPathsAsIs(t *testing.T) {
 	var capturedNew, capturedOld string
 	folderSvc := new(svcmocks.MockFolderService)
 	folderSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(folderSvc)
@@ -307,9 +297,6 @@ func TestWSFolderRename_BothPathsCleaned(t *testing.T) {
 		"vault": "v", "path": "/new", "pathHash": "nh", "oldPath": "/old", "oldPathHash": "oh",
 	}))
 
-	assert.Equal(t, "old", capturedOld)
-	assert.Equal(t, "new", capturedNew)
+	assert.Equal(t, "/old", capturedOld)
+	assert.Equal(t, "/new", capturedNew)
 }
-
-// 确认 ErrorInvalidPath 存在引用（防止未用 import 的 lint 报错假阳性）
-var _ = code.ErrorInvalidPath
