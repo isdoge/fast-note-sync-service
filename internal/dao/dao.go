@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -579,13 +580,23 @@ func getDialector(c config.DatabaseConfig) gorm.Dialector {
 		if c.Port != 0 && !strings.Contains(host, ":") {
 			host = fmt.Sprintf("%s:%d", host, c.Port)
 		}
-		return mysql.Open(fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=%s&parseTime=%t&loc=Local",
+		// MySQL 8.4 defaults to NO_ZERO_DATE/NO_ZERO_IN_DATE under STRICT_TRANS_TABLES,
+		// but the generated models contain plain time.Time fields whose zero value is
+		// valid and must round-trip as the zero time. Keep all other strict checks and
+		// relax only these two modes for this process's sessions. go-sql-driver maps
+		// zero dates back to time.Time{} when parseTime=true.
+		// MySQL 8.4 在严格模式下默认带 NO_ZERO_DATE/NO_ZERO_IN_DATE；生成的模型
+		// 里存在普通 time.Time 字段，其零值合法且必须能往返成零时间。这里仅对
+		// 本进程会话放开这两个模式，保留其它严格检查；parseTime=true 时
+		// go-sql-driver 会把零日期读回 time.Time{}。
+		return mysql.Open(fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=%s&parseTime=%t&loc=Local&sql_mode=%s",
 			c.UserName,
 			c.Password,
 			host,
 			c.Name,
 			c.Charset,
 			c.ParseTime,
+			url.QueryEscape("'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"),
 		))
 	} else if c.Type == "postgres" {
 		if c.Port == 0 {
