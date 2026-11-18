@@ -74,7 +74,7 @@ server:
 
 ## 独立分享端口
 
-主端口未配置独立端口时同时提供 API、WebGUI 和分享页面。设置 `server.share-port` 后，分享页面移到该端口；只配置分享端口时，链接会使用请求 Host 加分享端口。同时设置 `webgui-port` 和 `share-port` 时，配置公开地址：
+主端口未配置独立端口时同时提供 API、WebGUI 和分享页面。设置 `server.share-port` 后，分享页面移到该端口；只配置分享端口且未配置 `ext-api-url` 时，链接会使用请求 Host 加分享端口。同时设置 `webgui-port` 和 `share-port` 时，配置公开地址：
 
 ```yaml
 server:

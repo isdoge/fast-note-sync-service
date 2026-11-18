@@ -76,7 +76,7 @@ This reference follows the 3.7.0 implementation in `internal/config/*.go`, `inte
 | Key | Type | Default | Purpose and when to change |
 | --- | --- | --- | --- |
 | `auth-token-key` | string | `fast-note-sync-Auth-Token` | Part of the user-token signing key; replace before deployment. |
-| `token-expiry` | duration | `365d` | User token lifetime; must be positive and representable. |
+| `token-expiry` | duration | `365d` | Default lifetime in the low-level JWT issuer. Manual tokens use requested `expiredDays`; WebGUI tokens use the dedicated setting below for their database expiry. Must be positive and representable. |
 | `share-token-key` | string | `fns` | Part of the share-token signing key; replace before deployment. |
 | `share-token-expiry` | duration | `30d` | Share token lifetime. |
 | `webgui-login-token-expiry` | duration | `7d` | WebGUI login token lifetime. |

@@ -74,7 +74,7 @@ Trust determines whether the service accepts `X-Forwarded-Host`, `X-Forwarded-Pr
 
 ## Independent share port
 
-Without independent listeners, the main port serves the API, WebGUI, and share pages. Setting `server.share-port` moves share pages to that listener. With only a share port configured, links use the request Host plus that port. When both WebGUI and share listeners are configured, set public URLs:
+Without independent listeners, the main port serves the API, WebGUI, and share pages. Setting `server.share-port` moves share pages to that listener. With only a share port configured and no `ext-api-url`, links use the request Host plus that port. When both WebGUI and share listeners are configured, set public URLs:
 
 ```yaml
 server:

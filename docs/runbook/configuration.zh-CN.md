@@ -76,7 +76,7 @@
 | 键 | 类型 | 默认值 | 作用与修改场景 |
 | --- | --- | --- | --- |
 | `auth-token-key` | string | `fast-note-sync-Auth-Token` | 用户令牌签名密钥组成部分；部署时必须更换。 |
-| `token-expiry` | duration | `365d` | 用户令牌有效期；必须为正且不能溢出。 |
+| `token-expiry` | duration | `365d` | 底层 JWT 签发器的默认有效期；手工令牌按请求的 `expiredDays`、WebGUI 令牌按下述专用配置设置数据库过期时间。配置校验要求正值且不能溢出。 |
 | `share-token-key` | string | `fns` | 分享令牌签名密钥组成部分；部署时必须更换。 |
 | `share-token-expiry` | duration | `30d` | 分享令牌有效期。 |
 | `webgui-login-token-expiry` | duration | `7d` | WebGUI 自动签发登录令牌有效期。 |
