@@ -537,6 +537,9 @@ func (h *NoteWSHandler) NoteModifyCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 		return
 	}
 
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
+
 	ctx := c.Context()
 
 	noteSvc := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion())
@@ -885,6 +888,8 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 
 	if len(params.Notes) > 0 {
 		for _, note := range params.Notes {
+			note.Ctime = timex.NormalizeMilli(note.Ctime)
+			note.Mtime = timex.NormalizeMilli(note.Mtime)
 			cNotes[note.PathHash] = note
 			cNotesKeys[note.PathHash] = struct{}{}
 		}

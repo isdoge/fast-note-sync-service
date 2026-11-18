@@ -39,6 +39,15 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 		return
 	}
 
+	// 只校验、不改写客户端路径，与笔记/附件入口保持一致。
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path"))
+		return
+	}
+
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
+
 	ctx := c.Context()
 
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "SettingModify", params.Path, params.Vault)
@@ -108,6 +117,15 @@ func (h *SettingWSHandler) SettingModifyCheck(c *pkgapp.WebsocketClient, msg *pk
 		return
 	}
 
+	// 只校验、不改写客户端路径，与笔记/附件入口保持一致。
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path"))
+		return
+	}
+
+	params.Ctime = timex.NormalizeMilli(params.Ctime)
+	params.Mtime = timex.NormalizeMilli(params.Mtime)
+
 	ctx := c.Context()
 
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "SettingModifyCheck", params.Path, params.Vault)
@@ -153,6 +171,12 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 	valid, errs := c.BindAndValidWithAction(msg.Type, msg.Data, params)
 	if !valid {
 		h.respondErrorWithData(c, code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()), errs, errs.MapsToString(), "websocket_router.setting.SettingDelete.BindAndValid", msg)
+		return
+	}
+
+	// 只校验、不改写客户端路径，与笔记/附件入口保持一致。
+	if !validWSPath(params.Path) {
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path"))
 		return
 	}
 
@@ -298,6 +322,13 @@ func (h *SettingWSHandler) doSettingSync(c *pkgapp.WebsocketClient, params *dto.
 	cSettings := make(map[string]dto.SettingSyncCheckRequest)
 	cSettingsKeys := make(map[string]struct{})
 	for _, s := range params.Settings {
+		if !validWSPath(s.Path) {
+			h.App.Logger().Warn("websocket_router.setting.SettingSync: invalid setting path, skip entry",
+				zap.String(logger.FieldTraceID, c.TraceID),
+				zap.String(logger.FieldPath, s.Path))
+			continue
+		}
+		s.Mtime = timex.NormalizeMilli(s.Mtime)
 		cSettings[s.PathHash] = s
 		cSettingsKeys[s.PathHash] = struct{}{}
 	}
@@ -322,6 +353,12 @@ func (h *SettingWSHandler) doSettingSync(c *pkgapp.WebsocketClient, params *dto.
 		hasWritePermission := pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "config_w")
 
 		for _, delSetting := range params.DelSettings {
+			if !validWSPath(delSetting.Path) {
+				h.App.Logger().Warn("websocket_router.setting.SettingSync: invalid setting path, skip entry",
+					zap.String(logger.FieldTraceID, c.TraceID),
+					zap.String(logger.FieldPath, delSetting.Path))
+				continue
+			}
 
 			// Check if setting exists before deleting
 			getCheckParams := &dto.SettingGetRequest{
@@ -388,6 +425,12 @@ func (h *SettingWSHandler) doSettingSync(c *pkgapp.WebsocketClient, params *dto.
 	// 处理客户端缺失的配置（仅限增量同步）
 	if params.LastTime > 0 && len(params.MissingSettings) > 0 {
 		for _, missingSetting := range params.MissingSettings {
+			if !validWSPath(missingSetting.Path) {
+				h.App.Logger().Warn("websocket_router.setting.SettingSync: invalid setting path, skip entry",
+					zap.String(logger.FieldTraceID, c.TraceID),
+					zap.String(logger.FieldPath, missingSetting.Path))
+				continue
+			}
 			getParams := &dto.SettingGetRequest{
 				Vault:    params.Vault,
 				PathHash: missingSetting.PathHash,

@@ -204,6 +204,9 @@ func (h *NoteHandler) CreateOrUpdate(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
 	params.Path = cleaned
 
 	// Apply default folder if configured
@@ -309,6 +312,9 @@ func (h *NoteHandler) Delete(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
 	params.Path = cleaned
 
 	// Calculate PathHash
@@ -390,6 +396,9 @@ func (h *NoteHandler) Restore(c *gin.Context) {
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
 	}
 	params.Path = cleaned
 
@@ -475,6 +484,9 @@ func (h *NoteHandler) PatchFrontmatter(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
 	params.Path = cleaned
 
 	// Apply default folder if configured
@@ -542,6 +554,9 @@ func (h *NoteHandler) Append(c *gin.Context) {
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
 	}
 	params.Path = cleaned
 
@@ -611,6 +626,9 @@ func (h *NoteHandler) Prepend(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
 	params.Path = cleaned
 
 	// Apply default folder if configured
@@ -678,6 +696,9 @@ func (h *NoteHandler) Replace(c *gin.Context) {
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
 	}
 	params.Path = cleaned
 
@@ -751,7 +772,13 @@ func (h *NoteHandler) Rename(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != newPath {
+		params.PathHash = util.EncodeHash32(newPath)
+	}
 	params.Path = newPath
+	if params.OldPath != oldPath {
+		params.OldPathHash = util.EncodeHash32(oldPath)
+	}
 	params.OldPath = oldPath
 
 	// Calculate PathHash

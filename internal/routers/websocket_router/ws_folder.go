@@ -292,6 +292,12 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 	if len(cFoldersKeys) > 0 {
 		for pathHash := range cFoldersKeys {
 			folder := cFolders[pathHash]
+			if !validWSPath(folder.Path) {
+				h.App.Logger().Warn("websocket_router.folder.FolderSync: invalid folder path, skip creation",
+					zap.String(logpkg.FieldTraceID, c.TraceID),
+					zap.String(logpkg.FieldPath, folder.Path))
+				continue
+			}
 
 			// 墓碑闸门：服务端已删除的目录不得被客户端陈旧上报复活
 			// （客户端快照失效后的全量重报会把删除顶回来，是复活拉锯的主要目录通道）；

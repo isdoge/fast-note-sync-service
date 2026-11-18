@@ -7,6 +7,7 @@ import (
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	apperrors "github.com/haierkeys/fast-note-sync-service/pkg/errors"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -100,6 +101,9 @@ func (h *FolderHandler) Create(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
 	params.Path = cleaned
 
 	uid := pkgapp.GetUID(c)
@@ -137,6 +141,9 @@ func (h *FolderHandler) Delete(c *gin.Context) {
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
+	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
 	}
 	params.Path = cleaned
 

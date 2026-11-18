@@ -790,6 +790,8 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 
 	if len(params.Files) > 0 {
 		for _, file := range params.Files {
+			file.Ctime = timex.NormalizeMilli(file.Ctime)
+			file.Mtime = timex.NormalizeMilli(file.Mtime)
 			cFiles[file.PathHash] = file
 			cFilesKeys[file.PathHash] = struct{}{}
 		}
@@ -995,6 +997,12 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 					} else {
 						// 服务端修改时间比客户端旧, 通知客户端上传文件
 						if pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "file_w") {
+							if !validWSPath(cFile.Path) {
+								h.App.Logger().Warn("websocket_router.file.FileSync: invalid file path, skip upload",
+									zap.String(logger.FieldTraceID, c.TraceID),
+									zap.String(logger.FieldPath, cFile.Path))
+								continue
+							}
 							session, ferr := h.handleFileUploadSessionCreate(c, params.Vault, cFile.Path, cFile.PathHash, cFile.ContentHash, cFile.Size, file.Ctime, cFile.Mtime, params.Context)
 							if ferr != nil {
 								h.logError(c, "websocket_router.file.FileSync handleFileUploadSession err", ferr)
@@ -1071,6 +1079,12 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 			// Create upload session and return FileUpload message
 			// 创建上传会话并返回 FileUpload 消息
 			if hasWritePermission {
+				if !validWSPath(file.Path) {
+					h.App.Logger().Warn("websocket_router.file.FileSync: invalid file path, skip upload",
+						zap.String(logger.FieldTraceID, c.TraceID),
+						zap.String(logger.FieldPath, file.Path))
+					continue
+				}
 				session, ferr := h.handleFileUploadSessionCreate(c, params.Vault, file.Path, file.PathHash, file.ContentHash, file.Size, file.Ctime, file.Mtime, params.Context)
 				if ferr != nil {
 					h.logError(c, "websocket_router.file.FileSync handleFileUploadSession err", ferr)
