@@ -85,7 +85,7 @@ This reference follows the 3.7.0 implementation in `internal/config/*.go`, `inte
 
 ## database and user-database
 
-Both sections use the same structure. An empty `user-database.type` uses the main database; otherwise it configures the per-user backend. MySQL/MariaDB is unsupported in this release; use SQLite or PostgreSQL.
+Both sections use the same structure. An empty `user-database.type` inherits **the entire main database configuration**, so the other fields' code defaults are not used on this fallback path. A nonempty type selects the independent `user-database` configuration. MySQL/MariaDB is unsupported in this release; use SQLite or PostgreSQL.
 
 | Key | Type | database default | user-database default | Purpose |
 | --- | --- | --- | --- | --- |

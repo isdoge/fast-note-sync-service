@@ -85,7 +85,7 @@
 
 ## database 与 user-database
 
-两段使用同一结构。`user-database.type` 为空时使用主数据库；非空时为每用户数据配置独立后端。MySQL/MariaDB 当前不受支持，请使用 SQLite 或 PostgreSQL。
+两段使用同一结构。`user-database.type` 为空时，用户库继承**全部主数据库配置**，其他字段的代码默认值不会用于该回落路径；非空时才使用 `user-database` 的独立配置。MySQL/MariaDB 当前不受支持，请使用 SQLite 或 PostgreSQL。
 
 | 键 | 类型 | database 默认 | user-database 默认 | 作用 |
 | --- | --- | --- | --- | --- |
