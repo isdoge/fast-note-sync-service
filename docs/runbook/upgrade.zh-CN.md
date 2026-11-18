@@ -4,7 +4,7 @@
 
 ## 升级前
 
-1. 停止客户端写入和服务端进程，避免备份过程中继续变化。
+1. 停止客户端写入和服务端进程，避免备份过程中继续变化。若现有客户端仍在写入，可只在备份窗口暂停它们，备份完成后再启动 3.7.0。
 2. 备份完整 `config/` 与 `storage/`。前者包含配置、`lastVersion` 和可能的 `.server_uuid`，后者包含默认 SQLite 数据库、正文、附件、索引及日志。
 3. 数据库不在 `storage/` 时，按所用数据库的一致性备份流程另行备份；对象存储中的附件也要保留可恢复快照。
 4. 记录当前二进制或镜像版本、启动命令、端口映射和挂载目录。
@@ -52,11 +52,11 @@ docker compose logs -f fast-note-sync-service
 仓库脚本已改为读取 isdoge Releases：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/isdoge/fast-note-sync-service/v3.7.0/scripts/quest_install.sh -o quest_install.sh
+curl -fsSL https://raw.githubusercontent.com/isdoge/fast-note-sync-service/3.7.0/scripts/quest_install.sh -o quest_install.sh
 sudo sh quest_install.sh install 3.7.0
 ```
 
-脚本的 `install` 会先停止服务，下载指定版本，替换二进制，安装/更新管理器并启动服务；`update` 总是安装最新版本，不适合要求固定 3.7.0 的升级。已有管理器可运行 `sudo fast-note-installer install 3.7.0`。脚本会保留目标位置已有的配置文件。
+脚本的 `install` 会先停止服务，下载指定版本，替换二进制，安装/更新管理器并启动服务；`update` 总是安装最新版本，不适合要求固定 3.7.0 的升级。已有管理器可运行 `sudo fns install 3.7.0`。脚本会保留目标位置已有的配置文件。
 
 ## 首次启动的一次性迁移
 

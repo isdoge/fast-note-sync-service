@@ -4,7 +4,7 @@ Release 3.7.0 is independently maintained by isdoge in `isdoge/fast-note-sync-se
 
 ## Before upgrading
 
-1. Stop client writes and the service so the backup does not keep changing.
+1. Stop client writes and the service so the backup does not keep changing. If existing clients cannot remain paused, pause them only for the backup window before starting 3.7.0.
 2. Back up all of `config/` and `storage/`. The former contains configuration, `lastVersion`, and possibly `.server_uuid`; the latter contains the default SQLite databases, note bodies, attachments, indexes, and logs.
 3. If the database is outside `storage/`, take a separate consistent database backup. Keep a restorable snapshot of attachments in object storage too.
 4. Record the current binary/image version, launch command, port mappings, and mounts.
@@ -52,11 +52,11 @@ The command is repeatable; migrations already recorded are skipped. A normal `ru
 The repository installer reads isdoge Releases:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/isdoge/fast-note-sync-service/v3.7.0/scripts/quest_install.sh -o quest_install.sh
+curl -fsSL https://raw.githubusercontent.com/isdoge/fast-note-sync-service/3.7.0/scripts/quest_install.sh -o quest_install.sh
 sudo sh quest_install.sh install 3.7.0
 ```
 
-`install` stops the service, downloads the specified release, replaces the binary, installs/updates the manager, and starts the service. `update` always installs the latest version and is unsuitable when 3.7.0 must be pinned. An existing manager can run `sudo fast-note-installer install 3.7.0`. Existing configuration files at the destination are preserved.
+`install` stops the service, downloads the specified release, replaces the binary, installs/updates the manager, and starts the service. `update` always installs the latest version and is unsuitable when 3.7.0 must be pinned. An existing manager can run `sudo fns install 3.7.0`. Existing configuration files at the destination are preserved.
 
 ## One-time migrations on first startup
 
