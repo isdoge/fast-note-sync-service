@@ -4,7 +4,9 @@ import (
 	"context"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/config"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
@@ -104,4 +106,93 @@ func TestTenantCacheKey_SQLiteKeepsOriginalKeys(t *testing.T) {
 	d := New(nil, context.Background(), WithConfig(cfg), WithUserDatabaseConfig(cfg), WithLogger(zap.NewNop()))
 	require.Equal(t, "user_note_1", d.tenantCacheKey("user_note_1"))
 	require.Equal(t, "user_vault_1", d.tenantCacheKey("user_vault_1"))
+}
+
+// TestGetOrCreateDB_SameNormalizedKeyBuildsOnce proves singleflight semantics
+// at the normalized cache key: N concurrent first accesses to repository keys
+// of one PostgreSQL/MySQL user call the pool creator exactly once.
+// TestGetOrCreateDB_SameNormalizedKeyBuildsOnce 验证归一缓存键的 singleflight
+// 语义：同一 PostgreSQL/MySQL 用户多个仓储 key 的 N 次并发首次访问，只调用
+// 一次建池函数。
+func TestGetOrCreateDB_SameNormalizedKeyBuildsOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainDB, err := gorm.Open(sqlite.Open(filepath.Join(tmpDir, "main.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+
+	cfg := &config.DatabaseConfig{Type: "postgres", Host: "127.0.0.1", Name: "fns_test", EnableWriteQueue: util.Ptr(false)}
+	daoInst := New(mainDB, context.Background(), WithConfig(cfg), WithUserDatabaseConfig(cfg), WithLogger(zap.NewNop()))
+	daoInst.schemaEnsurer = func(string) error { return nil }
+	var calls atomic.Int32
+	ready := make(chan struct{})
+	daoInst.poolCreator = func(c config.DatabaseConfig, logger *zap.Logger) (*gorm.DB, error) {
+		calls.Add(1)
+		<-ready
+		return gorm.Open(sqlite.Open(filepath.Join(tmpDir, "created.sqlite3")), &gorm.Config{})
+	}
+
+	const n = 8
+	keys := []string{"user_note_1", "user_vault_1", "user_file_1", "user_setting_1", "user_folder_1", "user_note_history_1", "user_1", "user_storage_1"}
+	var wg sync.WaitGroup
+	results := make([]*gorm.DB, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = daoInst.GetOrCreateDB(keys[i])
+		}(i)
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(ready)
+	wg.Wait()
+
+	require.Equal(t, int32(1), calls.Load())
+	require.Equal(t, 1, daoInst.PoolCount())
+	require.NotNil(t, results[0])
+	for _, db := range results[1:] {
+		require.Same(t, results[0], db)
+	}
+}
+
+// TestGetOrCreateDB_BuildDoesNotBlockCachedKey verifies the global cache lock is
+// not held while a new pool is being built: an already cached key remains
+// readable while another key's creator is blocked.
+// TestGetOrCreateDB_BuildDoesNotBlockCachedKey 验证建新池时不持有全局缓存锁：
+// 一个 key 的建池函数被阻塞时，另一个已缓存 key 的访问仍能立即返回。
+func TestGetOrCreateDB_BuildDoesNotBlockCachedKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	mainDB, err := gorm.Open(sqlite.Open(filepath.Join(tmpDir, "main.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+
+	cfg := &config.DatabaseConfig{Type: "sqlite", Path: filepath.Join(tmpDir, "tenant.sqlite3"), EnableWriteQueue: util.Ptr(false)}
+	daoInst := New(mainDB, context.Background(), WithConfig(cfg), WithUserDatabaseConfig(cfg), WithLogger(zap.NewNop()))
+	cached := daoInst.GetOrCreateDB("cached")
+	require.NotNil(t, cached)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	daoInst.poolCreator = func(c config.DatabaseConfig, logger *zap.Logger) (*gorm.DB, error) {
+		close(started)
+		<-release
+		return gorm.Open(sqlite.Open(filepath.Join(tmpDir, "blocked.sqlite3")), &gorm.Config{})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = daoInst.GetOrCreateDB("blocked")
+	}()
+	<-started
+
+	hitDone := make(chan struct{})
+	go func() {
+		defer close(hitDone)
+		require.Same(t, cached, daoInst.GetOrCreateDB("cached"))
+	}()
+	select {
+	case <-hitDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("cached key access was blocked while another pool was being built")
+	}
+	close(release)
+	<-done
 }
