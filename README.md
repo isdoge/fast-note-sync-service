@@ -1,16 +1,17 @@
-[简体中文](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/haierkeys/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
+[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
 
-If you have any questions, please create an [issue](https://github.com/haierkeys/fast-note-sync-service/issues/new) or join our Telegram group for help: [https://t.me/obsidian_users](https://t.me/obsidian_users)
+> [!IMPORTANT]
+> **This repository is an independently maintained bugfix fork.** The upstream [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) has not been updated since August 2026. This repository was forked by [isdoge](https://github.com/isdoge) from upstream v3.6.1, merges the backlog of upstream PRs and fixes known issues, and evolves independently from here on — version numbers no longer follow upstream. The image and download URLs have changed; see "About This Repository" below.
 
-For users in Mainland China, it is recommended to use the Tencent cnb.cool mirror repository: [https://cnb.cool/haierkeys/fast-note-sync-service](https://cnb.cool/haierkeys/fast-note-sync-service)
+If you run into problems or have feature requests, please open an [issue](https://github.com/isdoge/fast-note-sync-service/issues/new) in this repository.
 
 
 <h1 align="center">Fast Note Sync Service</h1>
 
 <p align="center">
-    <a href="https://github.com/haierkeys/fast-note-sync-service/releases"><img src="https://img.shields.io/github/release/haierkeys/fast-note-sync-service?style=flat-square" alt="release"></a>
-    <a href="https://github.com/haierkeys/fast-note-sync-service/releases"><img src="https://img.shields.io/github/v/tag/haierkeys/fast-note-sync-service?label=release-alpha&style=flat-square" alt="alpha-release"></a>
-    <a href="https://github.com/haierkeys/fast-note-sync-service/blob/master/LICENSE"><img src="https://img.shields.io/github/license/haierkeys/fast-note-sync-service?style=flat-square" alt="license"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/releases"><img src="https://img.shields.io/github/release/isdoge/fast-note-sync-service?style=flat-square" alt="release"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/releases"><img src="https://img.shields.io/github/v/tag/isdoge/fast-note-sync-service?label=release-alpha&style=flat-square" alt="alpha-release"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/blob/master/LICENSE"><img src="https://img.shields.io/github/license/isdoge/fast-note-sync-service?style=flat-square" alt="license"></a>
     <img src="https://img.shields.io/badge/Language-Go-00ADD8?style=flat-square" alt="Go">
 </p>
 
@@ -21,7 +22,7 @@ For users in Mainland China, it is recommended to use the Tencent cnb.cool mirro
 </p>
 
 <p align="center">
-  Data provisioning requires integration with the client plugin: <a href="https://github.com/haierkeys/obsidian-fast-note-sync">Obsidian Fast Note Sync Plugin</a>
+  Data provisioning requires integration with the client plugin: <a href="https://github.com/isdoge/obsidian-fast-note-sync">Obsidian Fast Note Sync Plugin</a>
 </p>
 
 <div align="center">
@@ -37,16 +38,54 @@ For users in Mainland China, it is recommended to use the Tencent cnb.cool mirro
 
 ---
 
+## 📌 About This Repository
+
+This repository is an independently maintained fork of [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service), maintained by [isdoge](https://github.com/isdoge). Many thanks to the original author HaierKeys for creating this project.
+
+- **Origin**: Forked from upstream v3.6.1, it merges the 13 PRs that were pending upstream at the time and fixes a batch of known issues. See the [changelog](docs/CHANGELOG.en.md) for the complete list.
+- **Versioning**: Version numbers increment independently starting from v3.7.0 and no longer follow upstream.
+- **Release channels**: Binaries are published only on this repository's [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases), and the container image is published only to `ghcr.io/isdoge/fast-note-sync-service`. The in-app update check and download URLs have also been pointed at this repository.
+- **Companion plugin**: Pair it with the likewise independently maintained [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync) (v2.5.0 or newer). Some fixes only take effect when both the server and the plugin are upgraded.
+- **Unchanged**: The original author's copyright attribution and sponsorship information, and the Go module path (`github.com/haierkeys/fast-note-sync-service`); existing configuration files and data directories can be used as they are.
+- **Feedback**: Please report issues and feature requests to this repository's [Issues](https://github.com/isdoge/fast-note-sync-service/issues), not to the upstream repository.
+
+### Removed
+
+The following items have been removed in this independently maintained fork. **If you need any of them, please [open an issue](https://github.com/isdoge/fast-note-sync-service/issues/new) and let me know** your use case — I'll consider whether to bring it back.
+
+| Removed | Note | Use instead |
+| --- | --- | --- |
+| Docker Hub image `haierkeys/fast-note-sync-service` | This repository does not publish to Docker Hub; that image is still the old upstream version | `ghcr.io/isdoge/fast-note-sync-service` |
+| Tencent `cnb.cool` image registry and download source | No longer synced to cnb; the one-click script's `--cnb` flag and image-switch menu, and the cnb option in the admin panel, have been removed as well | GitHub |
+| Feiniu fnOS `.fpk` installers | No longer built | Docker or binary deployment |
+| `ssh://`, `git://`, and `user@host:path` repository URLs for Git sync | These URL forms never actually worked for syncing; saving and validation now reject them with a clear message | `http` / `https` URLs |
+
+In addition, **the MySQL / MariaDB backend is not recommended in the current version** (table-creation issues remain unresolved); please use SQLite or PostgreSQL.
+
+### Upgrading from upstream
+
+- **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion).
+- **Docker**: Change the image to `ghcr.io/isdoge/fast-note-sync-service:latest`; volumes and configuration can stay as they are.
+- **Binary**: Download the package for your platform from this repository's Releases and replace the binary, or re-run the one-click script below.
+- **Behavior changes** (excerpt; see the "Changes" and "Security" sections of the changelog for the full list):
+  - `trusted-proxies` trusts only loopback addresses by default. For same-host Docker + Nginx deployments with IP-bound tokens, add the gateway address to `trusted-proxies`.
+  - API tokens restricted to a specific vault must now include the vault parameter in requests.
+  - When the Git-synced repository is on a private network or in `100.64.0.0/10` (e.g., a Gitea accessed via Tailscale), add the address or subnet to `git.allowed-private-hosts`.
+  - WebSocket connections with no response at all are closed after about 100 seconds (previously about 75). If connections drop frequently behind Cloudflare Tunnel or similar links, increase `app.ws-ping-wait`.
+
 ## 🎯 Key Features
 
 * **🧰 Native MCP (Model Context Protocol) Support**:
   * `FNS` can be integrated as an MCP server into compatible AI clients such as `Cherry Studio` and `Cursor`. This enables the AI to read and write your personal notes and attachments, with all changes synchronized across all clients in real-time.
+  * Adds 7 knowledge query tools: full-text search, broken links, orphan notes, tags, recent changes, list by prefix, and vault statistics; `note_list` and `file_list` support pagination.
+  * Supports connecting to ChatGPT as a connector via the OpenAI Secure MCP Tunnel.
 * **🚀 REST API Support**:
   * Provides standard REST API interfaces to support programmatic CRUD operations on Obsidian notes (e.g., via automation scripts or AI assistant integrations).
   * For details, please refer to the [RESTful API Documentation](docs/REST_API.md) or [OpenAPI Documentation](docs/swagger.yaml).
 * **💻 Web Admin Panel**:
   * Built-in modern administration interface to easily create users, generate plugin configurations, and manage vaults and note content.
   * Supports WebGUI OIDC login. See the [OIDC login runbook](docs/runbook/OIDC.en.md).
+  * Expired login tokens are cleaned up automatically every day.
 * **🔄 Multi-Device Note Synchronization**:
   * Supports automatic creation of `Vaults`.
   * Supports note management (CRUD), with millisecond-level real-time change distribution to all online devices.
@@ -78,6 +117,7 @@ For users in Mainland China, it is recommended to use the Tencent cnb.cool mirro
 
 * **🌳 Git Automation**:
   * Automatically updates and pushes changes to a remote Git repository when notes or attachments change.
+  * Repository URLs support http / https; repositories on private networks must be added to the `git.allowed-private-hosts` whitelist.
   * Automatically releases system memory after tasks complete.
 
 * **☁️ Multi-Storage Backup & One-way Mirror Sync**:
@@ -87,19 +127,18 @@ For users in Mainland China, it is recommended to use the Tencent cnb.cool mirro
   * Automatically cleans up expired backups with custom retention days.
 
 * **🗄️ Multi-Database Support**:
-  * Native support for mainstream databases including SQLite, MySQL, and PostgreSQL, meeting deployment needs from individuals to teams.
+  * Supports SQLite and PostgreSQL, meeting deployment needs from individuals to teams. MySQL / MariaDB are not recommended in the current version.
 
 ## ☕ Sponsorship and Support
 
-- If you find this plugin useful and want to support its ongoing development, please support me in the following ways:
+- This project was created by HaierKeys. If you find it helpful, you can support the original author in the following ways (donations go to the original author and are unrelated to the maintenance of this repository):
 
   | Ko-fi *Outside China*                                                                            |    | WeChat Pay *China*                             |
   |--------------------------------------------------------------------------------------------------|----|------------------------------------------------|
   | [<img src="/docs/images/kofi.png" alt="BuyMeACoffee" height="150">](https://ko-fi.com/haierkeys) | or | <img src="/docs/images/wxds.png" height="150"> |
 
   - Sponsor List:
-    - <a href="https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/Support.en.md">Support.en.md</a>
-    - <a href="https://cnb.cool/haierkeys/fast-note-sync-service/-/blob/master/docs/Support.en.md">Support.en.md (cnb.cool mirror repository)</a>
+    - <a href="https://github.com/isdoge/fast-note-sync-service/blob/master/docs/Support.en.md">Support.en.md</a>
 
 ## ⏱️ Changelog
 
@@ -107,7 +146,7 @@ For users in Mainland China, it is recommended to use the Tencent cnb.cool mirro
 
 ## 🗺️ Roadmap
 
-- [ ] Add support for WebSocket `Protobuf` transfer format to enhance synchronization efficiency.
+- [x] Add support for WebSocket `Protobuf` transfer format to enhance synchronization efficiency.
 - [ ] Isolate and optimize the existing authorization mechanism to improve overall security.
 - [ ] Add real-time note updates to the Web UI.
 - [ ] Add peer-to-peer message transfer between clients (non-notes & attachments, similar to LocalSend; client-side storage is not supported, but server-side is).
@@ -117,7 +156,7 @@ For users in Mainland China, it is recommended to use the Tencent cnb.cool mirro
   * Deploy the FNS server by simply providing the server address (public IP) and account credentials.
 - [ ] Optimize the existing offline note merging scheme and introduce conflict resolution mechanisms.
 
-We are continuously improving, and here is our future development roadmap:
+This roadmap follows the original author's plan. The independently maintained fork will work through the list item by item, checking off each one as it is completed.
 
 > **If you have suggestions for improvement or new ideas, feel free to share them with us by submitting an issue — we will carefully evaluate and adopt suitable ones.**
 
@@ -130,12 +169,7 @@ We provide multiple installation methods. We highly recommend using the **One-cl
 Automatically detects the system environment and completes the installation and service registration.
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/haierkeys/fast-note-sync-service/master/scripts/quest_install.sh)
-```
-
-For users in China, you can use the Tencent `cnb.cool` mirror source:
-```bash
-bash <(curl -fsSL https://cnb.cool/haierkeys/fast-note-sync-service/-/git/raw/master/scripts/quest_install.sh) --cnb
+bash <(curl -fsSL https://raw.githubusercontent.com/isdoge/fast-note-sync-service/master/scripts/quest_install.sh)
 ```
 
 
@@ -144,25 +178,27 @@ bash <(curl -fsSL https://cnb.cool/haierkeys/fast-note-sync-service/-/git/raw/ma
   * Automatically downloads the Release binary adapted to the current system.
   * Installs to `/opt/fast-note` by default and creates a global shortcut command `fns` in `/usr/local/bin/fns`.
   * Configures and starts Systemd (Linux) or Launchd (macOS) services to enable startup on boot.
+  * **Interactive menu**: Running `fns` directly opens an interactive menu with install/upgrade, service control, and auto-start configuration.
   * **Management commands**: `fns [install|uninstall|start|stop|status|update|menu]`
-  * **Interactive menu**: Run `fns` directly to enter the interactive menu, supporting install/upgrade, service control, startup configuration, and switching between GitHub and CNB mirrors.
 
 -----
 
 ### Method 2: Docker Deployment
 
+The image is published on GitHub Container Registry for linux/amd64, linux/arm64, and linux/arm/v7. The `haierkeys/fast-note-sync-service` image on Docker Hub is the old upstream version — do not mix the two.
+
 #### Docker Run
 
 ```bash
 # 1. Pull Image
-docker pull haierkeys/fast-note-sync-service:latest
+docker pull ghcr.io/isdoge/fast-note-sync-service:latest
 
 # 2. Start Container
 docker run -tid --name fast-note-sync-service \
     -p 9000:9000 \
     -v /data/fast-note-sync/storage/:/fast-note-sync/storage/ \
     -v /data/fast-note-sync/config/:/fast-note-sync/config/ \
-    haierkeys/fast-note-sync-service:latest
+    ghcr.io/isdoge/fast-note-sync-service:latest
 ```
 
 #### Docker Compose
@@ -173,7 +209,7 @@ Create the `docker-compose.yaml` file:
 version: '3'
 services:
   fast-note-sync-service:
-    image: haierkeys/fast-note-sync-service:latest
+    image: ghcr.io/isdoge/fast-note-sync-service:latest
     container_name: fast-note-sync-service
     restart: always
     ports:
@@ -193,7 +229,7 @@ docker compose up -d
 
 ### Method 3: Manual Binary Installation
 
-Download the latest version for your system from [Releases](https://github.com/haierkeys/fast-note-sync-service/releases), extract it, and run:
+Download the latest version for your system from [Releases](https://github.com/isdoge/fast-note-sync-service/releases), extract it, and run:
 
 ```bash
 ./fast-note-sync-service run -c config/config.yaml
@@ -215,11 +251,11 @@ Download the latest version for your system from [Releases](https://github.com/h
 
 The default configuration file is `config.yaml`. The application automatically searches in the **root directory** or the **config/** directory.
 
-View the complete configuration example: [config/config.yaml](https://github.com/haierkeys/fast-note-sync-service/blob/master/config/config.yaml)
+View the complete configuration example: [config/config.yaml](https://github.com/isdoge/fast-note-sync-service/blob/master/config/config.yaml)
 
 ## 🌐 Nginx Reverse Proxy Example
 
-View the complete configuration example: [https-nginx-example.conf](https://github.com/haierkeys/fast-note-sync-service/blob/master/scripts/https-nginx-example.conf)
+View the complete configuration example: [https-nginx-example.conf](https://github.com/isdoge/fast-note-sync-service/blob/master/scripts/https-nginx-example.conf)
 
 ## 🧰 MCP (Model Context Protocol) Support
 
@@ -305,7 +341,7 @@ SSE mode is the legacy transport protocol. It is fully retained to maintain back
 ## 🔗 Clients, Client Plugins & Collaboration Projects
 
 * Obsidian Fast Note Sync Plugin
-  * [Obsidian Fast Note Sync Plugin](https://github.com/haierkeys/obsidian-fast-note-sync) / [cnb.cool mirror repository](https://cnb.cool/haierkeys/obsidian-fast-note-sync)
+  * [Obsidian Fast Note Sync Plugin](https://github.com/isdoge/obsidian-fast-note-sync)
 * Third-Party Clients
   * [FastNodeSync-CLI](https://github.com/Go1c/FastNodeSync-CLI) A command-line client implemented in Python based on the FNS WebSocket synchronization protocol. It enables real-time, bi-directional sync, suitable for GUI-less Linux server environments (such as OpenClaw), providing the same sync capabilities as the Obsidian desktop and mobile clients.
   * [go-fast-note-sync](https://github.com/erichll/go-fast-note-sync) A Go CLI background synchronization daemon implemented in Go based on the FNS WebSocket sync protocol, primarily targetting headless Linux environments while also supporting macOS and Windows.
