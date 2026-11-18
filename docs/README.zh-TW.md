@@ -1,16 +1,17 @@
-[简体中文](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/haierkeys/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
+[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
 
-有問題請新建 [issue](https://github.com/haierkeys/fast-note-sync-service/issues/new) , 或加入電報交流群尋求幫助: [https://t.me/obsidian_users](https://t.me/obsidian_users)
+> [!IMPORTANT]
+> **本倉庫是獨立維護的修復版。** 上游 [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) 自 2026 年 8 月起沒有再更新。本倉庫由 [isdoge](https://github.com/isdoge) 從上游 v3.6.1 分出，合併了上游積壓的 PR 並修復已知問題，此後獨立演進，版本號不再跟隨上游。映像檔與下載位址都已變更，詳見下文「關於本倉庫」。
 
-中國大陸地區，推薦使用騰訊 cnb.cool 鏡像庫: [https://cnb.cool/haierkeys/fast-note-sync-service](https://cnb.cool/haierkeys/fast-note-sync-service)
+有問題或需求，請在本倉庫新建 [issue](https://github.com/isdoge/fast-note-sync-service/issues/new)。
 
 
 <h1 align="center">Fast Note Sync Service</h1>
 
 <p align="center">
-    <a href="https://github.com/haierkeys/fast-note-sync-service/releases"><img src="https://img.shields.io/github/release/haierkeys/fast-note-sync-service?style=flat-square" alt="release"></a>
-    <a href="https://github.com/haierkeys/fast-note-sync-service/releases"><img src="https://img.shields.io/github/v/tag/haierkeys/fast-note-sync-service?label=release-alpha&style=flat-square" alt="alpha-release"></a>
-    <a href="https://github.com/haierkeys/fast-note-sync-service/blob/master/LICENSE"><img src="https://img.shields.io/github/license/haierkeys/fast-note-sync-service?style=flat-square" alt="license"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/releases"><img src="https://img.shields.io/github/release/isdoge/fast-note-sync-service?style=flat-square" alt="release"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/releases"><img src="https://img.shields.io/github/v/tag/isdoge/fast-note-sync-service?label=release-alpha&style=flat-square" alt="alpha-release"></a>
+    <a href="https://github.com/isdoge/fast-note-sync-service/blob/master/LICENSE"><img src="https://img.shields.io/github/license/isdoge/fast-note-sync-service?style=flat-square" alt="license"></a>
     <img src="https://img.shields.io/badge/Language-Go-00ADD8?style=flat-square" alt="Go">
 </p>
 
@@ -21,7 +22,7 @@
 </p>
 
 <p align="center">
-  數據提供需配合用戶端外掛程式使用：<a href="https://github.com/haierkeys/obsidian-fast-note-sync">Obsidian Fast Note Sync Plugin</a>
+  數據提供需配合用戶端外掛程式使用：<a href="https://github.com/isdoge/obsidian-fast-note-sync">Obsidian Fast Note Sync Plugin</a>
 </p>
 
 <div align="center">
@@ -37,16 +38,54 @@
 
 ---
 
+## 📌 關於本倉庫
+
+本倉庫是 [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) 的獨立維護版本，維護者 [isdoge](https://github.com/isdoge)。感謝原作者 HaierKeys 建立了這個專案。
+
+- **來源**：從上游 v3.6.1 分出，合併了上游當時未處理的 13 個 PR，並修復了一批已知問題。完整清單見[更新日誌](/docs/CHANGELOG.zh-TW.md)。
+- **版本號**：自 v3.7.0 起獨立遞增，不再跟隨上游。
+- **發布管道**：二進位檔只在本倉庫的 [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases) 發布，映像檔只發布到 `ghcr.io/isdoge/fast-note-sync-service`。程式內的更新檢查與下載位址也已指向本倉庫。
+- **配套外掛**：請搭配同樣獨立維護的 [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)（v2.5.0 及以上）。部分修復需要服務端和外掛都升級才生效。
+- **保持不變**：原作者的版權署名與贊助資訊、Go module 路徑（`github.com/haierkeys/fast-note-sync-service`）；原有的設定檔和資料目錄可以直接沿用。
+- **意見回饋**：問題和需求請提到本倉庫的 [Issues](https://github.com/isdoge/fast-note-sync-service/issues)，不要提到上游倉庫。
+
+### 已移除的內容
+
+下面這些在獨立維護版裡已經移除。**如果你需要其中某一項，請[提 issue](https://github.com/isdoge/fast-note-sync-service/issues/new) 告訴我**，說明使用情境，我會評估是否恢復。
+
+| 已移除 | 說明 | 現在請用 |
+| --- | --- | --- |
+| Docker Hub 映像檔 `haierkeys/fast-note-sync-service` | 本倉庫不向 Docker Hub 發布，該位址上仍是上游的舊版本 | `ghcr.io/isdoge/fast-note-sync-service` |
+| 騰訊 `cnb.cool` 映像檔倉庫與下載源 | 不再同步到 cnb；一鍵指令碼的 `--cnb` 參數和映像檔切換選單、管理面板裡的 cnb 選項一併移除 | GitHub |
+| 飛牛 fnOS `.fpk` 安裝包 | 不再建置 | Docker 或二進位部署 |
+| Git 同步的 `ssh://`、`git://`、`user@host:path` 儲存庫位址 | 這幾種位址此前就無法完成同步，現在儲存和驗證時直接提示 | `http` / `https` 位址 |
+
+另外，**MySQL / MariaDB 後端在目前版本不建議使用**（仍有未解決的建表問題），請使用 SQLite 或 PostgreSQL。
+
+### 從上游版本升級
+
+- **先備份**資料目錄與設定。首次啟動 v3.7.0 會執行三個一次性資料遷移（標籤索引回填、筆記大小回填、秒級時間戳轉毫秒）。
+- **Docker 部署**：把映像檔位址換成 `ghcr.io/isdoge/fast-note-sync-service:latest`，資料卷和設定不用動。
+- **二進位部署**：從本倉庫的 Releases 下載對應平台的套件替換原程式，或重新執行下文的一鍵指令碼。
+- **行為變化**（節選，完整內容見更新日誌的「變更」與「安全」部分）：
+  - `trusted-proxies` 預設只信任回環位址。同機 Docker + Nginx 部署且權杖綁定了 IP 時，需要把閘道位址加入 `trusted-proxies`。
+  - 限定了筆記庫的 API 權杖，請求裡必須帶上筆記庫參數。
+  - Git 同步的儲存庫在內網或 `100.64.0.0/10`（例如透過 Tailscale 存取的 Gitea）時，需要把位址或網段加入 `git.allowed-private-hosts`。
+  - 完全沒有回應的 WebSocket 連線約 100 秒後斷開（原來約 75 秒）。經 Cloudflare Tunnel 等鏈路頻繁斷線時，可以調大 `app.ws-ping-wait`。
+
 ## 🎯 核心功能
 
 * **🧰 MCP (Model Context Protocol) 原生支援**：
   * `FNS` 可以作為 MCP 服務端接入 `Cherry Studio`、`Cursor` 等相容的 AI 用戶端，即可讓 AI 具備讀寫私人筆記與附件的能力，且所有變更即時同步到各端。
+  * 新增 7 個知識查詢工具：全文搜尋、失效連結、孤立筆記、標籤、最近修改、按前綴列出、庫統計；`note_list`、`file_list` 支援分頁。
+  * 支援透過 OpenAI Secure MCP Tunnel 串接 ChatGPT 連接器。
 * **🚀 REST API 支援**：
   * 提供標準的 REST API 介面，支援透過程式化方式（如自動化指令碼、AI 助手整合）對 Obsidian 筆記進行增刪改查。
   * 詳情請參閱 [RESTful API 文件](/docs/REST_API.md) 或 [OpenAPI 文件](/docs/swagger.yaml)。
 * **💻 Web 管理面板**：
   * 內建現代化管理介面，輕鬆建立使用者、產生外掛組態、管理倉庫及筆記內容。
   * 支援 WebGUI OIDC 登入。請參閱 [OIDC 登入執行手冊](/docs/runbook/OIDC.zh-TW.md)。
+  * 過期的登入權杖每天自動清理。
 * **🔄 多端筆記同步**：
   * 支援 `Vault (倉庫)` 自動建立。
   * 支援筆記管理（增、刪、改、查），變更毫秒級即時分發至所有線上裝置。
@@ -78,6 +117,7 @@
 
 * **🌳 Git 自動化**：
   * 當附件和筆記發生變更時，自動更新並推送到遠端 Git 倉庫。
+  * 儲存庫位址支援 http / https；內網儲存庫需要加入白名單 `git.allowed-private-hosts`。
   * 任務結束後自動釋放系統記憶體。
 
 * **☁️ 多儲存備份與單向鏡像同步**：
@@ -87,19 +127,18 @@
   * 自動清理過期備份，支援自訂保留天數。
 
 * **🗄️ 多資料庫支援**：
-  * 原生支援 SQLite、MySQL、PostgreSQL 等多種主流資料庫，滿足從個人到團隊的不同部署需求。
+  * 支援 SQLite 與 PostgreSQL，滿足從個人到團隊的不同部署需求。MySQL / MariaDB 在目前版本不建議使用。
 
 ## ☕ 贊助與支援
 
-- 如果覺得此外掛程式很有用，並且想要它繼續開發，請在以下方式支持我：
+- 本專案由 HaierKeys 建立。如果它對你有幫助，可以透過以下方式支持原作者（款項歸原作者，與本倉庫的維護無關）：
 
   | Ko-fi *非中國地區*                                                                               |    | 微信掃碼打賞 *中國地區*                        |
   |--------------------------------------------------------------------------------------------------|----|------------------------------------------------|
   | [<img src="/docs/images/kofi.png" alt="BuyMeACoffee" height="150">](https://ko-fi.com/haierkeys) | 或 | <img src="/docs/images/wxds.png" height="150"> |
 
   - 已支持名單：
-    - <a href="https://github.com/haierkeys/fast-note-sync-service/blob/master/docs/Support.zh-TW.md">Support.zh-TW.md</a>
-    - <a href="https://cnb.cool/haierkeys/fast-note-sync-service/-/blob/master/docs/Support.zh-TW.md">Support.zh-TW.md (cnb.cool 鏡像庫)</a>
+    - <a href="https://github.com/isdoge/fast-note-sync-service/blob/master/docs/Support.zh-TW.md">Support.zh-TW.md</a>
 
 ## ⏱️ 更新日誌
 
@@ -107,7 +146,7 @@
 
 ## 🗺️ 路線圖 (Roadmap)
 
-- [ ] 增加 WebSocket `Protobuf` 傳輸格式的支援，強化同步傳輸效率。
+- [x] 增加 WebSocket `Protobuf` 傳輸格式的支援，強化同步傳輸效率。
 - [ ] 對現有授權機制進行隔離以及優化，提升整體安全性。
 - [ ] 增加 Web UI 筆記即時更新。
 - [ ] 增加用戶端點對點訊息傳送（非筆記與附件，類似 LocalSend 功能，不支援用戶端儲存，可儲存到服務端）。
@@ -117,7 +156,7 @@
   * 只需要提供伺服器位址（公網）、帳號密碼即可完成 FNS 服務端的部署。
 - [ ] 優化現有的離線筆记合併方案，增加衝突處理機制。
 
-我們正在持續改進，以下是未來的開發計劃：
+路線圖沿用原作者的規劃。獨立維護版會按這份清單逐項推進，完成一項勾選一項。
 
 > **如果您有改進建議或新想法，歡迎透過提交 issue 與我們分享——我們會認真評估並採納合適的建議。**
 
@@ -130,12 +169,7 @@
 自動偵測系統環境並完成安裝、服務註冊。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/haierkeys/fast-note-sync-service/master/scripts/quest_install.sh)
-```
-
-中國地區可以使用騰訊 `cnb.cool` 鏡像來源：
-```bash
-bash <(curl -fsSL https://cnb.cool/haierkeys/fast-note-sync-service/-/git/raw/master/scripts/quest_install.sh) --cnb
+bash <(curl -fsSL https://raw.githubusercontent.com/isdoge/fast-note-sync-service/master/scripts/quest_install.sh)
 ```
 
 
@@ -144,25 +178,27 @@ bash <(curl -fsSL https://cnb.cool/haierkeys/fast-note-sync-service/-/git/raw/ma
   * 自動下載適配目前系統的 Release 二進位檔案。
   * 預設安裝至 `/opt/fast-note`，並在 `/usr/local/bin/fns` 建立全域快捷命令 `fns`。
   * 設定並啟動 Systemd（Linux）或 Launchd（macOS）服務，實作開机自啟。
+  * **互動選單**：直接執行 `fns` 可進入互動選單，支援安裝/升級、服務控制、開機自啟設定。
   * **管理命令**：`fns [install|uninstall|start|stop|status|update|menu]`
-  * **互動功能表**：直接執行 `fns` 可進入互動功能表，支援安裝/升級、服務控制、開機自啟設定，以及在 GitHub / CNB 鏡像之間切換。
 
 -----
 
 ### 方式二：Docker 部署
 
+映像檔發布在 GitHub Container Registry，支援 linux/amd64、linux/arm64、linux/arm/v7。Docker Hub 上的 `haierkeys/fast-note-sync-service` 是上游舊版本，請不要混用。
+
 #### Docker Run
 
 ```bash
 # 1. 拉取鏡像
-docker pull haierkeys/fast-note-sync-service:latest
+docker pull ghcr.io/isdoge/fast-note-sync-service:latest
 
 # 2. 啟動容器
 docker run -tid --name fast-note-sync-service \
     -p 9000:9000 \
     -v /data/fast-note-sync/storage/:/fast-note-sync/storage/ \
     -v /data/fast-note-sync/config/:/fast-note-sync/config/ \
-    haierkeys/fast-note-sync-service:latest
+    ghcr.io/isdoge/fast-note-sync-service:latest
 ```
 
 #### Docker Compose
@@ -173,7 +209,7 @@ docker run -tid --name fast-note-sync-service \
 version: '3'
 services:
   fast-note-sync-service:
-    image: haierkeys/fast-note-sync-service:latest
+    image: ghcr.io/isdoge/fast-note-sync-service:latest
     container_name: fast-note-sync-service
     restart: always
     ports:
@@ -193,7 +229,7 @@ docker compose up -d
 
 ### 方式三：手動二進位安裝
 
-從 [Releases](https://github.com/haierkeys/fast-note-sync-service/releases) 下載對應系統的最新版本，解壓後執行：
+從 [Releases](https://github.com/isdoge/fast-note-sync-service/releases) 下載對應系統的最新版本，解壓後執行：
 
 ```bash
 ./fast-note-sync-service run -c config/config.yaml
@@ -215,11 +251,11 @@ docker compose up -d
 
 預設設定檔為 `config.yaml`，程式會自動在 **根目錄** 或 **config/** 目錄下尋找。
 
-查看完整組態範例：[config/config.yaml](https://github.com/haierkeys/fast-note-sync-service/blob/master/config/config.yaml)
+查看完整組態範例：[config/config.yaml](https://github.com/isdoge/fast-note-sync-service/blob/master/config/config.yaml)
 
 ## 🌐 Nginx 反向代理組態範例
 
-查看完整組態範例：[https-nginx-example.conf](https://github.com/haierkeys/fast-note-sync-service/blob/master/scripts/https-nginx-example.conf)
+查看完整組態範例：[https-nginx-example.conf](https://github.com/isdoge/fast-note-sync-service/blob/master/scripts/https-nginx-example.conf)
 
 ## 🧰 MCP (模型上下文協定) 支援
 
@@ -305,7 +341,7 @@ SSE 模式為舊版傳輸協定，仍完整保留以保持回溯相容，適用�
 ## 🔗 用戶端 & 用戶端外掛程式 & 協作專案
 
 * Obsidian Fast Note Sync 外掛程式
-  * [Obsidian Fast Note Sync 外掛程式](https://github.com/haierkeys/obsidian-fast-note-sync) / [cnb.cool 鏡像庫](https://cnb.cool/haierkeys/obsidian-fast-note-sync)
+  * [Obsidian Fast Note Sync 外掛程式](https://github.com/isdoge/obsidian-fast-note-sync)
 * 第三方用戶端
   * [FastNodeSync-CLI](https://github.com/Go1c/FastNodeSync-CLI) 一款基於 Python 和 FNS WebSocket 同步協定的雙向即時同步命令列用戶端，適用於無 GUI 的 Linux 伺服器環境（如 OpenClaw），實現與 Obsidian 桌面/行動端等價的同步能力。
   * [go-fast-note-sync](https://github.com/erichll/go-fast-note-sync) 一款基於 Go 和 FNS WebSocket 同步協定的 Go CLI 背景同步精靈程序，主要面向 Linux 無頭 (headless) 環境，同時也支援 macOS 和 Windows。
