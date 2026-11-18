@@ -203,6 +203,9 @@ func (h *FileHandler) Delete(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
 	params.Path = cleaned
 
 	// Calculate PathHash
@@ -343,6 +346,9 @@ func (h *FileHandler) Restore(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != cleaned {
+		params.PathHash = util.EncodeHash32(cleaned)
+	}
 	params.Path = cleaned
 
 	// Calculate PathHash
@@ -415,6 +421,9 @@ func (h *FileHandler) RecycleClear(c *gin.Context) {
 			response.ToResponse(code.ErrorInvalidPath)
 			return
 		}
+		if params.Path != cleaned {
+			params.PathHash = util.EncodeHash32(cleaned)
+		}
 		params.Path = cleaned
 	}
 
@@ -469,7 +478,13 @@ func (h *FileHandler) Rename(c *gin.Context) {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
+	if params.Path != newPath {
+		params.PathHash = util.EncodeHash32(newPath)
+	}
 	params.Path = newPath
+	if params.OldPath != oldPath {
+		params.OldPathHash = util.EncodeHash32(oldPath)
+	}
 	params.OldPath = oldPath
 
 	// Calculate PathHash
@@ -552,6 +567,9 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	if !ok {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
+	}
+	if input.Path != cleaned {
+		input.PathHash = util.EncodeHash32(cleaned)
 	}
 	input.Path = cleaned
 
