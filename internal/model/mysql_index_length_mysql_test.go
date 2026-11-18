@@ -77,6 +77,36 @@ func TestPrepareMySQLPathIndexesBeforeAutoMigrate(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(&Note{}))
 }
 
+// TestPrepareMySQLPathIndexesIdempotentAndNullable verifies that only legacy
+// full-column indexes are rewritten: the second call executes no ALTER, a
+// missing *_path_hash index is harmless, and existing NULL values survive.
+// TestPrepareMySQLPathIndexesIdempotentAndNullable 验证只重写旧全列索引：
+// 第二次调用不执行 ALTER，缺少 *_path_hash 索引不报错，既有 NULL 值不受影响。
+func TestPrepareMySQLPathIndexesIdempotentAndNullable(t *testing.T) {
+	dsn := os.Getenv("FNS_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("FNS_TEST_MYSQL_DSN not set")
+	}
+	capture := &captureLogger{}
+	db, err := gorm.Open(gormMysql.Open(dsn), &gorm.Config{Logger: capture})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS note").Error)
+	require.NoError(t, db.Exec("CREATE TABLE note (id bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY, vault_id bigint NOT NULL DEFAULT 0, path varchar(255) DEFAULT NULL, path_hash varchar(255) DEFAULT NULL, KEY idx_vault_id_path (vault_id, path)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4").Error)
+	require.NoError(t, db.Exec("INSERT INTO note(vault_id, path, path_hash) VALUES (1, NULL, NULL)").Error)
+
+	require.NoError(t, PrepareMySQLPathIndexes(db))
+	require.NoError(t, db.AutoMigrate(&Note{}))
+	capture.stmts = nil
+	require.NoError(t, PrepareMySQLPathIndexes(db))
+	for _, stmt := range capture.stmts {
+		require.NotContains(t, stmt, "ALTER TABLE", "second preparation must be read-only: %s", stmt)
+	}
+	var pathIsNull bool
+	require.NoError(t, db.Raw("SELECT path IS NULL FROM note WHERE id = 1").Scan(&pathIsNull).Error)
+	require.True(t, pathIsNull)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS note").Error)
+}
+
 func mysqlIndexSubParts(t *testing.T, db *gorm.DB, table string) map[string]string {
 	t.Helper()
 	rows, err := db.Raw("SHOW INDEX FROM " + table).Rows()

@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/singleflight"
 )
 
 // DatabaseConfig database configuration (for dependency injection)
@@ -65,7 +67,11 @@ type Dao struct {
 	onceKeys sync.Map
 	mu       sync.RWMutex // protects concurrent access to KeyDb // 保护 KeyDb 的并发访问
 
-	poolSemaphores sync.Map // map[string]*semaphore.Weighted 针对不同配置的并发控制
+	poolSemaphores sync.Map          // map[string]*semaphore.Weighted 针对不同配置的并发控制
+	poolCreate     singleflight.Group // 按缓存键合并并发建池请求
+	poolCreator    func(config.DatabaseConfig, *zap.Logger) (*gorm.DB, error) // 可测试替换的建池函数
+	schemaEnsurer  func(string) error                                    // 可测试替换的 PostgreSQL schema 初始化
+	databaseEnsurer func(string) error                                   // 可测试替换的 MySQL 库初始化
 
 	maxCachedDBConns         int           // KeyDb 缓存的租户 DB 实例数量上限，0 表示使用默认值
 	dbConnMinIdleBeforeEvict time.Duration // 缓存 DB 连接被 LRU 淘汰前必须已空闲的最短时间，0 表示使用默认值
@@ -331,113 +337,125 @@ func (d *Dao) GetOrCreateDB(key string) *gorm.DB {
 	}
 	d.mu.RUnlock()
 
-	// Build under the write lock: connection creation may open a schema/database
-	// admin connection first, and concurrent first access must not create one
-	// pool per repository key for the same PostgreSQL schema / MySQL database.
-	// 在写锁内建池：建池前可能先打开 schema/库管理连接，PostgreSQL / MySQL 下
-	// 同一租户多个仓储 key 的并发首次访问不能各自创建一个连接池。
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if existingEntry, ok := d.KeyDb[cacheKey]; ok {
-		existingEntry.lastUsed = time.Now()
-		return existingEntry.db
-	}
-
-	// Get configuration
-	// 获取配置
-	c := d.resolveConfig(key)
-
-	if (c.Type == "postgres") && key != "" {
-		// PostgreSQL: Uniform mapping to user_<uid> Schema, ignoring specific Repo prefixes
-		// PostgreSQL: 统一映射到 user_<uid> Schema，忽略具体的 Repo 前缀
-		schemaName, ok := d.extractUserSchema(key)
-		if !ok {
-			schemaName = key // Fallback logic, use original key if resolution fails // 回退逻辑，如果无法解析则使用原始 key
+	created, err, _ := d.poolCreate.Do(cacheKey, func() (interface{}, error) {
+		// Recheck inside singleflight before doing network or schema work.
+		// singleflight 内再次检查，避免已有池时做网络或 schema 初始化。
+		d.mu.RLock()
+		if entry, ok := d.KeyDb[cacheKey]; ok {
+			entry.lastUsed = time.Now()
+			d.mu.RUnlock()
+			return entry.db, nil
 		}
+		d.mu.RUnlock()
 
-		if err := d.ensurePostgresSchema(schemaName); err != nil {
-			d.Logger().Error("ensurePostgresSchema failed", zap.String("schema", schemaName), zap.Error(err))
-			return nil
-		}
-		c.Schema = schemaName
-		c.TablePrefix = "" // PostgreSQL 下清空前缀，改用 Schema
-	} else if (c.Type == "mysql") && key != "" {
-		// MySQL: Uniform mapping to user_<uid> database, implementing tenant-level DB isolation
-		// MySQL: 统一映射到 user_<uid> 数据库，实现租户级库隔离
-		dbName, ok := d.extractUserSchema(key)
-		if !ok {
-			dbName = key // Fallback logic, use original key if resolution fails // 回退逻辑，如果无法解析则使用原始 key
-		}
-
-		if err := d.ensureMysqlDatabase(dbName); err != nil {
-			d.Logger().Error("ensureMysqlDatabase failed", zap.String("db", dbName), zap.Error(err))
-			return nil
-		}
-		c.Name = dbName
-		c.TablePrefix = "" // Clear prefix under MySQL, use database routing instead // MySQL 下清空前缀，改用库路由
-	} else if c.Type == "sqlite" && key != "" {
-		// SQLite: Maintain multi-file isolation mode (using full key as filename suffix)
-		// SQLite: 维持多文件隔离模式 (使用完整的 key 作为文件名后缀)
-		ext := filepath.Ext(c.Path)
-		c.Path = c.Path[:len(c.Path)-len(ext)] + "_" + key + ext
-	}
-
-	dbNew, err := NewEngine(c, d.Logger())
-	if err != nil {
-		d.Logger().Error("GetOrCreateDB failed", zap.String("key", key), zap.Error(err))
-		return nil
-	}
-
-	// Check cache quantity limit; if over the cap, clean up the least recently used
-	// connection — but only among connections that have been idle for at least
-	// dbConnMinIdleBeforeEvict. lastUsed is stamped at checkout time and never refreshed
-	// while a query is still running on the connection, so a naive "always evict the
-	// oldest lastUsed" policy can close a connection out from under an in-flight
-	// long-running query (e.g. a slow full-vault export) just because it happens to be
-	// the least-recently-checked-out one. If nothing qualifies as idle-long-enough, we
-	// skip eviction this round and let the cache temporarily exceed the cap rather than
-	// risk closing a connection that's still in use.
-	// 检查缓存数量限制，超过上限时清理最久未使用的连接——但只在"已空闲超过
-	// dbConnMinIdleBeforeEvict"的连接里挑选。lastUsed 只在取出连接时打点，
-	// 查询执行期间不会刷新，简单地"总是淘汰 lastUsed 最早的一个"可能会在慢查询
-	// （例如大 vault 全量导出）仍在使用某连接时，仅因为它是"最久未取出"的
-	// 就把它关掉。如果没有任何连接满足"空闲够久"，本轮跳过淘汰，宁可让缓存
-	// 暂时超过上限，也不冒险关掉可能仍在使用中的连接。
-	if maxConns := d.maxCachedDBConnsOrDefault(); len(d.KeyDb) >= maxConns {
-		minIdle := d.dbConnMinIdleBeforeEvictOrDefault()
-		now := time.Now()
-		var oldestKey string
-		var oldestTime time.Time
-		for k, v := range d.KeyDb {
-			if now.Sub(v.lastUsed) < minIdle {
-				continue
+		// Get configuration and build outside the global cache lock. Creating a
+		// pool can involve network I/O and PostgreSQL/MySQL schema bootstrap; it
+		// must not block reads or writes for other cached keys. SQLite keeps its
+		// per-key path behavior.
+		// 在全局缓存锁外取配置并建池。建池可能包含网络 I/O 和 PostgreSQL/MySQL
+		// schema 初始化，不能阻塞其它已缓存键的读写。SQLite 保持按 key 的路径行为。
+		c := d.resolveConfig(key)
+		if (c.Type == "postgres") && key != "" {
+			schemaName, ok := d.extractUserSchema(key)
+			if !ok {
+				schemaName = key
 			}
-			if oldestKey == "" || v.lastUsed.Before(oldestTime) {
-				oldestKey = k
-				oldestTime = v.lastUsed
+			ensurer := d.schemaEnsurer
+			if ensurer == nil {
+				ensurer = d.ensurePostgresSchema
 			}
+			if err := ensurer(schemaName); err != nil {
+				d.Logger().Error("ensurePostgresSchema failed", zap.String("schema", schemaName), zap.Error(err))
+				return nil, err
+			}
+			c.Schema = schemaName
+			c.TablePrefix = ""
+		} else if (c.Type == "mysql") && key != "" {
+			dbName, ok := d.extractUserSchema(key)
+			if !ok {
+				dbName = key
+			}
+			ensurer := d.databaseEnsurer
+			if ensurer == nil {
+				ensurer = d.ensureMysqlDatabase
+			}
+			if err := ensurer(dbName); err != nil {
+				d.Logger().Error("ensureMysqlDatabase failed", zap.String("db", dbName), zap.Error(err))
+				return nil, err
+			}
+			c.Name = dbName
+			c.TablePrefix = ""
+		} else if c.Type == "sqlite" && key != "" {
+			ext := filepath.Ext(c.Path)
+			c.Path = c.Path[:len(c.Path)-len(ext)] + "_" + key + ext
 		}
-		if oldestKey != "" {
-			oldEntry := d.KeyDb[oldestKey]
-			delete(d.KeyDb, oldestKey)
-			if sqlDB, err := oldEntry.db.DB(); err == nil {
+
+		creator := d.poolCreator
+		if creator == nil {
+			creator = NewEngine
+		}
+		dbNew, err := creator(c, d.Logger())
+		if err != nil {
+			d.Logger().Error("GetOrCreateDB failed", zap.String("key", key), zap.Error(err))
+			return nil, err
+		}
+
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if existingEntry, ok := d.KeyDb[cacheKey]; ok {
+			if sqlDB, err := dbNew.DB(); err == nil {
 				sqlDB.Close()
 			}
-			d.Logger().Info("evicted oldest DB connection", zap.String("key", oldestKey))
-		} else {
-			d.Logger().Warn("DB connection cache over capacity but no entry idle long enough to evict, temporarily exceeding cap",
-				zap.Int("cap", maxConns),
-				zap.Int("current", len(d.KeyDb)),
-				zap.Duration("minIdleBeforeEvict", minIdle))
+			existingEntry.lastUsed = time.Now()
+			return existingEntry.db, nil
 		}
-	}
 
-	d.KeyDb[cacheKey] = &dbEntry{
-		db:       dbNew,
-		lastUsed: time.Now(),
-	}
+		// Check cache quantity limit; if over the cap, clean up the least recently
+		// used connection — but only among connections idle at least
+		// dbConnMinIdleBeforeEvict. See the constants above for why we do not close
+		// a recently checked-out connection.
+		// 检查缓存数量限制，超过上限时清理最久未使用的连接——但只在已空闲
+		// 至少 dbConnMinIdleBeforeEvict 的连接里挑选。原因见上方常量说明：不能
+		// 关闭刚被取出、可能仍有查询在跑的连接。
+		if maxConns := d.maxCachedDBConnsOrDefault(); len(d.KeyDb) >= maxConns {
+			minIdle := d.dbConnMinIdleBeforeEvictOrDefault()
+			now := time.Now()
+			var oldestKey string
+			var oldestTime time.Time
+			for k, v := range d.KeyDb {
+				if now.Sub(v.lastUsed) < minIdle {
+					continue
+				}
+				if oldestKey == "" || v.lastUsed.Before(oldestTime) {
+					oldestKey = k
+					oldestTime = v.lastUsed
+				}
+			}
+			if oldestKey != "" {
+				oldEntry := d.KeyDb[oldestKey]
+				delete(d.KeyDb, oldestKey)
+				if sqlDB, err := oldEntry.db.DB(); err == nil {
+					sqlDB.Close()
+				}
+				d.Logger().Info("evicted oldest DB connection", zap.String("key", oldestKey))
+			} else {
+				d.Logger().Warn("DB connection cache over capacity but no entry idle long enough to evict, temporarily exceeding cap",
+					zap.Int("cap", maxConns),
+					zap.Int("current", len(d.KeyDb)),
+					zap.Duration("minIdleBeforeEvict", minIdle))
+			}
+		}
 
-	return dbNew
+		d.KeyDb[cacheKey] = &dbEntry{db: dbNew, lastUsed: time.Now()}
+		return dbNew, nil
+	})
+	if err != nil {
+		return nil
+	}
+	if created == nil {
+		return nil
+	}
+	return created.(*gorm.DB)
 }
 
 // tenantCacheKey returns the cache key for a tenant repository key. SQLite keeps
@@ -562,13 +580,23 @@ func getDialector(c config.DatabaseConfig) gorm.Dialector {
 		if c.Port != 0 && !strings.Contains(host, ":") {
 			host = fmt.Sprintf("%s:%d", host, c.Port)
 		}
-		return mysql.Open(fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=%s&parseTime=%t&loc=Local",
+		// MySQL 8.4 defaults to NO_ZERO_DATE/NO_ZERO_IN_DATE under STRICT_TRANS_TABLES,
+		// but the generated models contain plain time.Time fields whose zero value is
+		// valid and must round-trip as the zero time. Keep all other strict checks and
+		// relax only these two modes for this process's sessions. go-sql-driver maps
+		// zero dates back to time.Time{} when parseTime=true.
+		// MySQL 8.4 在严格模式下默认带 NO_ZERO_DATE/NO_ZERO_IN_DATE；生成的模型
+		// 里存在普通 time.Time 字段，其零值合法且必须能往返成零时间。这里仅对
+		// 本进程会话放开这两个模式，保留其它严格检查；parseTime=true 时
+		// go-sql-driver 会把零日期读回 time.Time{}。
+		return mysql.Open(fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=%s&parseTime=%t&loc=Local&sql_mode=%s",
 			c.UserName,
 			c.Password,
 			host,
 			c.Name,
 			c.Charset,
 			c.ParseTime,
+			url.QueryEscape("'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"),
 		))
 	} else if c.Type == "postgres" {
 		if c.Port == 0 {
