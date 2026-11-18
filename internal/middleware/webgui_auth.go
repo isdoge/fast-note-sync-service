@@ -22,12 +22,6 @@ import (
 func RequireWebGUI() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		// Check disabled for DebugMode to allow Swagger/tool testing and local debugging.
-		if gin.Mode() == gin.DebugMode {
-			c.Next()
-			return
-		}
-
 		response := pkgapp.NewResponse(c)
 
 		// Layer 1: Header/query parameter check (applies to all routes)
