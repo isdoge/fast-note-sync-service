@@ -48,3 +48,31 @@ func TestVerifyPermissions(t *testing.T) {
 		})
 	}
 }
+
+
+// strict-empty-protocol：整串空 scope 与空 "p:" 在严格模式下拒绝，默认模式保持旧行为。
+func TestVerifyPermissionsWithStrictEmptyProtocol(t *testing.T) {
+	tests := []struct {
+		name   string
+		scope  string
+		strict bool
+		want   bool
+	}{
+		{"empty scope legacy allows", "", false, true},
+		{"empty scope strict denies", "", true, false},
+		{"empty p legacy allows", "c:web f:note_r", false, true},
+		{"empty p strict denies", "c:web f:note_r", true, false},
+		{"empty p value legacy allows", "p: c:* f:*", false, true},
+		{"empty p value strict denies", "p: c:* f:*", true, false},
+		{"normal scope unaffected strict", "p:rest c:* f:*", true, true},
+		{"normal scope mismatch strict", "p:ws c:* f:*", true, false},
+		{"wildcard unaffected strict", "p:* c:* f:*", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := VerifyPermissionsWithStrictEmptyProtocol(tt.scope, "rest", "web", "note_r", tt.strict); got != tt.want {
+				t.Errorf("VerifyPermissionsWithStrictEmptyProtocol() = %v, want %v for scope %q strict=%v", got, tt.want, tt.scope, tt.strict)
+			}
+		})
+	}
+}

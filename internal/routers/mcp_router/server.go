@@ -80,7 +80,8 @@ func getArgs(req mcp.CallToolRequest) map[string]interface{} {
 func checkPermission(ctx context.Context, function string) error {
 	scope, _ := ctx.Value("scope").(string)
 	cType, _, _ := getClientInfoFromContext(ctx)
-	if !pkgapp.VerifyPermissions(scope, "mcp", cType, function) {
+	strict, _ := ctx.Value("strict_empty_protocol").(bool)
+	if !pkgapp.VerifyPermissionsWithStrictEmptyProtocol(scope, "mcp", cType, function, strict) {
 		return fmt.Errorf("permission denied: %s", function)
 	}
 	return nil

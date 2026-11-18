@@ -16,9 +16,18 @@ import (
 )
 
 func UserAuthTokenWithConfig(secretKey string, tokenService service.TokenService) gin.HandlerFunc {
+	return UserAuthTokenWithConfigStrict(secretKey, tokenService, false)
+}
+
+// UserAuthTokenWithConfigStrict is UserAuthTokenWithConfig with the strict
+// empty-protocol flag forwarded to permission checks (see
+// security.strict-empty-protocol).
+// UserAuthTokenWithConfigStrict 是带严格空协议开关的 UserAuthTokenWithConfig
+// （见 security.strict-empty-protocol）。
+func UserAuthTokenWithConfigStrict(secretKey string, tokenService service.TokenService, strictEmptyProtocol bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		response := app.NewResponse(c)
-		user, scope, vaults, dbToken, appErr := AuthenticateUserToken(c, secretKey, tokenService)
+		user, scope, vaults, dbToken, appErr := AuthenticateUserTokenStrict(c, secretKey, tokenService, strictEmptyProtocol)
 		if appErr != nil {
 			response.ToResponse(appErr)
 			c.Abort()
@@ -52,6 +61,13 @@ func ExtractUserAuthToken(c *gin.Context) string {
 }
 
 func AuthenticateUserToken(c *gin.Context, secretKey string, tokenService service.TokenService) (*app.UserEntity, string, string, *domain.AuthToken, *code.Code) {
+	return AuthenticateUserTokenStrict(c, secretKey, tokenService, false)
+}
+
+// AuthenticateUserTokenStrict is AuthenticateUserToken with the strict
+// empty-protocol flag for scope verification.
+// AuthenticateUserTokenStrict 是带严格空协议开关的 AuthenticateUserToken。
+func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService service.TokenService, strictEmptyProtocol bool) (*app.UserEntity, string, string, *domain.AuthToken, *code.Code) {
 	token := ExtractUserAuthToken(c)
 	if token == "" {
 		return nil, "", "", nil, code.ErrorNotUserAuthToken
@@ -129,7 +145,7 @@ func AuthenticateUserToken(c *gin.Context, secretKey string, tokenService servic
 		protocol = "mcp"
 	}
 
-	if path != "/api/health" && !app.VerifyPermissions(dbToken.Scope, protocol, reqClientType, function) {
+	if path != "/api/health" && !app.VerifyPermissionsWithStrictEmptyProtocol(dbToken.Scope, protocol, reqClientType, function, strictEmptyProtocol) {
 		resPath := c.Query("path")
 		if resPath == "" {
 			resPath = c.Query("name")

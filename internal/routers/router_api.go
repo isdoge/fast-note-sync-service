@@ -98,7 +98,7 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		// Auth routing group (authentication required)
 		// 需要认证的路由组
 		auth := api.Group("/")
-		auth.Use(middleware.UserAuthTokenWithConfig(cfg.Security.AuthTokenKey, appContainer.TokenService))
+		auth.Use(middleware.UserAuthTokenWithConfigStrict(cfg.Security.AuthTokenKey, appContainer.TokenService, cfg.Security.StrictEmptyProtocol))
 		{
 			// Create share
 			// 创建分享

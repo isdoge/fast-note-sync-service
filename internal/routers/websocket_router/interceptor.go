@@ -17,6 +17,7 @@ import (
 // that sequentially enforces auth, vault access, and RBAC checks.
 func NewMessageInterceptor(appContainer *app.App) func(*pkgapp.WebsocketClient, *pkgapp.WebSocketMessage) bool {
 	logger := appContainer.Logger()
+	strictEmptyProtocol := appContainer.Config().Security.StrictEmptyProtocol
 	return func(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage) bool {
 		if !checkAuth(c, msg, logger) {
 			return false
@@ -24,7 +25,7 @@ func NewMessageInterceptor(appContainer *app.App) func(*pkgapp.WebsocketClient, 
 		if !checkVaultAccess(c, msg, logger) {
 			return false
 		}
-		if !checkRBAC(c, msg, logger) {
+		if !checkRBAC(c, msg, logger, strictEmptyProtocol) {
 			return false
 		}
 		return true
@@ -77,12 +78,12 @@ func checkVaultAccess(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, l
 func checkRBAC(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, logger interface {
 	Warn(string, ...zapcore.Field)
 	Info(string, ...zapcore.Field)
-}) bool {
+}, strictEmptyProtocol bool) bool {
 	function := resolveRBACFunction(msg.Type)
 	if function == "" {
 		return true // 无需权限检查的消息类型，直接放行 / message type requires no RBAC check
 	}
-	if pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), function) {
+	if pkgapp.VerifyPermissionsWithStrictEmptyProtocol(c.Scope, "ws", c.ClientType(), function, strictEmptyProtocol) {
 		return true
 	}
 	logger.Warn("WS OnMessage Permission Denied",

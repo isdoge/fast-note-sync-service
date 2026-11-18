@@ -30,6 +30,14 @@ type SecurityConfig struct {
 	// 不再依赖机器标识，迁移机器、重装系统或重建容器后令牌仍然有效。
 	// 留空时在 storage 目录生成并持久化随机密钥文件（token-signing.key）。
 	TokenSigningKey string `yaml:"token-signing-key"`
+	// StrictEmptyProtocol rejects scopes whose protocol dimension is empty
+	// (whole-string empty scope or "p:" with no value), which otherwise act as
+	// wildcards. Defaults to false for backward compatibility with legacy
+	// tokens; enable to make such stored scopes fail closed.
+	// StrictEmptyProtocol 拒绝协议维度为空的 scope（整串空 scope 或值为空的
+	// "p:"），这类 scope 在默认匹配中等同通配。默认 false 以兼容存量令牌；
+	// 开启后这类已落库的 scope 将按拒绝处理。
+	StrictEmptyProtocol bool `yaml:"strict-empty-protocol"`
 }
 
 // Validate rejects token lifetimes that are nonpositive or overflow time.Duration.

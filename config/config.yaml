@@ -217,6 +217,15 @@ security:
   # Whether to bind the browser User-Agent for WebGUI login tokens. Defaults to true.
   # Set to false if a reverse proxy or remote access gateway rewrites User-Agent and causes error 313; UA checks are then disabled.
   webgui-login-token-bind-ua: true
+  # 是否按严格模式校验协议维度为空的令牌 scope（整串空 scope 或 "p:" 后无值）。
+  # 默认 false 保持旧行为（空协议维度等同通配，全部放行）；开启后这类 scope 一律拒绝。
+  # 仅影响校验端；新签发令牌已不再产生空协议维度。
+  # Whether to strictly reject token scopes whose protocol dimension is empty
+  # (whole-string empty scope or "p:" with no value). Defaults to false to keep
+  # the legacy behavior (empty protocol acts as a wildcard); when enabled such
+  # scopes are denied. Verification-side only; newly issued tokens no longer
+  # produce an empty protocol dimension.
+  strict-empty-protocol: false
 
 # 主数据库配置
 # Main database configuration
