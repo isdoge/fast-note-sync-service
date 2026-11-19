@@ -69,7 +69,7 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 	checkParams := convert.StructAssign(params, &dto.SettingUpdateCheckRequest{}).(*dto.SettingUpdateCheckRequest)
 	updateMode, settingCheck, err := settingSvc.UpdateCheck(ctx, c.User.UID, checkParams)
 	if err != nil {
-		h.respondError(c, code.ErrorSettingModifyOrCreateFailed, err, "websocket_router.setting.SettingModify.UpdateCheck")
+		h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingModify.UpdateCheck")
 		return
 	}
 
@@ -77,7 +77,7 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 	case "UpdateContent", "Create":
 		_, setting, err := settingSvc.ModifyOrCreate(ctx, c.User.UID, params, true)
 		if err != nil {
-			h.respondError(c, code.ErrorSettingModifyOrCreateFailed, err, "websocket_router.setting.SettingModify.ModifyOrCreate")
+			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
 			return
 		}
 
@@ -200,7 +200,7 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	setting, err := settingSvc.Delete(ctx, c.User.UID, params)
 	if err != nil {
-		h.respondError(c, code.ErrorSettingDeleteFailed, err, "websocket_router.setting.SettingDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorSettingDeleteFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingDelete.Delete")
 		return
 	}
 
