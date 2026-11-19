@@ -190,7 +190,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 	updateMode, fileSvc, err := fileService.UploadCheck(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorFileUploadCheckFailed, err, "websocket_router.file.FileUploadCheck.UploadCheck")
+		h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, params.Path, msg.Type, "websocket_router.file.FileUploadCheck.UploadCheck")
 		return
 	}
 
@@ -200,7 +200,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 
 		session, err := h.handleFileUploadSessionCreate(c, params.Vault, params.Path, params.PathHash, params.ContentHash, params.Size, params.Ctime, params.Mtime, params.Context)
 		if err != nil {
-			h.respondError(c, code.ErrorFileUploadCheckFailed, err, "websocket_router.file.FileUploadCheck.handleFileUploadSessionCreate")
+			h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, params.Path, msg.Type, "websocket_router.file.FileUploadCheck.handleFileUploadSessionCreate")
 			return
 		}
 
@@ -530,7 +530,7 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	fileSvc, err := fileService.Delete(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorFileDeleteFailed, err, "websocket_router.file.FileDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorFileDeleteFailed, err, params.Path, msg.Type, "websocket_router.file.FileDelete.Delete")
 		return
 	}
 
@@ -604,7 +604,7 @@ func (h *FileWSHandler) FileRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			}).WithVault(params.Vault).WithContext(params.Context), string(FileRenameAck))
 			return
 		}
-		h.respondError(c, code.ErrorFileRenameFailed, err, "websocket_router.file.FileRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorFileRenameFailed, err, params.Path, msg.Type, "websocket_router.file.FileRename.Rename")
 		return
 	}
 
@@ -657,14 +657,14 @@ func (h *FileWSHandler) FileChunkDownload(c *pkgapp.WebsocketClient, msg *pkgapp
 	fileSvc, err := fileService.Get(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorFileGetFailed, err, "websocket_router.file.FileChunkDownload.Get")
+		h.respondErrorWithPath(c, code.ErrorFileGetFailed, err, params.Path, msg.Type, "websocket_router.file.FileChunkDownload.Get")
 		return
 	}
 
 	// Check if file exists on disk
 	// 检查文件是否存在于磁盘
 	if _, err := os.Stat(fileSvc.SavePath); os.IsNotExist(err) {
-		h.respondError(c, code.ErrorFileGetFailed, fmt.Errorf("file not found on disk: %s (path: %s, pathHash: %s)", fileSvc.SavePath, fileSvc.Path, fileSvc.PathHash), "websocket_router.file.FileChunkDownload.Stat")
+		h.respondErrorWithPath(c, code.ErrorFileGetFailed, fmt.Errorf("file not found on disk: %s (path: %s, pathHash: %s)", fileSvc.SavePath, fileSvc.Path, fileSvc.PathHash), params.Path, msg.Type, "websocket_router.file.FileChunkDownload.Stat")
 		return
 	}
 

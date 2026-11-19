@@ -426,6 +426,15 @@ func (c *WebsocketClient) setClientInfo(name, clientType, version string, platfo
 	c.acceptProtobuf = false
 }
 
+// SetClientInfoForTest exposes setClientInfo for unit tests that need to drive
+// handler branches keyed on the client-reported offline sync strategy or protocol
+// state (the private method is only reachable through a real ClientInfo frame).
+// SetClientInfoForTest 为单元测试暴露 setClientInfo：需要按客户端上报的离线策略或协议
+// 状态驱动处理函数分支时使用（私有方法只有真实 ClientInfo 帧才能到达）。
+func (c *WebsocketClient) SetClientInfoForTest(name, clientType, version string, platform map[string]bool, offlineSyncStrategy string, useProtobuf bool) {
+	c.setClientInfo(name, clientType, version, platform, offlineSyncStrategy, useProtobuf)
+}
+
 // knownOfflineSyncStrategy returns the strategy if it is one the sync handlers recognize, and
 // "" (the default strategy) otherwise. Handlers only test for exact known values, so an
 // unrecognized one (e.g. a client sending "auto") matched no branch: the client was never told
@@ -1917,7 +1926,18 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 					zap.String("prefix", prefix),
 					zap.String("uid", uid),
 					zap.Error(err))
-				c.ToResponse(code.ErrorServerBusy)
+				// 分片帧头部前 36 字节是上传会话 ID：带上它让插件收到 302 后能清理
+				// 该会话的活跃上传状态并释放并发名额（与 463 会话不存在同一路径）。
+				// 帧过短时无法提取，保持无 data 的原响应。
+				// The first 36 bytes of a chunk frame are the upload session ID: carrying it
+				// lets the plugin clear that session's active upload state and release the
+				// slot on 302 (same path as the 463 session-not-found). Short frames cannot
+				// be parsed, so the dataless response is kept as-is.
+				busy := code.ErrorServerBusy
+				if len(payloadCopy) >= 36 {
+					busy = busy.WithData(map[string]string{"sessionID": string(payloadCopy[:36])})
+				}
+				c.ToResponse(busy)
 				return
 			}
 		} else if prefix == "pb" {
