@@ -64,7 +64,15 @@ var protobufRequestMetaFields = map[string]struct {
 // 作字段标签（那是 start-group 标签，proto3 不产生），首字节为 '{' 即可认定为
 // 已协商 Protobuf 的连接仍可能发来的 JSON 文本帧。
 func isJSONMessagePayload(data []byte) bool {
-	return len(data) > 0 && data[0] == '{'
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			return b == '{'
+		}
+	}
+	return false
 }
 
 // decodeProtobufRequestMeta extracts the interceptor-relevant fields from an
