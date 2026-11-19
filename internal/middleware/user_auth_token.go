@@ -26,10 +26,9 @@ func UserAuthTokenWithConfig(secretKey string, tokenService service.TokenService
 // （见 security.strict-empty-protocol）。
 func UserAuthTokenWithConfigStrict(secretKey string, tokenService service.TokenService, strictEmptyProtocol bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		response := app.NewResponse(c)
 		user, scope, vaults, dbToken, appErr := AuthenticateUserTokenStrict(c, secretKey, tokenService, strictEmptyProtocol)
 		if appErr != nil {
-			response.ToResponse(appErr)
+			respondUserAuthError(c, appErr)
 			c.Abort()
 			return
 		}
@@ -147,32 +146,40 @@ func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService 
 
 	if dbToken.Vaults != "" {
 		targetVault := app.RequestParam(c, "vault")
-		if targetVault != "" && !util.VerifyVaultAccess(dbToken.Vaults, targetVault) {
-			return nil, "", "", nil, code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: " + targetVault)
+		targets := []string{targetVault}
+		// Only the event endpoint accepts a comma-separated subscription filter.
+		// 仅事件端点接受逗号分隔的订阅库过滤条件。
+		if path == "/api/webgui/events" {
+			targets = strings.Split(targetVault, ",")
+		}
+		for _, vault := range targets {
+			if vault != "" && !util.VerifyVaultAccess(dbToken.Vaults, vault) {
+				return nil, "", "", nil, code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: " + vault)
+			}
 		}
 	}
 
-	go func() {
-		clientName := c.GetHeader("x-client-name")
-		if clientName != "" {
-			if decoded, err := url.QueryUnescape(clientName); err == nil {
-				clientName = decoded
-			}
+	// Snapshot Gin fields before asynchronous logging; streams keep mutating the writer.
+	// 异步记录前先快照 Gin 字段；事件流会持续修改响应 writer。
+	clientName := c.GetHeader("x-client-name")
+	if clientName != "" {
+		if decoded, err := url.QueryUnescape(clientName); err == nil {
+			clientName = decoded
 		}
+	}
 
-		log := &domain.AuthTokenLog{
-			TokenID:       dbToken.ID,
-			UID:           dbToken.UID,
-			Protocol:      protocol,
-			Client:        reqClientType,
-			ClientName:    clientName,
-			ClientVersion: c.GetHeader("x-client-version"),
-			IP:            c.ClientIP(),
-			UA:            c.GetHeader("User-Agent"),
-			StatusCode:    int64(c.Writer.Status()),
-		}
-		_ = tokenService.RecordAccessLog(context.Background(), log)
-	}()
+	log := &domain.AuthTokenLog{
+		TokenID:       dbToken.ID,
+		UID:           dbToken.UID,
+		Protocol:      protocol,
+		Client:        reqClientType,
+		ClientName:    clientName,
+		ClientVersion: c.GetHeader("x-client-version"),
+		IP:            c.ClientIP(),
+		UA:            c.GetHeader("User-Agent"),
+		StatusCode:    int64(c.Writer.Status()),
+	}
+	go func() { _ = tokenService.RecordAccessLog(context.Background(), log) }()
 
 	return user, dbToken.Scope, dbToken.Vaults, dbToken, nil
 }
@@ -228,6 +235,8 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 	}
 
 	switch {
+	case path == "/api/webgui/events":
+		return "note_r", nil
 	// ---------------- Vault ----------------
 	// Vault discovery is needed before REST clients can address note/file
 	// APIs; any read capability suffices so restricted read-only tokens keep
@@ -350,4 +359,19 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 func UserAuthToken() gin.HandlerFunc {
 	// Without token service this cannot work properly in 3D RBAC
 	return UserAuthTokenWithConfig("", nil)
+}
+
+// respondUserAuthError uses HTTP authentication statuses for the streaming endpoint.
+// respondUserAuthError 为事件流端点返回 HTTP 鉴权状态，保留其它 REST 接口的响应约定。
+func respondUserAuthError(c *gin.Context, appErr *code.Code) {
+	if c.Request.URL.Path != "/api/webgui/events" {
+		app.NewResponse(c).ToResponse(appErr)
+		return
+	}
+	status := http.StatusUnauthorized
+	switch appErr.Code() {
+	case code.ErrorAuthTokenClientRestricted.Code(), code.ErrorAuthTokenScopeRestricted.Code(), code.ErrorAuthTokenUARestricted.Code(), code.ErrorAuthTokenIPRestricted.Code():
+		status = http.StatusForbidden
+	}
+	c.JSON(status, app.Res{Code: appErr.Code(), Status: false, Message: appErr.MsgIn(c.GetString("lang"))})
 }

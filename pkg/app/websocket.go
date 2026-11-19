@@ -786,6 +786,10 @@ func (c *WebsocketClient) BroadcastResponse(code *code.Code, options ...any) {
 		actionType = options[1].(string)
 	}
 
+	if c.Server != nil && c.User != nil {
+		c.Server.events.Publish(c.User.ID, code.Vault(), actionType, code.Data())
+	}
+
 	if len(c.UserClients) <= 0 {
 		return
 	}
@@ -998,6 +1002,7 @@ type WebsocketServer struct {
 	tokenVerifyHandler func(ctx context.Context, uid int64, tokenID int64, nonce string, reqClientType, reqClientName, reqClientVersion, reqUserAgent, reqIP string) (string, string, error)
 	binaryHandlers     map[string]func(*WebsocketClient, []byte) // Binary message handler map: prefix -> handler // 二进制消息处理器映射 prefix -> handler
 	clients            ConnStorage
+	events             *EventHub
 	userClients        map[string]ConnStorage
 	connWg             sync.WaitGroup
 	mu                 sync.RWMutex
@@ -1111,6 +1116,7 @@ func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 		binaryHandlers:      make(map[string]func(*WebsocketClient, []byte)),
 		clients:             make(ConnStorage),
 		userClients:         make(map[string]ConnStorage),
+		events:              NewEventHub(),
 		config:              &c,
 		binaryChunkSessions: make(map[string]map[string]any),
 	}
@@ -1583,6 +1589,7 @@ func (w *WebsocketServer) KickToken(uid int64, tokenID int64) {
 // 向所有活跃的 WebSocket 连接发送关闭帧。
 // 必须在关闭 Worker Pool 和 Write Queue Manager 之前调用，以确保被劫持的 WebSocket 连接被正确终止。
 func (w *WebsocketServer) CloseAllConnections() {
+	w.events.Close()
 	w.mu.RLock()
 	clients := make([]*WebsocketClient, 0, len(w.clients))
 	for _, c := range w.clients {
@@ -2019,6 +2026,7 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 
 func (w *WebsocketServer) BroadcastToUser(uid int64, code *code.Code, action string) {
 	uidStr := strconv.FormatInt(uid, 10)
+	w.events.Publish(uidStr, code.Vault(), action, code.Data())
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 

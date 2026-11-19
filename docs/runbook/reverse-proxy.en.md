@@ -4,6 +4,8 @@ The main listener defaults to `:9000`, and the WebSocket endpoint is `/api/user/
 
 ## Nginx
 
+`GET /api/webgui/events` is a long-lived SSE event stream with a heartbeat every 20 seconds. Disable proxy buffering for this endpoint and set the proxy read timeout above the heartbeat interval.
+
 This adds WebSocket timeouts to the repository example `scripts/https-nginx-example.conf`. Replace certificate paths and upstream addresses for the actual deployment.
 
 ```nginx

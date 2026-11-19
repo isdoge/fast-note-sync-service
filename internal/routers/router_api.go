@@ -32,6 +32,15 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		// MCP routes
 		registerMCPRoutes(api, appContainer, wss)
 
+		// Event streams bypass ContextTimeout and explicitly restore language/access logging.
+		// 事件流绕过 ContextTimeout，并显式补齐语言与访问日志中间件。
+		events := api.Group("")
+		events.Use(middleware.LangWithTranslator(uni))
+		events.Use(middleware.AccessLogWithLogger(appContainer.Logger()))
+		events.Use(middleware.UserAuthTokenWithConfigStrict(cfg.Security.AuthTokenKey, appContainer.TokenService, cfg.Security.StrictEmptyProtocol))
+		events.Use(middleware.RequireWebGUI())
+		events.GET("/webgui/events", api_router.NewEventHandler(appContainer, wss).Stream)
+
 		api.Use(middleware.ContextTimeout(time.Duration(cfg.App.DefaultContextTimeout) * time.Second))
 		api.Use(middleware.LangWithTranslator(uni))
 		api.Use(middleware.AccessLogWithLogger(appContainer.Logger()))
