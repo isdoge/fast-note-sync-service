@@ -39,8 +39,43 @@ func UserAuthTokenWithConfigStrict(secretKey string, tokenService service.TokenS
 		// 注入服务端 Token 属性，供下游中间件（如 RequireWebGUI）进行联合校验，防止请求头伪造绕过
 		c.Set("token_issue_type", dbToken.IssueType)
 		c.Set("token_client_type", dbToken.ClientType)
+		// Keep the entry-time client and strictness so handler-level checks that
+		// depend on the request body (e.g. whole-recycle-bin clear) decide
+		// permissions exactly like the route-level check did.
+		// 记录入口时的客户端与严格开关，供依赖请求体的 handler 级功能点检查
+		//（例如整库清空回收站）与路由级检查保持一致。
+		c.Set(contextKeyStrictEmptyProtocol, strictEmptyProtocol)
 		c.Next()
 	}
+}
+
+// contextKeyStrictEmptyProtocol / contextKeyAuthRestClient hold the entry-time
+// authentication inputs used by RestFunctionAllowed.
+// contextKeyStrictEmptyProtocol / contextKeyAuthRestClient 保存入口鉴权时的
+// 输入，供 RestFunctionAllowed 复用。
+const (
+	contextKeyStrictEmptyProtocol = "auth_strict_empty_protocol"
+	contextKeyAuthRestClient      = "auth_rest_client"
+)
+
+// RestFunctionAllowed reports whether the authenticated request's token scope
+// admits the given REST function point. The decision reuses the same
+// protocol/client/strictness the entry middleware applied, so handlers can
+// enforce a different function point for a body-dependent code path (such as
+// a whole-recycle-bin clear versus a single-path clear).
+// RestFunctionAllowed 报告已认证请求的令牌 scope 是否包含指定 REST 功能点。
+// 判定复用入口中间件的协议/客户端/严格开关，供 handler 对依赖请求体的分支
+// （例如整库清空回收站与单条清理）追加不同的功能点校验。
+func RestFunctionAllowed(c *gin.Context, function string) bool {
+	strict, _ := c.Get(contextKeyStrictEmptyProtocol)
+	strictEmptyProtocol, _ := strict.(bool)
+	return verifyRestFunction(
+		c.GetString("scope"),
+		"rest",
+		c.GetString(contextKeyAuthRestClient),
+		function,
+		strictEmptyProtocol,
+	)
 }
 
 func ExtractUserAuthToken(c *gin.Context) string {
@@ -100,6 +135,7 @@ func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService 
 	if reqClientType == "" && dbToken.IssueType == 1 && isHeaderlessLoginTokenResourceRead(c) {
 		reqClientType = dbToken.ClientType
 	}
+	c.Set(contextKeyAuthRestClient, reqClientType)
 
 	if dbToken.IssueType == 1 && !app.MatchWildcard(dbToken.ClientType, reqClientType) {
 		return nil, "", "", nil, code.ErrorAuthTokenClientRestricted.WithDetails("Client mismatch")
@@ -252,6 +288,19 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 			return "vault_r|note_r|file_r", nil
 		}
 		return "vault_w", nil
+
+	// ---------------- Recycle bin clear (body-dependent) ----------------
+	// Both a single-path clear and a whole-recycle-bin clear reach the same
+	// route, so the route-level check accepts either capability; the handler
+	// then requires note_purge/file_purge for the whole-bin form (empty path
+	// and path hash) and note_w/file_w otherwise, matching the MCP tools.
+	// 单条清理与整库清空共用同一路由，路由层接受任一能力；handler 绑定参数后
+	// 对整库清空（路径与路径哈希均为空）要求 note_purge/file_purge，其余仍为
+	// note_w/file_w，与 MCP 工具一致。
+	case path == "/api/note/recycle-clear":
+		return "note_w|note_purge", nil
+	case path == "/api/file/recycle-clear":
+		return "file_w|file_purge", nil
 
 	// ---------------- Note ----------------
 	case strings.HasPrefix(path, "/api/note"), strings.HasPrefix(path, "/api/folder"):

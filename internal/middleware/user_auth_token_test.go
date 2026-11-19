@@ -126,6 +126,9 @@ func runUserAuthMiddlewareWithRequest(t *testing.T, tokenService *fakeMiddleware
 	router.GET("/api/some/new/route", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
 	})
+	router.DELETE("/api/note/recycle-clear", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	})
 
 	req := httptest.NewRequest(method, target, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -426,4 +429,43 @@ func TestUserAuthTokenWithConfig_InjectsTokenContextAttributes(t *testing.T) {
 	assert.Equal(t, 1, capturedIssueType, "token_issue_type should be 1 (Login)")
 	// Verify token_client_type injected correctly // 验证 token_client_type 注入正确
 	assert.Equal(t, "WebGui", capturedClientType, "token_client_type should match dbToken.ClientType")
+}
+
+// 整库清空回收站的另一个合法令牌形状：只有专属 note_purge、没有 note_w。
+// 路由层（拿不到请求体）必须放行，由 handler 按路径是否为空追加校验。
+func TestUserAuthTokenWithConfig_AllowsPurgeOnlyTokenForRecycleClearRoute(t *testing.T) {
+	token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
+	res := runUserAuthMiddlewareWithRequest(t, &fakeMiddlewareTokenService{activeToken: &domain.AuthToken{
+		ID:          2,
+		UID:         1,
+		TokenString: "nonce-ok",
+		Status:      1,
+		Scope:       "p:rest c:ObsidianPlugin f:note_purge",
+		IssueType:   2,
+		ExpiredAt:   time.Now().Add(time.Hour),
+	}}, token, http.MethodDelete, "/api/note/recycle-clear", func(req *http.Request) {
+		req.Header.Set("x-client", "ObsidianPlugin")
+	})
+
+	assert.Equal(t, code.Success.Code(), res.Code)
+}
+
+// RestFunctionAllowed 必须复用入口中间件的客户端与严格开关。
+func TestRestFunctionAllowedUsesEntryClientAndStrictness(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("scope", "p:rest c:ObsidianPlugin f:note_purge")
+	c.Set("auth_rest_client", "ObsidianPlugin")
+	c.Set("auth_strict_empty_protocol", false)
+	assert.True(t, RestFunctionAllowed(c, "note_purge"))
+	assert.False(t, RestFunctionAllowed(c, "note_w"))
+
+	c.Set("auth_rest_client", "OtherClient")
+	assert.False(t, RestFunctionAllowed(c, "note_purge"))
+
+	c.Set("auth_rest_client", "ObsidianPlugin")
+	c.Set("scope", "")
+	assert.True(t, RestFunctionAllowed(c, "note_purge"), "空 scope 非严格模式下按旧行为放行")
+	c.Set("auth_strict_empty_protocol", true)
+	assert.False(t, RestFunctionAllowed(c, "note_purge"), "严格模式下空 scope 拒绝")
 }

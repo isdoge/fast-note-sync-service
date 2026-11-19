@@ -188,3 +188,46 @@ func TestFileHandler_Upload_NormalizesSecondTimestamps(t *testing.T) {
 		assert.Equal(t, int64(1651719914000), writeParams.Ctime, "seconds ctime must be normalized to milliseconds before writing")
 	}
 }
+
+// 整库清空附件回收站需要专属 file_purge；单条清理维持 file_w。
+func TestFileHandler_RecycleClear_WholeBinRequiresPurge(t *testing.T) {
+	cases := []struct {
+		name       string
+		scope      string
+		body       string
+		wantDenied bool
+	}{
+		{"file_w cannot clear whole bin", "p:rest c:* f:file_w", `{"vault":"main","path":""}`, true},
+		{"file_purge clears whole bin", "p:rest c:* f:file_purge", `{"vault":"main","path":""}`, false},
+		{"file_w clears single path", "p:rest c:* f:file_w", `{"vault":"main","path":"a.png"}`, false},
+		{"file_purge cannot clear single path", "p:rest c:* f:file_purge", `{"vault":"main","path":"a.png"}`, true},
+		{"path hash counts as single path", "p:rest c:* f:file_w", `{"vault":"main","path":"","pathHash":"h1"}`, false},
+		{"login token clears whole bin", "p:rest c:* f:*", `{"vault":"main","path":""}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockSvc := new(svcmocks.MockFileService)
+			if !tc.wantDenied {
+				mockSvc.On("RecycleClear", mock.Anything, int64(1), mock.AnythingOfType("*dto.FileRecycleClearRequest")).
+					Return(nil).Once()
+			}
+			handler := newTestFileHandler(mockSvc)
+			c, w := newFileTestContext("DELETE", "/api/file/recycle-clear", tc.body, 1)
+			withRestAuthScope(c, tc.scope, "*")
+
+			handler.RecycleClear(c)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			if tc.wantDenied {
+				assertResponseCode(t, w, code.ErrorAuthTokenScopeRestricted.Code())
+			} else {
+				assertResponseCode(t, w, code.Success.Code())
+			}
+			if tc.wantDenied {
+				mockSvc.AssertNotCalled(t, "RecycleClear", mock.Anything, mock.Anything, mock.Anything)
+			} else {
+				mockSvc.AssertExpectations(t)
+			}
+		})
+	}
+}
