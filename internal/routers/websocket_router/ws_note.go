@@ -105,7 +105,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	updateMode, checkedNote, nodeCheck, err := noteSvc.UpdateCheckWithNote(ctx, c.User.UID, checkParams)
 
 	if err != nil {
-		h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.UpdateCheck")
+		h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.UpdateCheck")
 		return
 	}
 
@@ -254,7 +254,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 					if !params.BaseHashMissing {
 						noteHistory, err := h.App.NoteHistoryService.GetByNoteIDAndHash(ctx, c.User.UID, nodeCheck.ID, baseHash)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.GetByNoteIDAndHash")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.GetByNoteIDAndHash")
 							return
 						}
 
@@ -342,7 +342,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 						// 使用带冲突检测的文本检测
 						mergeResult, err = diff.MergeTexts(baseContent, clientContent, serverContent, pc1First)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.MergeTexts")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.MergeTexts")
 							return
 						}
 
@@ -366,7 +366,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 						// 强制合并 保留PC1 PC2全部文本
 						mergeResult.Content, err = diff.MergeTextsIgnoreConflictIgnoreDelete(baseContent, clientContent, serverContent, pc1First)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.MergeTextsIgnoreConflictIgnoreDelete")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.MergeTextsIgnoreConflictIgnoreDelete")
 							return
 						}
 
@@ -388,7 +388,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 								zap.Int64(logger.FieldUID, c.User.UID),
 								zap.String(logger.FieldPath, params.Path),
 								zap.Error(err))
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.CreateConflictFile")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.CreateConflictFile")
 							return
 						}
 
@@ -441,7 +441,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				}
 				return
 			}
-			h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.ModifyOrCreate")
+			h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.ModifyOrCreate")
 			return
 		}
 
@@ -634,7 +634,7 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	note, err := noteSvc.Delete(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorNoteDeleteFailed, err, "websocket_router.note.handleNoteDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorNoteDeleteFailed, err, params.Path, msg.Type, "websocket_router.note.handleNoteDelete.Delete")
 		return
 	}
 
@@ -699,7 +699,7 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	uid := c.User.UID
 	oldNote, newNote, err := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Rename(c.Context(), uid, params)
 	if err != nil {
-		h.respondError(c, code.ErrorRenameNoteTargetExist, err, "websocket_router.note.NoteRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorRenameNoteTargetExist, err, params.Path, msg.Type, "websocket_router.note.NoteRename.Rename")
 		return
 	}
 
