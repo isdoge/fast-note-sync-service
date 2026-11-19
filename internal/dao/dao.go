@@ -295,7 +295,7 @@ func (d *Dao) QueryWithOnceInit(f func(*gorm.DB) error, onceKey string, key ...s
 			// 与同一库的 Dao.AutoMigrate/autoMigrateRepositoryDB 串行，避免首次
 			// 使用初始化与启动迁移同时执行 DDL。回调内不得再调用这两个方法
 			// （会重入同一把锁），可直接调用 model.AutoMigrate。
-			mu := d.ddlLock(ddlKeyOf(key...))
+			mu := d.ddlLock(d.tenantCacheKey(ddlKeyOf(key...)))
 			mu.Lock()
 			defer mu.Unlock()
 			if err := f(db); err != nil {
@@ -898,7 +898,13 @@ func (d *Dao) autoMigrateRepositoryDB(b *gorm.DB, dbKey, modelKey string) error 
 		if _, done := d.onceKeys.Load(onceKey); done {
 			return nil, nil
 		}
-		mu := d.ddlLock(dbKey)
+		// tenantCacheKey collapses repository keys that share one physical
+		// PostgreSQL schema / MySQL database, so cross-model first-use DDL on
+		// those backends is serialized too. SQLite keeps one file per key.
+		// tenantCacheKey 会把共享同一 PostgreSQL schema / MySQL 库的仓储 key
+		// 归一，因此关系型多租户库上的跨模型首次建表也会串行；SQLite 仍按
+		// 每个 key 一个库文件。
+		mu := d.ddlLock(d.tenantCacheKey(dbKey))
 		mu.Lock()
 		defer mu.Unlock()
 		if err := model.AutoMigrate(b, modelKey); err != nil {
