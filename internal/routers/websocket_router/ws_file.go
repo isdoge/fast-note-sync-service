@@ -1315,7 +1315,11 @@ func (h *FileWSHandler) handleFileUploadSessionCreate(c *pkgapp.WebsocketClient,
 					zap.String("sessionID", session.ID),
 					zap.String("path", path),
 				)
-				session.Context = context
+				// Preserve the sync context when a delayed context-free upload check reuses the session, so its completion ack still counts toward the sync round.
+				// 延迟到达的无 context 上传检查复用会话时保留同步 context，确保完成确认仍能计入该轮同步。
+				if context != "" {
+					session.Context = context
+				}
 				return session, nil
 			}
 		}
