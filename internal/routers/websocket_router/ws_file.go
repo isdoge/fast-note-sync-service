@@ -447,6 +447,19 @@ func (h *FileWSHandler) FileUploadChunkBinary(c *pkgapp.WebsocketClient, data []
 		session.isCompleted = true
 		session.mu.Unlock()
 		c.Server.RemoveSession(c.User.ID, session.ID)
+		// 回收会话资源：正常落库路径的临时文件已被 DAO rename 搬走（此处 Stat
+		// 不存在、跳过），而"内容与 mtime 完全一致直接返回"和"只更新 mtime"两条
+		// 幂等短路路径不搬文件——超时定时器又已在上文取消，没人会再清理，必须在
+		// 这里删掉，否则临时文件在 temp 目录永久残留。Cleanup 幂等（SavePath 置
+		// 空后为空操作），文件不存在时静默跳过、删除失败只记 Warn 不影响 ack。
+		// Reclaim session resources: on the normal persistence path the temp file
+		// was already renamed away by the DAO (Stat misses and we skip), while the
+		// two short-circuit paths — "content and mtime fully identical, return
+		// directly" and "mtime-only update" — never move it, and the timeout timer
+		// was already cancelled above, so nothing else would clean it up. Cleanup is
+		// idempotent (no-op once SavePath is cleared), skips missing files silently
+		// and only logs a Warn on removal failure, never affecting the ack.
+		session.Cleanup()
 
 		// Broadcast file update message (only when fileSvc is available)
 		// 广播文件更新消息（仅在 fileSvc 可用时）
