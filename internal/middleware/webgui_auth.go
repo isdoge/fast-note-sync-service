@@ -22,12 +22,10 @@ import (
 func RequireWebGUI() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		response := pkgapp.NewResponse(c)
-
 		// Layer 1: Header/query parameter check (applies to all routes)
 		// 第一层：请求头 / 参数校验（所有路由均须通过）
 		if !pkgapp.IsWebGUI(c) {
-			response.ToResponse(code.ErrorAuthTokenClientRestricted.WithDetails(
+			respondUserAuthError(c, code.ErrorAuthTokenClientRestricted.WithDetails(
 				"This action is restricted to webgui client only"))
 			c.Abort()
 			return
@@ -47,7 +45,7 @@ func RequireWebGUI() gin.HandlerFunc {
 			// IssueType must be 1 (Login Token); manual API tokens (IssueType=2) are not allowed
 			// IssueType 必须为 1（登录令牌），手动创建的 API 令牌（IssueType=2）不允许访问
 			if issueType != 1 {
-				response.ToResponse(code.ErrorAuthTokenClientRestricted.WithDetails(
+				respondUserAuthError(c, code.ErrorAuthTokenClientRestricted.WithDetails(
 					"Manual API tokens are not allowed to access WebGUI-only endpoints"))
 				c.Abort()
 				return
@@ -56,7 +54,7 @@ func RequireWebGUI() gin.HandlerFunc {
 			// Token's bound ClientType must match "webgui" (server-side binding, not client-controllable)
 			// Token 绑定的 ClientType 必须匹配 "webgui"（服务端签发时绑定，客户端不可篡改）
 			if !pkgapp.MatchWildcard("webgui", clientType) {
-				response.ToResponse(code.ErrorAuthTokenClientRestricted.WithDetails(
+				respondUserAuthError(c, code.ErrorAuthTokenClientRestricted.WithDetails(
 					"Token client type does not match webgui"))
 				c.Abort()
 				return
