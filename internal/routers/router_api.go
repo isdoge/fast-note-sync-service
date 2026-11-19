@@ -132,6 +132,15 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 			// 管理员专属功能。不适用库限制（用户级路由）。
 			auth.GET("/admin/check", adminControlHandler.CheckAdmin)
 
+			// Online client list: read-only and, like /api/admin/check, reports
+			// data only after the handler's effective-admin check. It stays in
+			// the plain auth group so the Obsidian plugin's "online clients"
+			// menu works with the user's own API token, as before 3.8.0.
+			// 在线客户端列表：只读，且 handler 内部要求生效管理员。保留在普通
+			// 鉴权组，使官方插件用用户自己的 API 令牌也能打开“在线客户端”，
+			// 与 3.8.0 之前一致。
+			auth.GET("/admin/ws_clients", adminControlHandler.GetWSClients)
+
 			// Server self-upgrade: stays in the plain auth group for client
 			// compatibility (WebGUI login tokens and admin-owned manual tokens
 			// with config_w both work). The handler requires the effective
@@ -233,16 +242,13 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.POST("/admin/users/create", adminControlHandler.CreateUser)
 				webguiGroup.POST("/admin/users/update", adminControlHandler.UpdateUser)
 
-				// Admin system control moved from the plain auth group into the
-				// WebGUI group: manual API tokens (p:rest) must not be able to
-				// manage WS clients. /api/admin/check and /api/admin/upgrade
-				// stay in the plain auth group for client compatibility (see
-				// the comments there).
-				// 管理系统控制接口从普通鉴权组移入 WebGUI 组：手动 API 令牌
-				// （p:rest）不得管理 WS 客户端。/api/admin/check 与
-				// /api/admin/upgrade 为兼容既有客户端保留在普通鉴权组
-				// （见上方注释）。
-				webguiGroup.GET("/admin/ws_clients", adminControlHandler.GetWSClients)
+				// Admin WS control that mutates state stays WebGUI-only: manual
+				// API tokens (p:rest) must not kick connections. The read-only
+				// client list moved to the plain auth group (effective-admin
+				// check in the handler), see the comment there.
+				// 会改变状态的管理写操作仍仅限 WebGUI：手动 API 令牌（p:rest）
+				// 不得踢连接。只读的在线客户端列表已移回普通鉴权组（handler
+				// 内部校验生效管理员），见上方注释。
 				webguiGroup.DELETE("/admin/ws_client/:traceId", adminControlHandler.KickWSClient)
 
 				// Storage management routes

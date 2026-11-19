@@ -408,6 +408,15 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 	// 升级 handler 不触碰库内数据，check 属用户级。
 	case path == "/api/admin/check":
 		return "", nil
+	case path == "/api/admin/ws_clients":
+		// Read-only online client list: the handler requires the effective
+		// admin, so no function point is needed. Kept out of the config_r
+		// classification below so an admin's own sync token (note/file scopes)
+		// still works, matching the pre-3.8.0 client behavior.
+		// 只读在线客户端列表：handler 要求生效管理员，无需功能点。不归入下方
+		// 的 config_r 分类，管理员自己的同步令牌（笔记/附件权限）仍可用，
+		// 与 3.8.0 之前的客户端行为一致。
+		return "", nil
 	case path == "/api/admin/upgrade":
 		return "config_w", nil
 

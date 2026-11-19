@@ -22,8 +22,10 @@ import (
 )
 
 // 管理接口的路由归属守卫：
-// - /api/admin/ws_clients、/api/admin/ws_client/:traceId 位于 WebGUI 鉴权组
-//   （登录令牌 + webgui 客户端 + 生效管理员），手动 API 令牌被 RequireWebGUI 挡住；
+// - /api/admin/ws_clients（只读）位于普通鉴权组、无功能点，handler 内部要求
+//   生效管理员：官方插件用自己的 API 令牌可打开在线客户端列表；
+// - /api/admin/ws_client/:traceId（踢连接）仍位于 WebGUI 鉴权组，手动 API
+//   令牌被 RequireWebGUI 挡住；
 // - /api/admin/check 位于普通鉴权组、无功能点（任何已认证令牌可查询身份）；
 // - /api/admin/upgrade 位于普通鉴权组、归类为 config_w，handler 内部要求生效
 //   管理员：WebGUI 登录令牌与管理员名下含 config_w 的手动令牌可用（插件场景），
@@ -100,7 +102,9 @@ func runAdminGroupRequest(t *testing.T, testApp *internalapp.App, token, clientH
 	r := gin.New()
 	_ = r.SetTrustedProxies(nil)
 	uni := ut.New(en.New(), en.New(), zh.New())
-	registerAPIRoutes(r, testApp, nil, uni)
+	// 传入真实 WSS：ws_clients 的 handler 在管理员校验通过后会读取客户端列表。
+	wss := app.NewWebsocketServer(app.WSConfig{}, testApp)
+	registerAPIRoutes(r, testApp, wss, uni)
 
 	req := httptest.NewRequest(method, target, nil)
 	if token != "" {
@@ -123,27 +127,63 @@ func adminGroupJWT(t *testing.T, secretKey, nonce string, uid, tokenID int64) st
 	return token
 }
 
-// ws_clients / ws_client 位于 WebGUI 鉴权组：手动令牌即使带 webgui 头也被
-// RequireWebGUI 挡住；/api/admin/upgrade 不再要求 WebGUI，改按功能点校验。
-func TestAdminRoutesBlockManualToken(t *testing.T) {
+// 只读的在线客户端列表已移回普通鉴权组：手动 API 令牌不再被 RequireWebGUI
+// 挡住，而是进入 handler 的生效管理员校验。无用户配置时无人是管理员 → 411。
+func TestAdminWSClientsManualTokenReachesHandler(t *testing.T) {
 	secretKey := "admin-group-test-secret"
 	tokenSvc := &adminGroupTokenService{activeToken: &domain.AuthToken{
 		ID: 5, UID: 2, TokenString: "nonce-a", Status: 1,
-		Scope: "p:rest c:* f:*", IssueType: 2,
+		Scope: "p:rest c:* f:note_rw", IssueType: 2,
 		ExpiredAt: time.Now().Add(time.Hour),
 	}}
 	testApp := newAdminGroupTestApp(t, tokenSvc)
 	testApp.Config().Security.AuthTokenKey = secretKey
 
-	for _, target := range []string{
-		"/api/admin/ws_clients",
-	} {
-		rec := runAdminGroupRequest(t, testApp, adminGroupJWT(t, secretKey, "nonce-a", 2, 5), "webgui", http.MethodGet, target)
-		require.Equal(t, http.StatusOK, rec.Code, "response uses business code envelope")
-		var res app.Res
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
-		require.NotEqual(t, int64(1), int64(res.Code), "manual token must not pass: %s", target)
-	}
+	rec := runAdminGroupRequest(t, testApp, adminGroupJWT(t, secretKey, "nonce-a", 2, 5), "ObsidianPlugin", http.MethodGet, "/api/admin/ws_clients")
+	require.Equal(t, http.StatusOK, rec.Code, "response uses business code envelope")
+	var res app.Res
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
+	require.NotEqual(t, int64(307), int64(res.Code), "不得再被 RequireWebGUI 挡住: %s", rec.Body.String())
+	require.NotEqual(t, int64(315), int64(res.Code), "只读接口不应要求配置功能点: %s", rec.Body.String())
+	require.Equal(t, int64(411), int64(res.Code), "非管理员由 handler 拒绝: %s", rec.Body.String())
+}
+
+// 生效管理员的手动 API 令牌（常见同步令牌，只有笔记权限）可以列出在线客户端。
+func TestAdminWSClientsAdminManualTokenListsClients(t *testing.T) {
+	secretKey := "admin-group-test-secret"
+	tokenSvc := &adminGroupTokenService{activeToken: &domain.AuthToken{
+		ID: 5, UID: 2, TokenString: "nonce-a", Status: 1,
+		Scope: "p:rest c:ObsidianPlugin f:note_rw,file_rw", IssueType: 2,
+		ExpiredAt: time.Now().Add(time.Hour),
+	}}
+	testApp := newAdminGroupTestApp(t, tokenSvc)
+	testApp.Config().Security.AuthTokenKey = secretKey
+	testApp.Config().User.AdminUID = 2
+
+	rec := runAdminGroupRequest(t, testApp, adminGroupJWT(t, secretKey, "nonce-a", 2, 5), "ObsidianPlugin", http.MethodGet, "/api/admin/ws_clients")
+	require.Equal(t, http.StatusOK, rec.Code)
+	var res app.Res
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
+	require.Equal(t, int64(1), int64(res.Code), "管理员手动令牌应能读取在线客户端: %s", rec.Body.String())
+}
+
+// 踢连接是写操作，仍留在 WebGUI 专属组：手动令牌即使带 webgui 头也被挡住。
+func TestAdminKickWSClientStillWebGUIOnly(t *testing.T) {
+	secretKey := "admin-group-test-secret"
+	tokenSvc := &adminGroupTokenService{activeToken: &domain.AuthToken{
+		ID: 6, UID: 2, TokenString: "nonce-a", Status: 1,
+		Scope: "p:rest c:* f:*", IssueType: 2,
+		ExpiredAt: time.Now().Add(time.Hour),
+	}}
+	testApp := newAdminGroupTestApp(t, tokenSvc)
+	testApp.Config().Security.AuthTokenKey = secretKey
+	testApp.Config().User.AdminUID = 2
+
+	rec := runAdminGroupRequest(t, testApp, adminGroupJWT(t, secretKey, "nonce-a", 2, 6), "webgui", http.MethodDelete, "/api/admin/ws_client/trace-1")
+	require.Equal(t, http.StatusOK, rec.Code, "response uses business code envelope")
+	var res app.Res
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &res))
+	require.NotEqual(t, int64(1), int64(res.Code), "手动令牌不得踢连接: %s", rec.Body.String())
 }
 
 // /api/admin/check 移回普通鉴权组且无功能点：任何已认证令牌（含受限令牌）
