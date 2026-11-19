@@ -11,13 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Reusing matching uploads preserves a non-empty context unless a newer non-empty context replaces it.
-// 复用属性相同的上传会话时保留非空 context，只有新的非空 context 才会覆盖。
+// Reusing a matching upload always overwrites the context, including clearing a
+// retired round's context with a context-free request.
+// 复用属性相同的上传会话时无条件覆盖 context，包括用不带 context 的新请求清空旧轮的值。
 func TestUploadSessionReuseContext(t *testing.T) {
 	for _, tc := range []struct {
 		name, first, next, want string
 	}{
-		{"nonempty then empty", "sync-first", "", "sync-first"},
+		{"nonempty then empty", "sync-first", "", ""},
 		{"empty then nonempty", "", "sync-next", "sync-next"},
 		{"nonempty then nonempty", "sync-first", "sync-next", "sync-next"},
 	} {
@@ -63,9 +64,11 @@ func TestUploadSessionSizeChangeReplacesSession(t *testing.T) {
 	require.Empty(t, next.Context)
 }
 
-// A context-free watcher check keeps its own response context while the completion ack retains the sync context.
-// 无 context 的监听检查响应仍用自己的 context，上传完成确认则保留同步 context。
-func TestFileUploadCheck_ReusedSessionAckKeepsSyncContext(t *testing.T) {
+// A context-free watcher check reuses the session and clears its sync context:
+// the completion ack must not carry a context the plugin has already retired.
+// 无 context 的监听检查复用会话时会清空旧同步 context：完成确认不能再带插件
+// 已作废的 context，否则会被当作迟到应答丢弃。
+func TestFileUploadCheck_ReusedSessionClearsRetiredContext(t *testing.T) {
 	f := new(svcmocks.MockFileService)
 	f.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(f).Maybe()
 	f.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).
@@ -99,7 +102,7 @@ func TestFileUploadCheck_ReusedSessionAckKeepsSyncContext(t *testing.T) {
 	upload := syncDeleteMessage(t, messages, FileUpload)
 	require.Empty(t, upload["context"])
 	require.Equal(t, session.ID, upload["data"].(map[string]any)["sessionId"])
-	require.Equal(t, syncContext, session.Context)
+	require.Empty(t, session.Context, "无 context 的复用必须清掉旧轮的 context")
 
 	frame := append([]byte(session.ID), make([]byte, 4)...)
 	binary.BigEndian.PutUint32(frame[36:40], 0)
@@ -107,7 +110,7 @@ func TestFileUploadCheck_ReusedSessionAckKeepsSyncContext(t *testing.T) {
 	h.FileUploadChunkBinary(c, frame)
 
 	ack := syncDeleteMessage(t, messages, string(FileUploadAck))
-	require.Equal(t, syncContext, ack["context"])
+	require.Empty(t, ack["context"])
 	require.Equal(t, "v", ack["vault"])
 	require.Equal(t, "/images/pic.png", ack["data"].(map[string]any)["path"])
 	require.Equal(t, float64(42), ack["data"].(map[string]any)["lastTime"])
