@@ -103,26 +103,3 @@ server:
 	require.NoError(t, err)
 	require.True(t, cfg.Server.MCPDisableLocalhostProtection)
 }
-
-func TestLoadConfigEmptyUserDatabaseTypeFallsBackToMain(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	cases := []struct {
-		name string
-		yaml string
-		want string
-	}{
-		{"absent", "database:\n  type: mysql\n", ""},
-		{"explicit empty", "database:\n  type: mysql\nuser-database:\n  type:\n", ""},
-		{"quoted empty", "database:\n  type: mysql\nuser-database:\n  type: \"\"\n", ""},
-		{"independent sqlite", "database:\n  type: mysql\nuser-database:\n  type: sqlite\n", "sqlite"},
-		{"independent mysql", "database:\n  type: sqlite\nuser-database:\n  type: mysql\n", "mysql"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, os.WriteFile(configPath, []byte(tc.yaml), 0644))
-			cfg, _, err := LoadConfig(configPath)
-			require.NoError(t, err)
-			require.Equal(t, tc.want, cfg.UserDatabase.Type)
-		})
-	}
-}

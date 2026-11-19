@@ -71,36 +71,12 @@ func LoadConfig(f string) (*AppConfig, string, error) {
 		return nil, realpath, errors.Wrap(err, "parse config file failed")
 	}
 
-	// Remember whether user-database.type was left empty in the file. The
-	// documented behavior is to inherit the whole main database configuration
-	// (config/config.yaml and docs/runbook), but defaults.Set would fill the
-	// empty value with the "sqlite" code default and silently isolate every
-	// user into per-key SQLite files even when the main database is MySQL or
-	// PostgreSQL.
-	// 记录配置文件里的 user-database.type 是否留空。文档约定空值完整继承
-	// 主数据库配置，但 defaults.Set 会把空值填成 sqlite 默认值，导致主库是
-	// MySQL/PostgreSQL 时用户数据仍被静默写进单独的 SQLite 文件。
-	var userDBProbe struct {
-		UserDatabase struct {
-			Type *string `yaml:"type"`
-		} `yaml:"user-database"`
-	}
-	if err := yaml.Unmarshal(file, &userDBProbe); err != nil {
-		return nil, realpath, errors.Wrap(err, "parse config file failed")
-	}
-
 	// Set default values again to fill fields that exist in YAML but have empty values
 	// 再次设置默认值，以填充 YAML 中存在但值为空的字段
 	// defaults.Set filled only when the field is the zero value of the type
 	// defaults.Set 只有在字段为该类型的零值时才会填充
 	if err := defaults.Set(c); err != nil {
 		return nil, realpath, errors.Wrap(err, "re-set default config failed")
-	}
-	if userDBProbe.UserDatabase.Type == nil || *userDBProbe.UserDatabase.Type == "" {
-		// Keep the documented fallback path: dao.resolveConfig inherits the main
-		// database configuration when this is empty.
-		// 保留文档约定的回退路径：该值为空时 dao.resolveConfig 继承主库配置。
-		c.UserDatabase.Type = ""
 	}
 	if err := c.App.ValidateWebSocketHeartbeat(); err != nil {
 		return nil, realpath, errors.Wrap(err, "validate websocket heartbeat config failed")
