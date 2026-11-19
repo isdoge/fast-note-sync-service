@@ -83,6 +83,7 @@ type Dao struct {
 
 	poolSemaphores  sync.Map                                                   // map[string]*semaphore.Weighted 针对不同配置的并发控制
 	poolCreate      singleflight.Group                                         // 按缓存键合并并发建池请求
+	ddlMu           sync.Map                                                   // map[string]*sync.Mutex 按库串行化首次建表 DDL
 	poolCreator     func(config.DatabaseConfig, *zap.Logger) (*gorm.DB, error) // 可测试替换的建池函数
 	schemaEnsurer   func(string) error                                         // 可测试替换的 PostgreSQL schema 初始化
 	databaseEnsurer func(string) error                                         // 可测试替换的 MySQL 库初始化
@@ -246,15 +247,17 @@ func (d *Dao) WriteQueueManager() *writequeue.Manager {
 // QueryWithOnceInit 执行带有单次初始化逻辑的数据库查询
 // QueryWithOnceInit executes a database query with once-init logic.
 // 参数说明:
-//   - f func(*gorm.DB): 初始化函数，仅在 onceKey 首次出现时执行 (如 AutoMigrate)
+//   - f func(*gorm.DB) error: 初始化函数，仅在 onceKey 首次出现时执行 (如 AutoMigrate)；
+//     返回错误时不算完成，下次调用会重试
 //   - onceKey string: 用于确保初始化逻辑仅执行一次的唯一标识
 //   - key ...string: 数据库连接标识（可变参数）。不传或为空时使用主数据库；传入时用于路由到特定租户/用户库
 //
 // Parameters:
-//   - f func(*gorm.DB): Initialization function, executed only the first time onceKey is encountered (e.g., AutoMigrate).
+//   - f func(*gorm.DB) error: Initialization function, executed only the first time onceKey is encountered (e.g., AutoMigrate).
+//     A returned error leaves the key uninitialized so the next call retries.
 //   - onceKey string: Unique identifier to ensure initialization logic runs only once.
 //   - key ...string: Database connection identifier (variadic). Uses main DB if omitted/empty; uses provided key for tenant/user DB routing.
-func (d *Dao) QueryWithOnceInit(f func(*gorm.DB), onceKey string, key ...string) *query.Query {
+func (d *Dao) QueryWithOnceInit(f func(*gorm.DB) error, onceKey string, key ...string) *query.Query {
 	db := d.ResolveDB(key...)
 	if db == nil {
 		keyName := "default"
@@ -281,16 +284,51 @@ func (d *Dao) QueryWithOnceInit(f func(*gorm.DB), onceKey string, key ...string)
 	// onceKeys 只在 f 返回后写入，因此每个调用者要么自己完成迁移，要么等待
 	// 正在执行迁移的那个调用者。
 	if _, loaded := d.onceKeys.Load(actualOnceKey); !loaded {
-		_, _, _ = d.poolCreate.Do(onceInitKeyPrefix+actualOnceKey, func() (interface{}, error) {
+		_, err, _ := d.poolCreate.Do(onceInitKeyPrefix+actualOnceKey, func() (interface{}, error) {
 			if _, done := d.onceKeys.Load(actualOnceKey); done {
 				return nil, nil
 			}
-			f(db)
+			// Serialize with Dao.AutoMigrate/autoMigrateRepositoryDB for the same
+			// database so first-use repository init and the startup migration never
+			// run DDL concurrently. The callback must not call those methods (that
+			// would re-enter this mutex); it may call model.AutoMigrate directly.
+			// 与同一库的 Dao.AutoMigrate/autoMigrateRepositoryDB 串行，避免首次
+			// 使用初始化与启动迁移同时执行 DDL。回调内不得再调用这两个方法
+			// （会重入同一把锁），可直接调用 model.AutoMigrate。
+			mu := d.ddlLock(d.tenantCacheKey(ddlKeyOf(key...)))
+			mu.Lock()
+			defer mu.Unlock()
+			if err := f(db); err != nil {
+				return nil, err
+			}
 			d.onceKeys.Store(actualOnceKey, true)
 			return nil, nil
 		})
+		if err != nil {
+			// Callers have no error return channel here (they immediately use the
+			// query), so surface the failure in logs and leave onceKeys unset. The
+			// next call retries the initialization instead of never trying again.
+			// 调用方直接使用查询对象、没有错误返回通道，因此这里记日志并保持
+			// onceKeys 未写入；下次调用会重试初始化，而不是永久跳过建表。
+			d.Logger().Error("database once-init failed; retry on next use", zap.String("onceKey", actualOnceKey), zap.Error(err))
+		}
 	}
 	return query.Use(db)
+}
+
+// ddlKeyOf normalizes the optional database key used for DDL serialization.
+func ddlKeyOf(key ...string) string {
+	if len(key) > 0 {
+		return key[0]
+	}
+	return ""
+}
+
+// ddlLock returns the per-database mutex used to serialize first-use DDL.
+// ddlLock 返回按库串行化首次建表 DDL 的互斥锁。
+func (d *Dao) ddlLock(dbKey string) *sync.Mutex {
+	mu, _ := d.ddlMu.LoadOrStore(dbKey, &sync.Mutex{})
+	return mu.(*sync.Mutex)
 }
 
 // PoolCount returns the number of cached tenant pools. It is used by tests and
@@ -840,17 +878,40 @@ func (d *Dao) AutoMigrate(uid int64, modelKey string) error {
 	if b == nil {
 		return fmt.Errorf("database connection is nil for model %s (uid=%d, dbKey=%s)", modelKey, uid, dbKey)
 	}
-	onceKey := autoMigrateKeyPrefix + dbKey + "#" + modelKey
-	_, err, _ := d.poolCreate.Do(onceKey, func() (interface{}, error) {
-		return nil, model.AutoMigrate(b, modelKey)
-	})
-	return err
+	return d.autoMigrateRepositoryDB(b, dbKey, modelKey)
 }
 
+// autoMigrateRepositoryDB migrates one model once per database key. Successful
+// migrations are cached in onceKeys so lazily-created tables (e.g. NoteTag) do
+// not re-run the full GORM schema inspection on every call; failures are not
+// cached, so the next call retries. The per-database DDL mutex also serializes
+// this path with QueryWithOnceInit's first-use initialization.
+// autoMigrateRepositoryDB 按库 key 对单个模型只迁移一次：成功记入 onceKeys，
+// 让懒建表（如 NoteTag）不必每次调用都重跑整套表结构检查；失败不记录，下次重试。
+// 同时用按库的 DDL 互斥锁与 QueryWithOnceInit 的首次初始化串行。
 func (d *Dao) autoMigrateRepositoryDB(b *gorm.DB, dbKey, modelKey string) error {
 	onceKey := autoMigrateKeyPrefix + dbKey + "#" + modelKey
+	if _, loaded := d.onceKeys.Load(onceKey); loaded {
+		return nil
+	}
 	_, err, _ := d.poolCreate.Do(onceKey, func() (interface{}, error) {
-		return nil, model.AutoMigrate(b, modelKey)
+		if _, done := d.onceKeys.Load(onceKey); done {
+			return nil, nil
+		}
+		// tenantCacheKey collapses repository keys that share one physical
+		// PostgreSQL schema / MySQL database, so cross-model first-use DDL on
+		// those backends is serialized too. SQLite keeps one file per key.
+		// tenantCacheKey 会把共享同一 PostgreSQL schema / MySQL 库的仓储 key
+		// 归一，因此关系型多租户库上的跨模型首次建表也会串行；SQLite 仍按
+		// 每个 key 一个库文件。
+		mu := d.ddlLock(d.tenantCacheKey(dbKey))
+		mu.Lock()
+		defer mu.Unlock()
+		if err := model.AutoMigrate(b, modelKey); err != nil {
+			return nil, err
+		}
+		d.onceKeys.Store(onceKey, true)
+		return nil, nil
 	})
 	return err
 }
@@ -858,8 +919,8 @@ func (d *Dao) autoMigrateRepositoryDB(b *gorm.DB, dbKey, modelKey string) error 
 // user gets the user query object (internal method)
 // user 获取用户查询对象（内部方法）
 func (d *Dao) user() *query.Query {
-	return d.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "User")
+	return d.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "User")
 	}, "user#user")
 }
 

@@ -2,6 +2,7 @@ package upgrade
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"os"
 	"strconv"
@@ -46,7 +47,13 @@ func TestBackslashPathMigrationPostgres(t *testing.T) {
 	}
 	pw, _ := u.User.Password()
 	port, _ := strconv.Atoi(u.Port())
-	cfg := &config.DatabaseConfig{Type: "postgres", Host: u.Hostname(), Port: port, UserName: u.User.Username(), Password: pw, Name: "postgres", SSLMode: "disable", EnableWriteQueue: util.Ptr(false)}
+	// Use the DSN's database for the tenant pool too, otherwise DROP SCHEMA
+	// below cleans a different database than the one ResolveDB writes to.
+	dbName := strings.TrimPrefix(u.Path, "/")
+	if dbName == "" {
+		dbName = "postgres"
+	}
+	cfg := &config.DatabaseConfig{Type: "postgres", Host: u.Hostname(), Port: port, UserName: u.User.Username(), Password: pw, Name: dbName, SSLMode: "disable", EnableWriteQueue: util.Ptr(false)}
 	d := dao.New(db, ctx, dao.WithConfig(cfg), dao.WithUserDatabaseConfig(cfg), dao.WithLogger(zap.NewNop()))
 	if err := db.Exec(`DROP SCHEMA IF EXISTS user_1 CASCADE`).Error; err != nil {
 		t.Fatal(err)
@@ -99,10 +106,11 @@ func TestBackslashPathMigrationPostgres(t *testing.T) {
 
 	// PG 没有 SQLite 的 CREATE TRIGGER RAISE 便利注入法：跳过"单行失败不影响其它行"，
 	// 该行为已在 SQLite 集成测试里用真实触发器覆盖；这里验证方言相关的部分。
+	// 无法归一的 `bad\..\x.md` 现在只跳过并记日志，不再让整次迁移一直失败。
 	mc := &MigrationContext{Dao: d, Logger: zap.NewNop()}
 	m := &BackslashPathMigrate{}
-	if err := m.Up(db, ctx, mc); err == nil {
-		t.Fatal("expected retryable failure for traversal row")
+	if err := m.Up(db, ctx, mc); err != nil {
+		t.Fatal(err)
 	}
 	var got model.Note
 	if err := ndb.First(&got, 1).Error; err != nil {
@@ -111,10 +119,14 @@ func TestBackslashPathMigrationPostgres(t *testing.T) {
 	if got.Path != "dir/one.md" || got.PathHash != util.EncodeHash32(got.Path) || got.UpdatedTimestamp == 0 {
 		t.Fatalf("note not migrated: %+v", got)
 	}
-	var conflict model.Note
-	ndb.First(&conflict, 3)
-	if !strings.HasPrefix(conflict.Path, "a/b.conflict.") || conflict.Action != "delete" {
-		t.Fatalf("bad conflict tombstone: %+v", conflict)
+	// 目标路径上的行也是墓碑：清理源墓碑，不产生冲突副本。
+	var removed model.Note
+	if err := ndb.First(&removed, 3).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("duplicate tombstone should be removed: %v %+v", err, removed)
+	}
+	var bad model.Note
+	if err := ndb.First(&bad, 4).Error; err != nil || bad.Path != `bad\..\x.md` {
+		t.Fatalf("invalid row should be left untouched: %v %+v", err, bad)
 	}
 	var h model.NoteHistory
 	hdb.First(&h, 1)
@@ -131,14 +143,16 @@ func TestBackslashPathMigrationPostgres(t *testing.T) {
 	if fts.Path != got.Path {
 		t.Fatalf("fts: %+v", fts)
 	}
-	// 幂等：清掉故意失败的行后重跑，冲突行不再变化。
+	// 幂等：无法归一的行之后被清理，重跑不再改动已迁移行。
 	ndb.Delete(&model.Note{}, 4)
 	if err := m.Up(db, ctx, mc); err != nil {
 		t.Fatal(err)
 	}
 	var again model.Note
-	ndb.First(&again, 3)
-	if again.Path != conflict.Path || again.UpdatedTimestamp != conflict.UpdatedTimestamp {
+	if err := ndb.First(&again, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if again.Path != got.Path || again.UpdatedTimestamp != got.UpdatedTimestamp {
 		t.Fatalf("not idempotent: %+v", again)
 	}
 }

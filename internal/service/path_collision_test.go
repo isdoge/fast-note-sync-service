@@ -245,6 +245,32 @@ func TestPathCollisionHashOnly(t *testing.T) {
 	}
 }
 
+// TestPathCollisionTombstoneDoesNotMaskLiveRow 覆盖纯哈希查询的歧义守卫：
+// 同一 path_hash 下另一路径只有墓碑行时，唯一存活行仍应能被查到，而不是报歧义。
+func TestPathCollisionTombstoneDoesNotMaskLiveRow(t *testing.T) {
+	_, _, _, nr, _, _ := collisionServices(t)
+	ctx := context.Background()
+	live, dead := "Aa.md", "BB.md"
+	h := util.EncodeHash32(live)
+	require.Equal(t, h, util.EncodeHash32(dead))
+	_, err := nr.Create(ctx, &domain.Note{VaultID: 1, Path: dead, PathHash: h, Action: domain.NoteActionDelete}, 1)
+	require.NoError(t, err)
+	_, err = nr.Create(ctx, &domain.Note{VaultID: 1, Path: live, PathHash: h, Content: "A", Action: domain.NoteActionCreate}, 1)
+	require.NoError(t, err)
+
+	got, err := nr.GetByPathHash(ctx, h, 1, 1)
+	require.NoError(t, err)
+	require.Equal(t, live, got.Path)
+
+	got, err = nr.GetByPathHashIncludeRecycle(ctx, h, 1, 1, false)
+	require.NoError(t, err)
+	require.Equal(t, live, got.Path)
+
+	got, err = nr.GetByPathHashIncludeRecycle(ctx, h, 1, 1, true)
+	require.NoError(t, err)
+	require.Equal(t, dead, got.Path)
+}
+
 func TestPathCollisionRecycleClear(t *testing.T) {
 	for _, kind := range []string{"note", "file"} {
 		for _, hashOnly := range []bool{false, true} {

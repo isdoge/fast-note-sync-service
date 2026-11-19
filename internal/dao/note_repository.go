@@ -52,11 +52,13 @@ func init() {
 
 // note 获取笔记查询对象
 func (r *noteRepository) note(uid int64) *query.Query {
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "Note")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		if err := model.AutoMigrate(g, "Note"); err != nil {
+			return err
+		}
 		// Initialize universal full-text search table
 		// 初始化通用全文搜索表
-		_ = model.CreateNoteFTSTable(g)
+		return model.CreateNoteFTSTable(g)
 	}, r.GetKey(uid)+"#note_v3", r.GetKey(uid))
 }
 
@@ -270,7 +272,10 @@ func (r *noteRepository) GetByID(ctx context.Context, id, uid int64) (*domain.No
 // GetByPathHash 根据路径哈希获取笔记（排除已删除）
 func (r *noteRepository) GetByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*domain.Note, error) {
 	u := r.note(uid).Note
-	if err := requireUnambiguousPath(u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash)).UnderlyingDB()); err != nil {
+	// Match the status filter of the query below: tombstones must not make a
+	// hash-only lookup ambiguous when the live row is unique.
+	// 与下方查询的状态过滤一致：墓碑行不应让唯一存活行的纯哈希查询变成歧义。
+	if err := requireUnambiguousPath(u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash), u.Action.Neq("delete")).UnderlyingDB()); err != nil {
 		return nil, err
 	}
 	m, err := u.WithContext(ctx).Where(
@@ -288,7 +293,16 @@ func (r *noteRepository) GetByPathHash(ctx context.Context, pathHash string, vau
 // GetByPathHashIncludeRecycle 根据路径哈希获取笔记（可选包含回收站）
 func (r *noteRepository) GetByPathHashIncludeRecycle(ctx context.Context, pathHash string, vaultID, uid int64, isRecycle bool) (*domain.Note, error) {
 	u := r.note(uid).Note
-	if err := requireUnambiguousPath(u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash)).UnderlyingDB()); err != nil {
+	// Keep the ambiguity guard identical to the status filters applied below so
+	// deleted tombstones cannot mask a unique live (or unique recycled) row.
+	// 歧义守卫与下方状态过滤保持一致：墓碑行不能掩盖唯一的存活行（或唯一的回收站行）。
+	guard := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash))
+	if isRecycle {
+		guard = guard.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+	} else {
+		guard = guard.Where(u.Action.Neq("delete"))
+	}
+	if err := requireUnambiguousPath(guard.UnderlyingDB()); err != nil {
 		return nil, err
 	}
 	q := u.WithContext(ctx).Where(

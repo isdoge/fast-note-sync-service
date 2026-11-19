@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -215,9 +216,10 @@ func TestQueryWithOnceInitWaitsForRunningMigration(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			d.QueryWithOnceInit(func(*gorm.DB) {
+			d.QueryWithOnceInit(func(*gorm.DB) error {
 				time.Sleep(20 * time.Millisecond)
 				initialized.Add(1)
+				return nil
 			}, "once#test", "user_1")
 			if initialized.Load() != 1 {
 				errs <- "query returned before initialization completed"
@@ -231,4 +233,29 @@ func TestQueryWithOnceInitWaitsForRunningMigration(t *testing.T) {
 		t.Error(msg)
 	}
 	require.Equal(t, int32(1), initialized.Load())
+}
+
+// TestQueryWithOnceInitRetriesAfterInitFailure proves a transient initialization
+// failure (e.g. a busy_timeout while creating tables) does not mark the key as
+// initialized, so the next call retries instead of failing forever.
+// TestQueryWithOnceInitRetriesAfterInitFailure 验证首次建表瞬时失败不会把
+// onceKey 标记为已完成，下一次调用会重试，而不是进程内永久跳过建表。
+func TestQueryWithOnceInitRetriesAfterInitFailure(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "retry.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	d := New(db, context.Background(), WithLogger(zap.NewNop()))
+
+	var calls atomic.Int32
+	init := func(*gorm.DB) error {
+		if calls.Add(1) == 1 {
+			return errors.New("transient DDL failure")
+		}
+		return nil
+	}
+	d.QueryWithOnceInit(init, "once#retry")
+	require.Equal(t, int32(1), calls.Load(), "first call must run initialization")
+	d.QueryWithOnceInit(init, "once#retry")
+	require.Equal(t, int32(2), calls.Load(), "failed initialization must be retried")
+	d.QueryWithOnceInit(init, "once#retry")
+	require.Equal(t, int32(2), calls.Load(), "successful initialization must not run again")
 }
