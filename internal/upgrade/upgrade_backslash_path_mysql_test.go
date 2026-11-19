@@ -2,10 +2,13 @@ package upgrade
 
 import (
 	"context"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"github.com/haierkeys/fast-note-sync-service/internal/config"
 	"github.com/haierkeys/fast-note-sync-service/internal/dao"
 	"github.com/haierkeys/fast-note-sync-service/internal/model"
@@ -18,9 +21,13 @@ import (
 )
 
 // TestBackslashPathMigrationMySQL covers all shared repository tables and the
-// note history/link/FTS side effects on a real MySQL or MariaDB database.
+// note history/link/FTS side effects on a real MySQL or MariaDB database using
+// the production-reachable independent user database mode
+// (user-database.type=mysql, database user_<uid> created by the service).
 // TestBackslashPathMigrationMySQL 在真实 MySQL/MariaDB 上覆盖所有共享仓储表，
-// 以及笔记历史、链接和 FTS 联动。设置 FNS_TEST_MYSQL_DSN 时执行。
+// 以及笔记历史、链接和 FTS 联动。使用生产可达的独立用户库模式
+// （user-database.type=mysql，服务端自动创建 user_<uid> 库）。
+// 设置 FNS_TEST_MYSQL_DSN 时执行；账号需要 CREATE DATABASE 权限。
 func TestBackslashPathMigrationMySQL(t *testing.T) {
 	dsn := os.Getenv("FNS_TEST_MYSQL_DSN")
 	if dsn == "" {
@@ -29,24 +36,42 @@ func TestBackslashPathMigrationMySQL(t *testing.T) {
 	ctx := context.Background()
 	db, err := gorm.Open(gormMysql.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
-	cfg := &config.DatabaseConfig{Type: "mysql", EnableWriteQueue: util.Ptr(false)}
-	d := dao.New(db, ctx, dao.WithConfig(cfg), dao.WithUserDatabaseConfig(&config.DatabaseConfig{}), dao.WithLogger(zap.NewNop()))
-	for _, table := range []string{"user", "note", "note_history", "note_link", "note_fts", "file", "folder", "setting", "backslash_path_plan"} {
-		require.NoError(t, db.Exec("DROP TABLE IF EXISTS `"+table+"`").Error)
+
+	mysqlCfg, err := mysqlDriver.ParseDSN(dsn)
+	require.NoError(t, err)
+	host, portStr, err := net.SplitHostPort(mysqlCfg.Addr)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+	mainCfg := &config.DatabaseConfig{
+		Type: "mysql", Host: host, Port: port, UserName: mysqlCfg.User, Password: mysqlCfg.Passwd,
+		Name: mysqlCfg.DBName, Charset: "utf8mb4", ParseTime: true, EnableWriteQueue: util.Ptr(false),
 	}
+	userCfg := *mainCfg
+	d := dao.New(db, ctx, dao.WithConfig(mainCfg), dao.WithUserDatabaseConfig(&userCfg), dao.WithLogger(zap.NewNop()))
+
+	dropUserDB := func() { _ = db.Exec("DROP DATABASE IF EXISTS `user_1`").Error }
+	dropUserDB()
 	t.Cleanup(func() {
-		for _, table := range []string{"user", "note", "note_history", "note_link", "note_fts", "file", "folder", "setting", "backslash_path_plan"} {
-			_ = db.Exec("DROP TABLE IF EXISTS `" + table + "`").Error
-		}
+		dropUserDB()
+		_ = db.Exec("DROP TABLE IF EXISTS `user`").Error
 	})
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS `user`").Error)
 	require.NoError(t, db.AutoMigrate(&model.User{}))
 	require.NoError(t, db.Create(&model.User{UID: 1, Email: "mysql-path@example.invalid", Username: "mysql-path"}).Error)
-	for _, key := range []string{"Note", "NoteHistory", "NoteLink", "File", "Folder", "Setting"} {
-		require.NoError(t, model.AutoMigrate(db, key))
-	}
-	require.NoError(t, db.AutoMigrate(&model.NoteFTS{}))
+
+	// ResolveDB creates the user_<uid> database on first use, exactly like the
+	// running service. All repository keys of uid 1 share it.
 	ndb := d.ResolveDB("user_1")
-	require.Same(t, db, ndb)
+	require.NotSame(t, db, ndb)
+	var userDBName string
+	require.NoError(t, ndb.Raw("SELECT DATABASE()").Scan(&userDBName).Error)
+	require.Equal(t, "user_1", userDBName)
+	require.Same(t, ndb, d.ResolveDB("user_note_1"))
+	for _, key := range []string{"Note", "NoteHistory", "NoteLink", "File", "Folder", "Setting"} {
+		require.NoError(t, model.AutoMigrate(ndb, key))
+	}
+	require.NoError(t, ndb.AutoMigrate(&model.NoteFTS{}))
 	notes := []model.Note{
 		{ID: 1, VaultID: 1, Path: `dir\one.md`, PathHash: "legacy", Action: "create", FID: 7},
 		{ID: 2, VaultID: 1, Path: "a/b.md", PathHash: "target", Action: "delete"},
