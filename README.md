@@ -64,7 +64,7 @@ In addition, **the MySQL / MariaDB backend is not recommended in the current ver
 
 ### Upgrading from upstream
 
-- **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion).
+- **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion). On first start, v3.8.0 also runs a path normalization migration to convert backslashes in historical paths to forward slashes; if the target path is already occupied, the entry containing backslashes is renamed to `*.conflict.<timestamp>.*` and preserved without overwriting or deleting data.
 - **Docker**: Change the image to `ghcr.io/isdoge/fast-note-sync-service:latest`; volumes and configuration can stay as they are.
 - **Binary**: Download the package for your platform from this repository's Releases and replace the binary, or re-run the one-click script below.
 - **Behavior changes** (excerpt; see the "Changes" and "Security" sections of the changelog for the full list):
@@ -147,12 +147,12 @@ In addition, **the MySQL / MariaDB backend is not recommended in the current ver
 ## 🗺️ Roadmap
 
 - [x] Add support for WebSocket `Protobuf` transfer format to enhance synchronization efficiency.
-- [ ] Isolate and optimize the existing authorization mechanism to improve overall security.
+- [x] Isolate and optimize the existing authorization mechanism to improve overall security.
 - [ ] Add real-time note updates to the Web UI.
 - [ ] Add peer-to-peer message transfer between clients (non-notes & attachments, similar to LocalSend; client-side storage is not supported, but server-side is).
-- [ ] Improve various help documentations.
+- [x] Improve various help documentations.
 - [ ] Provide support for more intranet penetration (relay gateway) options.
-- [ ] Quick deployment plan:
+- [x] Quick deployment plan:
   * Deploy the FNS server by simply providing the server address (public IP) and account credentials.
 - [ ] Optimize the existing offline note merging scheme and introduce conflict resolution mechanisms.
 
@@ -235,6 +235,14 @@ Download the latest version for your system from [Releases](https://github.com/i
 ./fast-note-sync-service run -c config/config.yaml
 ```
 
+### Method 4: Remote Deployment Script
+
+Run `scripts/remote_deploy.sh` locally and provide the server address and SSH account to deploy to a remote Linux server. Both binary + systemd and Docker Compose deployments are supported; see the [remote deployment guide](/docs/runbook/remote-deploy.en.md).
+
+```bash
+./scripts/remote_deploy.sh 203.0.113.10 -u root
+```
+
 ## 📖 User Guide
 
 1.  **Access Admin Panel**:
@@ -252,6 +260,13 @@ Download the latest version for your system from [Releases](https://github.com/i
 The default configuration file is `config.yaml`. The application automatically searches in the **root directory** or the **config/** directory.
 
 View the complete configuration example: [config/config.yaml](https://github.com/isdoge/fast-note-sync-service/blob/master/config/config.yaml)
+
+More documentation:
+- [Configuration reference](/docs/runbook/configuration.en.md)
+- [Reverse proxy and private network access](/docs/runbook/reverse-proxy.en.md)
+- [Upgrade guide](/docs/runbook/upgrade.en.md)
+- [Troubleshooting and error codes](/docs/runbook/troubleshooting.en.md)
+- [Remote deployment](/docs/runbook/remote-deploy.en.md)
 
 ## 🌐 Nginx Reverse Proxy Example
 
