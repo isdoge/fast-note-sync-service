@@ -105,7 +105,7 @@ func TestMySQLMigratorOverridesDispatch(t *testing.T) {
 	field := parsed.LookUpField("Path")
 	require.NotNil(t, field)
 
-	tx := db.Session(&gorm.Session{})
+	tx := db.Table(table).Session(&gorm.Session{})
 	tx.Dialector = mysqlDialector{Dialector: db.Dialector, db: db, table: table}
 
 	// FullDataTypeOf override: dynamic varbinary tag wins over stock typing.
