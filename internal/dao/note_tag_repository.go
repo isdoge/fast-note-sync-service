@@ -27,7 +27,7 @@ func (r *noteTagRepository) db(uid int64) (*gorm.DB, error) {
 	if d == nil {
 		return nil, gorm.ErrInvalidDB
 	}
-	if err := model.AutoMigrate(d, "NoteTag"); err != nil {
+	if err := r.dao.autoMigrateRepositoryDB(d, "user_"+strconv.FormatInt(uid, 10), "NoteTag"); err != nil {
 		return nil, err
 	}
 	return d, nil

@@ -273,8 +273,22 @@ func (d *Dao) QueryWithOnceInit(f func(*gorm.DB), onceKey string, key ...string)
 		actualOnceKey = onceKey + "@" + key[0]
 	}
 
-	if _, loaded := d.onceKeys.LoadOrStore(actualOnceKey, true); !loaded {
-		f(db)
+	// Wait for the first caller's initialization instead of letting concurrent
+	// callers query while AutoMigrate is still creating tables. The onceKeys
+	// entry is only stored after f returns, so every caller either completes the
+	// migration itself or waits for the one that is running.
+	// 等待首个调用者的初始化完成，避免并发调用在建表尚未完成时就开始查询。
+	// onceKeys 只在 f 返回后写入，因此每个调用者要么自己完成迁移，要么等待
+	// 正在执行迁移的那个调用者。
+	if _, loaded := d.onceKeys.Load(actualOnceKey); !loaded {
+		_, _, _ = d.poolCreate.Do(onceInitKeyPrefix+actualOnceKey, func() (interface{}, error) {
+			if _, done := d.onceKeys.Load(actualOnceKey); done {
+				return nil, nil
+			}
+			f(db)
+			d.onceKeys.Store(actualOnceKey, true)
+			return nil, nil
+		})
 	}
 	return query.Use(db)
 }
@@ -792,6 +806,14 @@ func (d *Dao) getModelDBKey(uid int64, modelKey string) string {
 	return ""
 }
 
+// autoMigrateKeyPrefix scopes first-use migration singleflight keys.
+// autoMigrateKeyPrefix 用于区分首次建表 singleflight 键。
+const autoMigrateKeyPrefix = "auto-migrate#"
+
+// onceInitKeyPrefix scopes once-init singleflight keys.
+// onceInitKeyPrefix 用于区分单次初始化 singleflight 键。
+const onceInitKeyPrefix = "once-init#"
+
 func (d *Dao) AutoMigrate(uid int64, modelKey string) error {
 	// 1. If modelKey is empty, it means "full migration", route migration separately by model
 	// 1. 如果 modelKey 为空，说明是“全量迁移”，按模型分别路由迁移
@@ -818,7 +840,19 @@ func (d *Dao) AutoMigrate(uid int64, modelKey string) error {
 	if b == nil {
 		return fmt.Errorf("database connection is nil for model %s (uid=%d, dbKey=%s)", modelKey, uid, dbKey)
 	}
-	return model.AutoMigrate(b, modelKey)
+	onceKey := autoMigrateKeyPrefix + dbKey + "#" + modelKey
+	_, err, _ := d.poolCreate.Do(onceKey, func() (interface{}, error) {
+		return nil, model.AutoMigrate(b, modelKey)
+	})
+	return err
+}
+
+func (d *Dao) autoMigrateRepositoryDB(b *gorm.DB, dbKey, modelKey string) error {
+	onceKey := autoMigrateKeyPrefix + dbKey + "#" + modelKey
+	_, err, _ := d.poolCreate.Do(onceKey, func() (interface{}, error) {
+		return nil, model.AutoMigrate(b, modelKey)
+	})
+	return err
 }
 
 // user gets the user query object (internal method)

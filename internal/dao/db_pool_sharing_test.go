@@ -196,3 +196,39 @@ func TestGetOrCreateDB_BuildDoesNotBlockCachedKey(t *testing.T) {
 	close(release)
 	<-done
 }
+
+// TestQueryWithOnceInitWaitsForRunningMigration proves concurrent first callers
+// cannot query before the initialization function (e.g. AutoMigrate) returns.
+// TestQueryWithOnceInitWaitsForRunningMigration 验证并发首次调用不会在初始化
+// 函数（如 AutoMigrate）返回前就开始查询。
+func TestQueryWithOnceInitWaitsForRunningMigration(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "once.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	d := New(db, context.Background(), WithLogger(zap.NewNop()))
+
+	var initialized atomic.Int32
+	start := make(chan struct{})
+	errs := make(chan string, 16)
+	var wg sync.WaitGroup
+	for i := 0; i < cap(errs); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			d.QueryWithOnceInit(func(*gorm.DB) {
+				time.Sleep(20 * time.Millisecond)
+				initialized.Add(1)
+			}, "once#test", "user_1")
+			if initialized.Load() != 1 {
+				errs <- "query returned before initialization completed"
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for msg := range errs {
+		t.Error(msg)
+	}
+	require.Equal(t, int32(1), initialized.Load())
+}

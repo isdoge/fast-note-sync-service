@@ -3,6 +3,7 @@ package model
 
 import (
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // FTS 表版本号，修改此值会触发重建索引
@@ -24,7 +25,7 @@ func (*NoteFTS) TableName() string {
 type NoteFTSToken struct {
 	ID     int64  `gorm:"column:id;primaryKey;autoIncrement"`
 	NoteID int64  `gorm:"column:note_id;index:idx_fts_note_id;index:idx_fts_token_note_id,priority:2"`
-	Token  string `gorm:"column:token;type:text;index:idx_fts_token;index:idx_fts_token_note_id,priority:1"`
+	Token  string `gorm:"column:token;type:text;mysqlType:varchar(191);index:idx_fts_token;index:idx_fts_token_note_id,priority:1"`
 }
 
 func (*NoteFTSToken) TableName() string {
@@ -50,7 +51,7 @@ func CreateNoteFTSTable(db *gorm.DB) error {
 
 	// 检查版本
 	var meta NoteFTSMeta
-	db.Where("key = ?", "version").First(&meta)
+	db.Where(clause.Eq{Column: clause.Column{Name: "key"}, Value: "version"}).First(&meta)
 	currentVersion := meta.Value
 
 	// 如果版本不匹配，删除旧表重建
@@ -59,7 +60,10 @@ func CreateNoteFTSTable(db *gorm.DB) error {
 	}
 
 	// 执行自动迁移
-	if err := db.AutoMigrate(&NoteFTS{}, &NoteFTSToken{}); err != nil {
+	if err := autoMigrateModel(db, &NoteFTS{}); err != nil {
+		return err
+	}
+	if err := autoMigrateModel(db, &NoteFTSToken{}); err != nil {
 		return err
 	}
 
