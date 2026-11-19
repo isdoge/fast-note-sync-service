@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"strings"
 	"testing"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
@@ -91,15 +90,15 @@ func TestBackslashPathMigrationMySQL(t *testing.T) {
 
 	m := &BackslashPathMigrate{}
 	require.NoError(t, m.Up(db, ctx, &MigrationContext{Dao: d, Logger: zap.NewNop()}))
-	var got, conflict model.Note
+	var got model.Note
 	require.NoError(t, ndb.First(&got, 1).Error)
 	require.Equal(t, "dir/one.md", got.Path)
 	require.Equal(t, util.EncodeHash32(got.Path), got.PathHash)
 	require.Equal(t, int64(2), got.FID)
 	require.NotZero(t, got.UpdatedTimestamp)
-	require.NoError(t, ndb.First(&conflict, 3).Error)
-	require.True(t, strings.HasPrefix(conflict.Path, "a/b.conflict.") && strings.HasSuffix(conflict.Path, ".md"), conflict.Path)
-	require.Equal(t, "delete", conflict.Action)
+	// 目标路径上的行也是墓碑：清理源墓碑，不产生冲突副本。
+	var removed model.Note
+	require.ErrorIs(t, ndb.First(&removed, 3).Error, gorm.ErrRecordNotFound)
 	var history model.NoteHistory
 	require.NoError(t, ndb.First(&history, 1).Error)
 	require.Equal(t, got.Path, history.Path)
@@ -123,7 +122,72 @@ func TestBackslashPathMigrationMySQL(t *testing.T) {
 	}
 	require.NoError(t, m.Up(db, ctx, &MigrationContext{Dao: d, Logger: zap.NewNop()}))
 	var again model.Note
-	require.NoError(t, ndb.First(&again, 3).Error)
-	require.Equal(t, conflict.Path, again.Path)
-	require.Equal(t, conflict.UpdatedTimestamp, again.UpdatedTimestamp)
+	require.NoError(t, ndb.First(&again, 1).Error)
+	require.Equal(t, got.Path, again.Path)
+	require.Equal(t, got.UpdatedTimestamp, again.UpdatedTimestamp)
+}
+
+// TestBackslashPathMigrationMySQLCreatesFolderTable covers the missing-table
+// branch of migrationParentFID: on MySQL the folder table must be created by
+// the custom migrator (varbinary path + length-bounded prefix index), not by
+// native db.AutoMigrate.
+// TestBackslashPathMigrationMySQLCreatesFolderTable 覆盖 migrationParentFID 的
+// 建表分支：MySQL 上 folder 表必须由自定义迁移器创建（varbinary 路径列 + 带
+// 长度的前缀索引），而不是原生 db.AutoMigrate。
+func TestBackslashPathMigrationMySQLCreatesFolderTable(t *testing.T) {
+	dsn := os.Getenv("FNS_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("FNS_TEST_MYSQL_DSN not set")
+	}
+	ctx := context.Background()
+	db, err := gorm.Open(gormMysql.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+
+	mysqlCfg, err := mysqlDriver.ParseDSN(dsn)
+	require.NoError(t, err)
+	host, portStr, err := net.SplitHostPort(mysqlCfg.Addr)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+	mainCfg := &config.DatabaseConfig{
+		Type: "mysql", Host: host, Port: port, UserName: mysqlCfg.User, Password: mysqlCfg.Passwd,
+		Name: mysqlCfg.DBName, Charset: "utf8mb4", ParseTime: true, EnableWriteQueue: util.Ptr(false),
+	}
+	userCfg := *mainCfg
+	d := dao.New(db, ctx, dao.WithConfig(mainCfg), dao.WithUserDatabaseConfig(&userCfg), dao.WithLogger(zap.NewNop()))
+
+	dropUserDB := func() { _ = db.Exec("DROP DATABASE IF EXISTS `user_1`").Error }
+	dropUserDB()
+	t.Cleanup(func() {
+		dropUserDB()
+		_ = db.Exec("DROP TABLE IF EXISTS `user`").Error
+	})
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS `user`").Error)
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+	require.NoError(t, db.Create(&model.User{UID: 1, Email: "mysql-folder@example.invalid", Username: "mysql-folder"}).Error)
+
+	ndb := d.ResolveDB("user_1")
+	require.NoError(t, model.AutoMigrate(ndb, "Note"))
+	require.False(t, ndb.Migrator().HasTable("folder"), "precondition: folder table must be absent")
+	require.NoError(t, ndb.Create(&model.Note{ID: 1, VaultID: 1, Path: `parent\child.md`, Action: "create"}).Error)
+
+	require.NoError(t, (&BackslashPathMigrate{}).Up(db, ctx, &MigrationContext{Dao: d, Logger: zap.NewNop()}))
+
+	require.True(t, ndb.Migrator().HasTable("folder"))
+	var dataType string
+	require.NoError(t, ndb.Raw(`SELECT DATA_TYPE FROM information_schema.columns
+		WHERE table_schema = 'user_1' AND table_name = 'folder' AND column_name = 'path'`).Scan(&dataType).Error)
+	require.Equal(t, "varbinary", dataType)
+	var prefixLen int64
+	require.NoError(t, ndb.Raw(`SELECT COALESCE(sub_part, 0) FROM information_schema.statistics
+		WHERE table_schema = 'user_1' AND table_name = 'folder'
+		AND index_name = 'idx_folder_vault_id_path' AND column_name = 'path'`).Scan(&prefixLen).Error)
+	require.Equal(t, int64(255), prefixLen, "path index must be a 255-byte prefix index")
+
+	var note model.Note
+	require.NoError(t, ndb.First(&note, 1).Error)
+	require.Equal(t, "parent/child.md", note.Path)
+	var parent model.Folder
+	require.NoError(t, ndb.Where("vault_id = ? AND path = ?", 1, "parent").Take(&parent).Error)
+	require.Equal(t, parent.ID, note.FID)
 }
