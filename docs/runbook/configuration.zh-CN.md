@@ -86,11 +86,11 @@
 
 ## database 与 user-database
 
-两段使用同一结构。`user-database.type` 为空时，用户库继承**全部主数据库配置**，其他字段的代码默认值不会用于该回落路径；非空时才使用 `user-database` 的独立配置。MySQL/MariaDB 当前不受支持，请使用 SQLite 或 PostgreSQL。
+两段使用同一结构。`user-database.type` 留空（或不写该键）时，代码默认值会按 `sqlite` 处理，与主库类型无关：用户数据写入启动工作目录下的 SQLite 文件 `storage/database/db_<仓储 key>.sqlite3`（例如笔记与标签为 `db_user_1.sqlite3`，附件为 `db_user_file_1.sqlite3`，目录、库、配置、Git 同步、备份、存储、分享、同步日志各有对应文件；主库只保留用户与令牌等主模型表）。要让用户数据进入 MySQL/MariaDB/PostgreSQL，必须显式设置 `user-database.type` 和连接参数：MySQL/MariaDB 会按用户自动创建 `user_<uid>` 数据库（`CREATE DATABASE IF NOT EXISTS`，账号需要建库权限）；PostgreSQL 会在所配置的数据库中自动创建 `user_<uid>` schema（`CREATE SCHEMA IF NOT EXISTS`，账号需要该库的建 schema 权限，或为属主/超级用户）。MySQL/MariaDB 当前不受支持，请使用 SQLite 或 PostgreSQL。
 
 | 键 | 类型 | database 默认 | user-database 默认 | 作用 |
 | --- | --- | --- | --- | --- |
-| `type` | string | `sqlite` | 空 | `sqlite` / `postgres`；`mysql` 代码可识别但不建议用于本版。 |
+| `type` | string | `sqlite` | 空（加载后按 `sqlite` 处理） | `sqlite` / `postgres`；`mysql` 代码可识别但不建议用于本版。 |
 | `path` | path | `storage/database/db.sqlite3` | 空 | SQLite 文件路径。 |
 | `host` | string | 空 | 空 | 网络数据库主机。 |
 | `port` | int | `0` | `0` | 网络数据库端口。 |

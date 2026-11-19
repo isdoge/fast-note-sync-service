@@ -293,8 +293,8 @@ database:
   # Maximum concurrent write operations limit (when enable-write-queue is false)
   max-write-concurrency: 0
 
-# 用户隔离数据库设置, 如果不设置(Type设置为空), 则使用主数据库
-# User isolation database settings, if not set(Type is empty), use the main database
+# 用户隔离数据库设置（留空时用户数据写入 SQLite 文件 storage/database/db_<仓储 key>.sqlite3，与主库类型无关；要写入 MySQL/PostgreSQL 需显式设置 type 与连接参数）
+# User isolation database settings (when left empty, user data is stored in SQLite files under storage/database/db_<repository key>.sqlite3 regardless of the main database type; set type and connection parameters explicitly to store it in MySQL/PostgreSQL)
 user-database:
   # 数据库类型: sqlite | mysql | postgres
   # Database type: sqlite | mysql | postgres

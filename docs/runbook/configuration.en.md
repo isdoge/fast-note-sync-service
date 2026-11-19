@@ -86,11 +86,11 @@ This reference follows the 3.7.0 implementation in `internal/config/*.go`, `inte
 
 ## database and user-database
 
-Both sections use the same structure. An empty `user-database.type` inherits **the entire main database configuration**, so the other fields' code defaults are not used on this fallback path. A nonempty type selects the independent `user-database` configuration. MySQL/MariaDB is unsupported in this release; use SQLite or PostgreSQL.
+Both sections use the same structure. When `user-database.type` is empty or omitted, the code default treats it as `sqlite`, regardless of the main database type: user data is written to SQLite files under the startup working directory at `storage/database/db_<repository key>.sqlite3` (for example `db_user_1.sqlite3` for notes and tags, `db_user_file_1.sqlite3` for attachments, with separate files for folders, vaults, settings, Git sync, backups, storage, shares, and sync logs; the main database keeps only primary models such as users and tokens). To store user data in MySQL/MariaDB/PostgreSQL, set `user-database.type` and the connection parameters explicitly: MySQL/MariaDB creates a `user_<uid>` database per user (`CREATE DATABASE IF NOT EXISTS`; the account needs database-creation privileges); PostgreSQL creates a `user_<uid>` schema in the configured database (`CREATE SCHEMA IF NOT EXISTS`; the account needs schema-creation privileges on that database, or must be its owner/superuser). MySQL/MariaDB is unsupported in this release; use SQLite or PostgreSQL.
 
 | Key | Type | database default | user-database default | Purpose |
 | --- | --- | --- | --- | --- |
-| `type` | string | `sqlite` | Empty | `sqlite` or `postgres`; code recognizes `mysql`, but it is not recommended in this release. |
+| `type` | string | `sqlite` | Empty (treated as `sqlite`) | `sqlite` or `postgres`; code recognizes `mysql`, but it is not recommended in this release. |
 | `path` | path | `storage/database/db.sqlite3` | Empty | SQLite file. |
 | `host` | string | Empty | Empty | Network database host. |
 | `port` | int | `0` | `0` | Network database port. |
