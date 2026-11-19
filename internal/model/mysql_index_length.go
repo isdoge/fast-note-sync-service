@@ -53,7 +53,7 @@ func PrepareMySQLPathIndexes(db *gorm.DB) error {
 		if err != nil {
 			return err
 		}
-		sql := fmt.Sprintf("ALTER TABLE `%s` MODIFY COLUMN `%s` varchar(1024)%s, DROP INDEX `%s`, ADD INDEX `%s` (%s)",
+		sql := fmt.Sprintf("ALTER TABLE `%s` MODIFY COLUMN `%s` varbinary(1024)%s, DROP INDEX `%s`, ADD INDEX `%s` (%s)",
 			spec.table, spec.column, def, spec.index, spec.index, strings.Join(spec.columns, ", "))
 		if err := db.Exec(sql).Error; err != nil {
 			return err

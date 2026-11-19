@@ -13,7 +13,7 @@ type NoteHistory struct {
 	ID            int64      `gorm:"column:id;primaryKey" json:"id" form:"id"`
 	NoteID        int64      `gorm:"column:note_id;not null;index:idx_note_history_content_hash,priority:1;index:idx_note_history_version,priority:1;index:idx_note_history_note_id,priority:1;default:0" json:"noteId" form:"noteId"`
 	VaultID       int64      `gorm:"column:vault_id;not null;default:0" json:"vaultId" form:"vaultId"`
-	Path          string     `gorm:"column:path;default:''" json:"path" form:"path"`
+	Path          string     `gorm:"column:path;default:'';mysqlType:varbinary(1024)" json:"path" form:"path"`
 	Content       string     `gorm:"column:content;default:''" json:"content" form:"content"`
 	ContentHash   string     `gorm:"column:content_hash;type:varchar(255);not null;index:idx_note_history_content_hash,priority:2;default:''" json:"contentHash" form:"contentHash"`
 	DiffPatch     string     `gorm:"column:diff_patch;default:''" json:"diffPatch" form:"diffPatch"`
