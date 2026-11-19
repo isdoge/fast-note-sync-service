@@ -19,18 +19,18 @@ func TestAcceptsBroadcast(t *testing.T) {
 		declaredVaults                     []string
 		want                               bool
 	}{
-		{name: "unrestricted without declarations accepts any vault", broadcastVault: "vault-a", want: true},
+		{name: "unrestricted without declarations rejects vault-specific broadcast", broadcastVault: "vault-a"},
 		{name: "unrestricted without declarations accepts empty vault", want: true},
 		{name: "unrestricted accepts declared vault", broadcastVault: "vault-a", declaredVaults: []string{"vault-a"}, want: true},
 		{name: "unrestricted rejects other vault", broadcastVault: "vault-b", declaredVaults: []string{"vault-a"}},
 		{name: "unrestricted with declarations still accepts empty vault", declaredVaults: []string{"vault-a"}, want: true},
-		{name: "restricted accepts allowed vault without declarations", allowedVault: "vault-a", broadcastVault: "vault-a", want: true},
+		{name: "restricted rejects allowed vault before declaration", allowedVault: "vault-a", broadcastVault: "vault-a"},
 		{name: "restricted accepts allowed declared vault", allowedVault: "vault-a", broadcastVault: "vault-a", declaredVaults: []string{"vault-a"}, want: true},
 		{name: "restricted rejects other vault without declarations", allowedVault: "vault-a", broadcastVault: "vault-b"},
 		{name: "restricted rejects other vault despite declarations", allowedVault: "vault-a", broadcastVault: "vault-b", declaredVaults: []string{"vault-b"}},
 		{name: "restricted rejects allowed but undeclared vault", allowedVault: "vault-a", broadcastVault: "vault-a", declaredVaults: []string{"vault-b"}},
 		{name: "restricted rejects empty vault", allowedVault: "vault-a"},
-		{name: "multiple allowed vaults", allowedVault: "vault-a, vault-b", broadcastVault: "vault-b", want: true},
+		{name: "multiple allowed vaults", allowedVault: "vault-a, vault-b", broadcastVault: "vault-b", declaredVaults: []string{"vault-b"}, want: true},
 		{name: "vault names are exact not prefixes", allowedVault: "vault-a", broadcastVault: "vault-a-other"},
 		{name: "asterisk is a literal name", allowedVault: "vault-*", broadcastVault: "vault-a"},
 		{name: "spaces are significant inside vault names", allowedVault: "vault-a", broadcastVault: " vault-a "},
@@ -123,6 +123,7 @@ func TestWebsocketBroadcastVaultIsolation(t *testing.T) {
 	restricted := connect(t)
 	otherVault := connect(t)
 	restricted.client.Vaults = "vault-a"
+	sender.client.recordBoundVault(&vaultBindReq{Vault: "vault-a"})
 	receiver.client.recordBoundVault(&vaultBindReq{Vault: "vault-a"})
 	receiver.client.Vaults = "vault-a"
 	otherVault.client.Vaults = "vault-b"

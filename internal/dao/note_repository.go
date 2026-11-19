@@ -1649,6 +1649,8 @@ func (r *noteRepository) ListByPathHashAndPath(ctx context.Context, pathHash, pa
 }
 
 // ListByPathsMeta 批量查询完整路径的元数据，以 path 为键，不合并碰撞路径。
+// 每批 500 条分块查询以避开 SQLite / PostgreSQL 的单条 SQL 参数上限；
+// 同一路径多行时保留 updated_timestamp 最新的一条。
 func (r *noteRepository) ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*domain.Note, error) {
 	result := make(map[string]*domain.Note, len(paths))
 	if len(paths) == 0 {
@@ -1656,20 +1658,24 @@ func (r *noteRepository) ListByPathsMeta(ctx context.Context, paths []string, va
 	}
 
 	u := r.note(uid).Note
-	ms, err := u.WithContext(ctx).Where(
-		u.VaultID.Eq(vaultID),
-		u.Path.In(paths...),
-	).Find()
-	if err != nil {
-		return nil, err
-	}
-
-	for _, m := range ms {
-		n := r.toDomainMeta(m)
-		// 同一路径的历史重复行保留 UpdatedTimestamp 最新的一条。
-		// Keep the latest metadata row for each path.
-		if existing, ok := result[n.Path]; !ok || n.UpdatedTimestamp > existing.UpdatedTimestamp {
-			result[n.Path] = n
+	const chunkSize = 500
+	for start := 0; start < len(paths); start += chunkSize {
+		end := start + chunkSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		ms, err := u.WithContext(ctx).Where(
+			u.VaultID.Eq(vaultID),
+			u.Path.In(paths[start:end]...),
+		).Find()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			n := r.toDomainMeta(m)
+			if existing, ok := result[n.Path]; !ok || n.UpdatedTimestamp > existing.UpdatedTimestamp {
+				result[n.Path] = n
+			}
 		}
 	}
 	return result, nil

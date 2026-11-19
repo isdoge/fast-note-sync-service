@@ -75,10 +75,8 @@ func checkVaultAccess(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, l
 	if c.Vaults == "" {
 		return true
 	}
-	var vaultInfo struct {
-		Vault string `json:"vault"`
-	}
-	if err := json.Unmarshal(msg.Data, &vaultInfo); err != nil || vaultInfo.Vault == "" {
+	vault := resolveRequestVault(msg)
+	if vault == "" {
 		if _, optional := vaultOptionalMessageTypes[msg.Type]; optional {
 			return true
 		}
@@ -88,30 +86,62 @@ func checkVaultAccess(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, l
 		logger.Warn("WS OnMessage Vault Missing",
 			zap.String("Type", msg.Type),
 			zap.String("uid", c.User.ID))
-		// 能提取到路径时附带 data.path，让插件释放该动作占用的并发名额
-		//（Protobuf 上行提取不到，保持原样；JSON 提取与上方 vault 同源）
-		// Attach data.path when extractable so the plugin can release the slot
-		// (not extractable on Protobuf uplink, which stays as-is)
+		// 能提取到路径时附带 data.path（改名再带 oldPath），让插件释放该动作占用的
+		// 并发名额；JSON 与 Protobuf 上行都能提取。
+		// Attach data.path (plus oldPath on rename) when extractable so the plugin
+		// can release the slot; both JSON and Protobuf uplink are supported.
 		denied := code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: missing vault")
-		if path := resolveErrorSlotPath(msg); path != "" {
-			denied = denied.WithData(errPathData(path))
-		}
+		denied = attachErrorSlotData(denied, msg)
 		c.ToResponse(denied, msg.Type+"Ack")
 		return false
 	}
-	if !util.VerifyVaultAccess(c.Vaults, vaultInfo.Vault) {
+	if !util.VerifyVaultAccess(c.Vaults, vault) {
 		logger.Warn("WS OnMessage Vault Restricted",
 			zap.String("Type", msg.Type),
 			zap.String("uid", c.User.ID),
-			zap.String("vault", vaultInfo.Vault))
-		denied := code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: "+vaultInfo.Vault)
-		if path := resolveErrorSlotPath(msg); path != "" {
-			denied = denied.WithData(errPathData(path))
-		}
+			zap.String("vault", vault))
+		denied := code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: " + vault)
+		denied = attachErrorSlotData(denied, msg)
 		c.ToResponse(denied, msg.Type+"Ack")
 		return false
 	}
 	return true
+}
+
+// resolveRequestVault extracts the vault from an action-level payload regardless
+// of the uplink wire format. Protobuf payloads are decoded field-wise; JSON text
+// frames fall back to the "vault" key.
+// resolveRequestVault 无论上行编码是 JSON 还是 Protobuf，都提取动作级载荷中的 vault。
+// Protobuf 载荷按字段解码，JSON 文本帧则读取 "vault" 键。
+func resolveRequestVault(msg *pkgapp.WebSocketMessage) string {
+	if meta, ok := requestMeta(msg); ok {
+		return meta.Vault
+	}
+	var vaultInfo struct {
+		Vault string `json:"vault"`
+	}
+	_ = json.Unmarshal(msg.Data, &vaultInfo)
+	return vaultInfo.Vault
+}
+
+// attachErrorSlotData adds the client-reported path (and oldPath for rename
+// actions) to a denial response so the plugin can release the concurrency slot
+// it reserved for the action and, for rename, roll the local rename back.
+// attachErrorSlotData 给拒绝响应附带客户端上报的 path（改名动作再带 oldPath），
+// 让插件释放该动作占用的并发名额，改名失败时还能回滚本地改名。
+func attachErrorSlotData(denied *code.Code, msg *pkgapp.WebSocketMessage) *code.Code {
+	path, oldPath := resolveErrorSlotPaths(msg)
+	if path == "" && oldPath == "" {
+		return denied
+	}
+	data := make(map[string]string, 2)
+	if path != "" {
+		data["path"] = path
+	}
+	if oldPath != "" {
+		data["oldPath"] = oldPath
+	}
+	return denied.WithData(data)
 }
 
 // checkRBAC 将操作映射到 RBAC 权限功能点并校验客户端权限，权限不足时触发回滚。
@@ -172,9 +202,7 @@ func handlePermissionDenied(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMess
 }) bool {
 	resPath := resolveResourcePath(msg)
 	denied := code.ErrorAuthTokenScopeRestricted.WithDetails("Permission denied: " + resPath)
-	if path := resolveErrorSlotPath(msg); path != "" {
-		denied = denied.WithData(errPathData(path))
-	}
+	denied = attachErrorSlotData(denied, msg)
 	c.ToResponse(denied, msg.Type+"Ack")
 
 	if !strings.HasSuffix(function, "_w") {
@@ -194,6 +222,12 @@ func handlePermissionDenied(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMess
 // resolveResourcePath extracts a human-readable resource identifier from message data,
 // falling back to the message type when neither path nor name are present.
 func resolveResourcePath(msg *pkgapp.WebSocketMessage) string {
+	if meta, ok := requestMeta(msg); ok {
+		if meta.Path != "" {
+			return meta.Path
+		}
+		return msg.Type
+	}
 	var pathInfo struct {
 		Path string `json:"path"`
 		Name string `json:"name"`
@@ -208,18 +242,22 @@ func resolveResourcePath(msg *pkgapp.WebSocketMessage) string {
 	return msg.Type
 }
 
-// resolveErrorSlotPath extracts the path the plugin used to reserve its concurrency
-// slot. JSON uplink carries it in the "path" key; Protobuf uplink is not parsed here
-// (the interceptor only sees raw bytes and has no action-typed decoder), so it
-// returns "" and the denial response carries no data.path.
-// resolveErrorSlotPath 提取插件占并发名额所用的路径。JSON 上行在 "path" 键里；Protobuf
-// 上行在此不解析（拦截器只见原始字节、没有按动作分发的解码器），返回空串，拒绝响应不带 data.path。
-func resolveErrorSlotPath(msg *pkgapp.WebSocketMessage) string {
+// resolveErrorSlotPaths extracts the path the plugin used to reserve its
+// concurrency slot and, for rename actions, the old path needed for rollback.
+// JSON uplink carries both in the payload; Protobuf uplink is decoded field-wise
+// by action (see decodeProtobufRequestMeta).
+// resolveErrorSlotPaths 提取插件占并发名额所用的路径；改名动作再取出回滚所需的 oldPath。
+// JSON 上行直接读载荷字段；Protobuf 上行按动作字段编号解码（见 decodeProtobufRequestMeta）。
+func resolveErrorSlotPaths(msg *pkgapp.WebSocketMessage) (path, oldPath string) {
+	if meta, ok := requestMeta(msg); ok {
+		return meta.Path, meta.OldPath
+	}
 	var pathInfo struct {
-		Path string `json:"path"`
+		Path    string `json:"path"`
+		OldPath string `json:"oldPath"`
 	}
 	_ = json.Unmarshal(msg.Data, &pathInfo)
-	return pathInfo.Path
+	return pathInfo.Path, pathInfo.OldPath
 }
 
 // rollbackRename 对重命名操作发送反向重命名消息，使客户端回退到原始路径。
@@ -228,16 +266,21 @@ func resolveErrorSlotPath(msg *pkgapp.WebSocketMessage) string {
 func rollbackRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, function string, logger interface {
 	Info(string, ...zapcore.Field)
 }) bool {
-	var renameData map[string]interface{}
-	if err := json.Unmarshal(msg.Data, &renameData); err != nil {
-		return false
+	var vault, newPath, newPathHash, oldPath, oldPathHash string
+	if meta, ok := requestMeta(msg); ok {
+		vault, newPath, newPathHash = meta.Vault, meta.Path, meta.PathHash
+		oldPath, oldPathHash = meta.OldPath, meta.OldPathHash
+	} else {
+		var renameData map[string]interface{}
+		if err := json.Unmarshal(msg.Data, &renameData); err != nil {
+			return false
+		}
+		vault, _ = renameData["vault"].(string)
+		newPath, _ = renameData["path"].(string)
+		newPathHash, _ = renameData["pathHash"].(string)
+		oldPath, _ = renameData["oldPath"].(string)
+		oldPathHash, _ = renameData["oldPathHash"].(string)
 	}
-
-	vault, _ := renameData["vault"].(string)
-	newPath, _ := renameData["path"].(string)
-	newPathHash, _ := renameData["pathHash"].(string)
-	oldPath, _ := renameData["oldPath"].(string)
-	oldPathHash, _ := renameData["oldPathHash"].(string)
 
 	if newPath == "" || oldPath == "" {
 		return false

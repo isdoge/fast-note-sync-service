@@ -363,9 +363,18 @@ func (c *WebsocketClient) UseProtobuf() bool {
 }
 
 // acceptsBroadcast checks both the token's vault allowlist and the vaults declared on this connection.
-// Empty declaredVaults preserves the legacy behavior for connections that have not declared a vault yet.
+// Vault-specific broadcasts (a non-empty vault) are delivered only after the connection
+// has declared that vault through a successfully bound request. A connection that has
+// not declared any vault yet may still be scanning its local library (e.g. the CLI
+// hashes the whole directory before its first NoteSync), and delivering another
+// library's live changes in that window would write them into the local directory.
+// Its first sync round pulls the complete state anyway, so skipping is safe.
+// Vault-less broadcasts (user-level notifications) are still delivered to everyone.
 // acceptsBroadcast 同时检查令牌的笔记库白名单和本连接已声明的笔记库。
-// declaredVaults 为空时保留旧行为，供尚未声明笔记库的连接接收广播。
+// 带具体库名的广播只投给已通过成功绑定声明过该库的连接。还没声明任何库的连接可能仍在
+// 扫描本地目录（例如命令行客户端在首条 NoteSync 之前要对整个目录算哈希），此窗口内
+// 投递别的库的实时变更会被写进本地目录。它随后的首次同步会把内容拉齐，跳过是安全的。
+// 不带库名的广播（用户级通知）仍然投给所有连接。
 func (c *WebsocketClient) acceptsBroadcast(vault string) bool {
 	if c.Vaults != "" && !util.VerifyVaultAccess(c.Vaults, vault) {
 		return false
@@ -375,9 +384,8 @@ func (c *WebsocketClient) acceptsBroadcast(vault string) bool {
 	}
 	c.broadcastVaultsMu.RLock()
 	_, declared := c.declaredVaults[vault]
-	hasDeclarations := len(c.declaredVaults) > 0
 	c.broadcastVaultsMu.RUnlock()
-	return !hasDeclarations || declared
+	return declared
 }
 
 // recordBoundVault records a vault only after its request was bound and validated successfully.
@@ -917,7 +925,7 @@ func (c *WebsocketClient) sendBroadcast(content *Res, vault string, actionType s
 
 			if err != nil {
 				if uc.failCount.Add(1) == 4 {
-					uc.conn.WriteClose(1000, []byte("broadcast failed"))
+					uc.conn.WriteClose(1000, []byte(broadcastFailureReason))
 				}
 			} else {
 				uc.failCount.Store(0)
@@ -1763,6 +1771,21 @@ func (w *WebsocketServer) OnOpen(conn *gws.Conn) {
 
 // isNormalDisconnectError 检查给定错误是否为正常的断开连接或网络中断错误
 // isNormalDisconnectError checks if the given error is a normal disconnect or network interruption error
+// broadcastFailureReason is the close reason used when this server kicks a
+// connection that failed several broadcasts in a row. Such a disconnect is an
+// anomaly and must not be downgraded to Info.
+// broadcastFailureReason 是服务端因连续广播失败主动断开连接时使用的关闭原因。
+// 这类断开属于异常，不能降级成 Info。
+const broadcastFailureReason = "broadcast failed"
+
+// isBroadcastFailureDisconnect reports whether the error is the close generated
+// by repeated broadcast failures (see broadcastFailureReason).
+// isBroadcastFailureDisconnect 判断错误是否为连续广播失败导致的主动断开。
+func isBroadcastFailureDisconnect(err error) bool {
+	var closeErr *gws.CloseError
+	return err != nil && errors.As(err, &closeErr) && string(closeErr.Reason) == broadcastFailureReason
+}
+
 func isNormalDisconnectError(err error) bool {
 	if err == nil {
 		return true
@@ -1770,11 +1793,17 @@ func isNormalDisconnectError(err error) bool {
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
 		return true
 	}
-	// 识别正常关闭和客户端离开的关闭码，包括被包装的关闭错误
-	// Recognize normal closure and going-away codes, including wrapped close errors
+	// 识别正常关闭和客户端离开的关闭码，包括被包装的关闭错误。
+	// 一旦识别出关闭码就以此为准：非 1000 / 1001 的关闭码即使 reason 里含
+	// "i/o timeout" 等文本也判为异常；因连续广播失败被服务端主动断开的连接
+	//（关闭码 1000 + 特定 reason）同样不算正常断开。
+	// Recognize normal closure and going-away codes, including wrapped close errors.
+	// Once a close code is recognized it is authoritative: codes other than
+	// 1000/1001 stay abnormal even if the reason text looks like a network error,
+	// and a connection we closed after repeated broadcast failures is not normal.
 	var closeErr *gws.CloseError
-	if errors.As(err, &closeErr) && (closeErr.Code == 1000 || closeErr.Code == 1001) {
-		return true
+	if errors.As(err, &closeErr) {
+		return (closeErr.Code == 1000 || closeErr.Code == 1001) && string(closeErr.Reason) != broadcastFailureReason
 	}
 	errStr := err.Error()
 	// 检查常见的网络关闭、重置或超时错误消息
@@ -1813,6 +1842,11 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 		logLevel := LogInfo
 		if err != nil && !isNormalDisconnectError(err) {
 			logLevel = LogError
+			if isBroadcastFailureDisconnect(err) {
+				// 连续广播失败被主动断开：异常但已知原因，用 Warn 而不是 Error。
+				// Kicked after repeated broadcast failures: abnormal but known, log Warn.
+				logLevel = LogWarn
+			}
 		}
 		log(logLevel, "WS User Leave", zap.String("uid", c.User.ID), zap.String("traceID", c.TraceID), zap.Error(err))
 		w.RemoveUserClient(c)
@@ -1820,6 +1854,9 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 		logLevel := LogInfo
 		if err != nil && !isNormalDisconnectError(err) {
 			logLevel = LogError
+			if isBroadcastFailureDisconnect(err) {
+				logLevel = LogWarn
+			}
 		}
 		log(logLevel, "WS Client Leave (Unauth)", zap.String("traceID", c.TraceID), zap.Error(err))
 	}
@@ -2099,7 +2136,7 @@ func (w *WebsocketServer) BroadcastToUser(uid int64, code *code.Code, action str
 		}
 		if err := b.Broadcast(uc.conn); err != nil {
 			if uc.failCount.Add(1) == 4 {
-				uc.conn.WriteClose(1000, []byte("broadcast failed"))
+				uc.conn.WriteClose(1000, []byte(broadcastFailureReason))
 			}
 		} else {
 			uc.failCount.Store(0)

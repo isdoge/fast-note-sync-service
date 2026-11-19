@@ -27,6 +27,11 @@ func TestIsNormalDisconnectError(t *testing.T) {
 		{name: "message too big", err: &gws.CloseError{Code: 1009}, want: false},
 		{name: "internal error", err: &gws.CloseError{Code: 1011}, want: false},
 		{name: "wrapped internal error", err: fmt.Errorf("read: %w", &gws.CloseError{Code: 1011}), want: false},
+		// 识别出关闭码后以关闭码为准：reason 里的网络错误文本不能把异常码降级为正常。
+		{name: "abnormal code with network-like reason", err: &gws.CloseError{Code: 1011, Reason: []byte("i/o timeout")}, want: false},
+		// 连续广播失败被服务端主动断开（1000 + broadcast failed）属于异常。
+		{name: "broadcast failure close", err: &gws.CloseError{Code: 1000, Reason: []byte("broadcast failed")}, want: false},
+		{name: "wrapped broadcast failure close", err: fmt.Errorf("read: %w", &gws.CloseError{Code: 1000, Reason: []byte("broadcast failed")}), want: false},
 		{name: "nil", err: nil, want: true},
 		{name: "EOF", err: io.EOF, want: true},
 		{name: "unexpected EOF", err: io.ErrUnexpectedEOF, want: true},
@@ -41,6 +46,28 @@ func TestIsNormalDisconnectError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isNormalDisconnectError(tt.err); got != tt.want {
 				t.Fatalf("isNormalDisconnectError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// 连续广播失败被主动断开的连接单独识别，供 OnClose 用 Warn 记录。
+func TestIsBroadcastFailureDisconnect(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"broadcast failure", &gws.CloseError{Code: 1000, Reason: []byte("broadcast failed")}, true},
+		{"wrapped broadcast failure", fmt.Errorf("read: %w", &gws.CloseError{Code: 1000, Reason: []byte("broadcast failed")}), true},
+		{"normal closure", &gws.CloseError{Code: 1000}, false},
+		{"other reason", &gws.CloseError{Code: 1000, Reason: []byte("ClientClose")}, false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBroadcastFailureDisconnect(tc.err); got != tc.want {
+				t.Fatalf("isBroadcastFailureDisconnect(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

@@ -1,6 +1,7 @@
 package websocket_router
 
 import (
+	"errors"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
@@ -39,24 +40,23 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写客户端路径，与笔记/附件入口保持一致。
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path").WithData(errPathData(slotPath)))
 		return
 	}
 
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
-	// mtime 缺省（<=0）时用服务端当前毫秒时间兜底：写 0 会让后续窗口内比较
-	// s.Mtime >= cSetting.Mtime 恒为假，服务端新改的配置被误判成"客户端更新"。
-	// ctime 不兜底，保持客户端上报值。
-	// Fall back to the server's current millisecond time when mtime is missing
-	// (<=0): storing 0 makes the in-window comparison s.Mtime >= cSetting.Mtime
-	// always false, misjudging freshly server-updated settings as "client newer".
-	// ctime keeps the client-reported value.
-	if params.Mtime <= 0 {
-		params.Mtime = timex.Now().UnixMilli()
-	}
+	// mtime 缺省（<=0）时先按 0 做更新检查：内容与服务端一致时 UpdateCheck 会
+	// 返回 UpdateMtime（不改库、不广播），这正是幂等返回；只有确需写入时才在下方
+	// 用服务端当前时间兜底，避免把内容未变的配置改写时间戳并广播。
+	// Run UpdateCheck with the client-reported mtime first (0 when missing): if the
+	// content is unchanged, UpdateCheck returns UpdateMtime (no write, no broadcast),
+	// which is the idempotent answer. Only an actual write falls back to the server's
+	// current time below, so unchanged settings keep their timestamps.
+	mtimeProvided := params.Mtime > 0
 
 	ctx := c.Context()
 
@@ -69,15 +69,23 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 	checkParams := convert.StructAssign(params, &dto.SettingUpdateCheckRequest{}).(*dto.SettingUpdateCheckRequest)
 	updateMode, settingCheck, err := settingSvc.UpdateCheck(ctx, c.User.UID, checkParams)
 	if err != nil {
-		h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingModify.UpdateCheck")
+		h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.UpdateCheck")
 		return
 	}
 
 	switch updateMode {
 	case "UpdateContent", "Create":
+		if !mtimeProvided {
+			// 确需写入时才兜底：写 0 会让后续窗口内比较 s.Mtime >= cSetting.Mtime
+			// 恒为假，服务端新改的配置被误判成"客户端更新"。
+			// Fall back only when a write actually happens: storing 0 makes the
+			// in-window comparison s.Mtime >= cSetting.Mtime always false, so a
+			// freshly server-updated setting is misjudged as "client newer".
+			params.Mtime = timex.Now().UnixMilli()
+		}
 		_, setting, err := settingSvc.ModifyOrCreate(ctx, c.User.UID, params, true)
 		if err != nil {
-			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
+			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
 			return
 		}
 
@@ -184,9 +192,10 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写客户端路径，与笔记/附件入口保持一致。
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -200,7 +209,7 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	setting, err := settingSvc.Delete(ctx, c.User.UID, params)
 	if err != nil {
-		h.respondErrorWithPath(c, code.ErrorSettingDeleteFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorSettingDeleteFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingDelete.Delete")
 		return
 	}
 
@@ -771,7 +780,15 @@ func (h *SettingWSHandler) SettingRePush(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	setting, err := h.App.GetSettingService(c.ClientType(), c.ClientName(), c.ClientVersion()).Get(ctx, c.User.UID, params)
 	if err != nil {
-		h.App.Logger().Debug("websocket_router.setting.SettingRePush.Get: record not found or error, proceeding to send delete",
+		// 只有"确实不存在"才下发删除；数据库错误等必须回错误，否则客户端会删掉
+		// 服务端明明存活的配置。
+		// Only a genuine "not found" may turn into a delete; database errors must
+		// return an error instead of deleting a live setting locally.
+		if !errors.Is(err, code.ErrorSettingNotFound) {
+			h.respondErrorWithPath(c, code.ErrorSettingGetFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingRePush.Get")
+			return
+		}
+		h.App.Logger().Debug("websocket_router.setting.SettingRePush.Get: setting not found, proceeding to send delete",
 			zap.String(logger.FieldTraceID, c.TraceID),
 			zap.Error(err))
 	}
