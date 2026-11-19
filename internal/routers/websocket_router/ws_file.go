@@ -1075,8 +1075,49 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 	// Handle files that exist on client but not synced on server (request client upload)
 	// 处理客户端存在但服务端未同步的文件（请求客户端上传）
 	if remaining := cFiles.remaining(); len(remaining) > 0 {
+		// 增量同步（lastTime > 0）时，窗口外条目先按路径批量查服务端当前行：
+		// 最新一行是存活行且内容哈希、修改时间都与客户端上报一致时静默跳过，
+		// 不建上传会话、不打无权限警告。其余情形（服务端没有、墓碑、哈希或修改时间
+		// 不同）保持原有"要求上传"的判定不变。
+		// In incremental sync (lastTime > 0), batch-fetch the server's current rows for
+		// out-of-window entries first: when the latest row is alive and both content hash
+		// and mtime match the client report, skip silently — no upload session and no
+		// permission-denied warning. All other cases keep the existing verdict.
+		var serverFiles map[string]*dto.FileDTO
+		if params.LastTime > 0 {
+			paths := make([]string, 0, len(remaining))
+			for _, file := range remaining {
+				if file.Path != "" {
+					paths = append(paths, file.Path)
+				}
+			}
+			metaMap, metaErr := fileService.GetPathsMetaBatch(ctx, c.User.UID, params.Vault, paths)
+			if metaErr != nil {
+				// 查询失败退回原有行为：当作服务端没有，照旧要求上传
+				// On query failure fall back to the old behavior: treat as missing and request upload
+				h.App.Logger().Warn("websocket_router.file.FileSync.GetPathsMetaBatch",
+					zap.String(logger.FieldTraceID, c.TraceID),
+					zap.Int64(logger.FieldUID, c.User.UID),
+					zap.Error(metaErr))
+			} else {
+				serverFiles = metaMap
+			}
+		}
+
 		hasWritePermission := pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "file_w")
 		for _, file := range remaining {
+			// 客户端带了路径时按路径核对（与窗口内 cFiles.take 的路径优先语义一致，
+			// 路径哈希碰撞的两条不同路径不会互相顶替）；老客户端没带路径时不做比对。
+			// When the client supplied a path, match by path (same path-first
+			// semantics as cFiles.take in-window; colliding paths never substitute for
+			// each other); legacy clients without a path are not compared.
+			if file.Path != "" {
+				if sFile, ok := serverFiles[file.Path]; ok && sFile != nil &&
+					sFile.Action != "delete" && sFile.ContentHash == file.ContentHash && sFile.Mtime == file.Mtime {
+					continue
+				}
+			}
+
 			// Create upload session and return FileUpload message
 			// 创建上传会话并返回 FileUpload 消息
 			if hasWritePermission {

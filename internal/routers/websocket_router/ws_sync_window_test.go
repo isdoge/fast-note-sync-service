@@ -90,9 +90,9 @@ func runFileWindowCase(t *testing.T, tc syncWindowCase, lastTime int64) map[stri
 		metaBatch["a.md"] = serverRow
 	}
 	f.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).Return([]*dto.FileDTO{}, nil)
-	// 附件窗口外分支不做批量查询（本批未改，见文件头说明）；metaBatch 仅用于
-	// 证明即使服务端有一致的行也照旧要求上传。
-	_ = metaBatch
+	if lastTime > 0 {
+		f.On("GetPathsMetaBatch", mock.Anything, int64(1), "v", []string{"a.md"}).Return(metaBatch, nil).Once()
+	}
 	NewFileWSHandler(a).doFileSync(c, &dto.FileSyncRequest{
 		Vault: "v", Context: ctx, LastTime: lastTime,
 		Files: []dto.FileSyncCheckRequest{{Path: "a.md", PathHash: "h", ContentHash: tc.clientHash, Mtime: tc.clientMtime, Ctime: mt}},
@@ -136,8 +136,7 @@ const (
 )
 
 // windowCases 覆盖测试清单第 1–5 条：一致跳过、修改时间不同、哈希不同、墓碑、服务端没有。
-// 注意：附件（file）本批未改（重传到达后非纯空操作，见任务书守门规则），
-// 附件的窗口外行为保持原样，由 fileWindowCases 单独钉住。
+// 笔记、附件、配置三类共用同一组判定用例。
 var windowCases = []syncWindowCase{
 	{"identical_alive_row_skips_upload", "create", sameHash, baseMT, sameHash, baseMT, 0},
 	{"mtime_differs_requests_upload", "create", sameHash, baseMT, sameHash, otherMT, 1},
@@ -146,16 +145,7 @@ var windowCases = []syncWindowCase{
 	{"missing_on_server_requests_upload", "", "", 0, sameHash, baseMT, 1},
 }
 
-// 附件窗口外行为钉住：无论服务端有没有一致的行，一律要求上传（现状）。
-var fileWindowCases = []syncWindowCase{
-	{"identical_alive_row_still_uploads", "create", sameHash, baseMT, sameHash, baseMT, 1},
-	{"mtime_differs_requests_upload", "create", sameHash, baseMT, sameHash, otherMT, 1},
-	{"hash_differs_requests_upload", "create", "server", baseMT, "client", baseMT, 1},
-	{"tombstone_requests_upload", "delete", sameHash, baseMT, sameHash, baseMT, 1},
-	{"missing_on_server_requests_upload", "", "", 0, sameHash, baseMT, 1},
-}
-
-// 第 1–5 条：笔记与配置覆盖新判定；附件钉住现状。
+// 第 1–5 条：三类同步各自覆盖。
 func TestSyncWindow_OutOfWindowVerdicts(t *testing.T) {
 	for _, tc := range windowCases {
 		t.Run("note/"+tc.name, func(t *testing.T) {
@@ -165,17 +155,15 @@ func TestSyncWindow_OutOfWindowVerdicts(t *testing.T) {
 			require.Equal(t, float64(0), counts["needSyncMtimeCount"])
 			require.Equal(t, float64(0), counts["needDeleteCount"])
 		})
-		t.Run("setting/"+tc.name, func(t *testing.T) {
-			counts := runSettingWindowCase(t, tc, 1)
+		t.Run("file/"+tc.name, func(t *testing.T) {
+			counts := runFileWindowCase(t, tc, 1)
 			require.Equal(t, float64(tc.wantUpload), counts["needUploadCount"])
 			require.Equal(t, float64(0), counts["needModifyCount"])
 			require.Equal(t, float64(0), counts["needSyncMtimeCount"])
 			require.Equal(t, float64(0), counts["needDeleteCount"])
 		})
-	}
-	for _, tc := range fileWindowCases {
-		t.Run("file/"+tc.name, func(t *testing.T) {
-			counts := runFileWindowCase(t, tc, 1)
+		t.Run("setting/"+tc.name, func(t *testing.T) {
+			counts := runSettingWindowCase(t, tc, 1)
 			require.Equal(t, float64(tc.wantUpload), counts["needUploadCount"])
 			require.Equal(t, float64(0), counts["needModifyCount"])
 			require.Equal(t, float64(0), counts["needSyncMtimeCount"])
@@ -246,7 +234,9 @@ func TestSyncWindow_PathHashCollisionNotConfused(t *testing.T) {
 		ctx := t.Name()
 		t.Cleanup(func() { syncDownloadDelete(ctx, "file") })
 		f.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).Return([]*dto.FileDTO{}, nil)
-		// 附件窗口外分支不查库（本批未改），两条同哈希路径都照旧要求上传。
+		// 服务端只有 BB.md；客户端上报同哈希的 Aa.md 与 BB.md。
+		f.On("GetPathsMetaBatch", mock.Anything, int64(1), "v", mock.Anything).
+			Return(map[string]*dto.FileDTO{q: {Path: q, PathHash: h, Action: "create", ContentHash: sameHash, Mtime: baseMT}}, nil).Once()
 		NewFileWSHandler(a).doFileSync(c, &dto.FileSyncRequest{
 			Vault: "v", Context: ctx, LastTime: 1,
 			Files: []dto.FileSyncCheckRequest{
@@ -255,7 +245,8 @@ func TestSyncWindow_PathHashCollisionNotConfused(t *testing.T) {
 			},
 		})
 		counts := syncDeleteMessage(t, messages, FileSyncEnd)["data"].(map[string]any)
-		require.Equal(t, float64(2), counts["needUploadCount"])
+		// Aa.md 服务端没有 → 要求上传；BB.md 与服务端一致 → 跳过。
+		require.Equal(t, float64(1), counts["needUploadCount"])
 	})
 
 	t.Run("setting", func(t *testing.T) {
@@ -280,9 +271,8 @@ func TestSyncWindow_PathHashCollisionNotConfused(t *testing.T) {
 	})
 }
 
-// 第 1 条附件补充：附件本批未改——窗口外条目即使与服务端一致也照旧创建上传会话
-// （现状钉住；改不改等守门结论）。
-func TestSyncWindow_FileStillCreatesUploadSession(t *testing.T) {
+// 第 1 条附件补充：完全一致时跳过——不建上传会话、不计入需上传数。
+func TestSyncWindow_FileSkipCreatesNoUploadSession(t *testing.T) {
 	f, v := new(svcmocks.MockFileService), new(svcmocks.MockVaultService)
 	f.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(f).Maybe()
 	v.On("GetOrCreate", mock.Anything, int64(1), "v").Return(nil, nil)
@@ -293,13 +283,63 @@ func TestSyncWindow_FileStillCreatesUploadSession(t *testing.T) {
 	t.Cleanup(func() { syncDownloadDelete(ctx, "file") })
 
 	f.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).Return([]*dto.FileDTO{}, nil)
+	f.On("GetPathsMetaBatch", mock.Anything, int64(1), "v", mock.Anything).
+		Return(map[string]*dto.FileDTO{"a.md": {Path: "a.md", PathHash: "h", Action: "create", ContentHash: sameHash, Mtime: baseMT}}, nil).Once()
 	NewFileWSHandler(a).doFileSync(c, &dto.FileSyncRequest{
 		Vault: "v", Context: ctx, LastTime: 1,
 		Files: []dto.FileSyncCheckRequest{{Path: "a.md", PathHash: "h", ContentHash: sameHash, Mtime: baseMT, Size: 3}},
 	})
 	counts := syncDeleteMessage(t, messages, FileSyncEnd)["data"].(map[string]any)
-	require.Equal(t, float64(1), counts["needUploadCount"])
-	require.NotNil(t, c.Server.GetSessionByPathHash(c.User.ID, "h"), "现状：窗口外附件仍创建上传会话")
+	require.Equal(t, float64(0), counts["needUploadCount"])
+	require.Nil(t, c.Server.GetSessionByPathHash(c.User.ID, "h"), "跳过的条目不得创建上传会话")
+}
+
+// 第 1 条附件补充：令牌没有 file_w 时，跳过的条目不打无权限警告。
+// 四种保持现状的情形（修改时间不同、哈希不同、墓碑、服务端没有）在无权限令牌下
+// 仍照旧走无权限分支（needUpload 为 0、无下行消息）。
+func TestSyncWindow_FileSkipNoWarningWithoutFileWrite(t *testing.T) {
+	for _, tc := range []syncWindowCase{
+		{"mtime_differs", "create", sameHash, baseMT, sameHash, otherMT, 0},
+		{"hash_differs", "create", "server", baseMT, "client", baseMT, 0},
+		{"tombstone", "delete", sameHash, baseMT, sameHash, baseMT, 0},
+		{"missing", "", "", 0, sameHash, baseMT, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, v := new(svcmocks.MockFileService), new(svcmocks.MockVaultService)
+			f.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(f).Maybe()
+			v.On("GetOrCreate", mock.Anything, int64(1), "v").Return(nil, nil)
+			a := app.NewTestApp(&app.Services{FileService: f, VaultService: v})
+			a.Config().App.TempPath = t.TempDir()
+			c, messages := newSyncDeletePeer(t, a)
+			// 只授予附件读权限，无 file_w。
+			c.Scope = "p:ws f:file_r"
+			ctx := t.Name()
+			t.Cleanup(func() { syncDownloadDelete(ctx, "file") })
+
+			serverRow := &dto.FileDTO{Path: "a.md", PathHash: "h", ContentHash: tc.serverHash, Mtime: tc.serverMtime}
+			if tc.serverAction != "" {
+				serverRow.Action = tc.serverAction
+			}
+			metaBatch := map[string]*dto.FileDTO{}
+			if tc.serverAction != "" {
+				metaBatch["a.md"] = serverRow
+			}
+			f.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).Return([]*dto.FileDTO{}, nil)
+			f.On("GetPathsMetaBatch", mock.Anything, int64(1), "v", []string{"a.md"}).Return(metaBatch, nil).Once()
+			NewFileWSHandler(a).doFileSync(c, &dto.FileSyncRequest{
+				Vault: "v", Context: ctx, LastTime: 1,
+				Files: []dto.FileSyncCheckRequest{{Path: "a.md", PathHash: "h", ContentHash: tc.clientHash, Mtime: tc.clientMtime}},
+			})
+			counts := syncDeleteMessage(t, messages, FileSyncEnd)["data"].(map[string]any)
+			require.Equal(t, float64(tc.wantUpload), counts["needUploadCount"])
+			// 无权限分支不排任何下行消息（既有行为）。
+			select {
+			case raw := <-messages:
+				t.Fatalf("无 file_w 令牌不应产生下行消息，收到 %s", raw)
+			default:
+			}
+		})
+	}
 }
 
 // 第 1 条配置补充：令牌没有 config_w 时，跳过的条目不打无权限警告、不发消息；
@@ -413,6 +453,24 @@ func TestSyncWindow_BatchQueryErrorFallsBackToUpload(t *testing.T) {
 			Notes: []dto.NoteSyncCheckRequest{{Path: "a.md", PathHash: "h", ContentHash: sameHash, Mtime: baseMT}},
 		})
 		counts := syncDeleteMessage(t, messages, NoteSyncEnd)["data"].(map[string]any)
+		require.Equal(t, float64(1), counts["needUploadCount"])
+	})
+	t.Run("file", func(t *testing.T) {
+		f, v := new(svcmocks.MockFileService), new(svcmocks.MockVaultService)
+		f.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(f).Maybe()
+		v.On("GetOrCreate", mock.Anything, int64(1), "v").Return(nil, nil)
+		a := app.NewTestApp(&app.Services{FileService: f, VaultService: v})
+		a.Config().App.TempPath = t.TempDir()
+		c, messages := newSyncDeletePeer(t, a)
+		ctx := t.Name()
+		t.Cleanup(func() { syncDownloadDelete(ctx, "file") })
+		f.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).Return([]*dto.FileDTO{}, nil)
+		f.On("GetPathsMetaBatch", mock.Anything, int64(1), "v", mock.Anything).Return(nil, errBoom).Once()
+		NewFileWSHandler(a).doFileSync(c, &dto.FileSyncRequest{
+			Vault: "v", Context: ctx, LastTime: 1,
+			Files: []dto.FileSyncCheckRequest{{Path: "a.md", PathHash: "h", ContentHash: sameHash, Mtime: baseMT}},
+		})
+		counts := syncDeleteMessage(t, messages, FileSyncEnd)["data"].(map[string]any)
 		require.Equal(t, float64(1), counts["needUploadCount"])
 	})
 	t.Run("setting", func(t *testing.T) {
