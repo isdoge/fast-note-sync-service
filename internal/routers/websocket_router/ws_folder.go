@@ -1,6 +1,7 @@
 package websocket_router
 
 import (
+	"errors"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
@@ -135,11 +136,25 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 
 		for _, delFolder := range params.DelFolders {
 
-			// Check if folder exists before deleting
+			// Check if folder exists before deleting. Pass the full path so a hash
+			// collision cannot make Get ambiguous and skip a real deletion.
+			// 删除前先确认目录存在；带上完整路径，避免哈希碰撞让 Get 产生歧义而
+			// 漏删存活目录。
 			checkFolder, err := folderSvc.Get(ctx, uid, &dto.FolderGetRequest{
 				Vault:    params.Vault,
+				Path:     delFolder.Path,
 				PathHash: delFolder.PathHash,
 			})
+			if err != nil && !errors.Is(err, code.ErrorFolderNotFound) {
+				// 查询出错（哈希歧义、数据库错误等）时不能盲目广播删除。
+				// A failed lookup (ambiguous hash, database error, ...) must not
+				// turn into a blind delete broadcast.
+				h.App.Logger().Warn("websocket_router.folder.FolderSync.FolderService.Get failed, skipping deletion",
+					zap.String(logpkg.FieldTraceID, c.TraceID),
+					zap.String(logpkg.FieldPath, delFolder.Path),
+					zap.Error(err))
+				continue
+			}
 
 			if err == nil && checkFolder != nil && checkFolder.Action != "delete" {
 				if !hasWritePermission {
@@ -176,11 +191,17 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 					},
 				).WithVault(params.Vault).WithContext(params.Context), true, FolderSyncDelete)
 			} else {
-				h.App.Logger().Debug("websocket_router.folder.FolderSync.FolderService.Get check failed (not found or already deleted), broadcasting delete anyway",
-					zap.String(logpkg.FieldTraceID, c.TraceID),
-					zap.String("pathHash", delFolder.PathHash))
-
+				// 不存在或已删除：仍排除客户端主动删除的路径。
+				// 只读令牌不广播删除（它本来就没有删除权限）。
+				// Not found or already deleted: still exclude the path the client
+				// reported. A read-only token must not broadcast a delete at all.
 				cDelFoldersKeys[delFolder.Path] = struct{}{}
+				if !hasWritePermission {
+					continue
+				}
+				h.App.Logger().Debug("websocket_router.folder.FolderSync.FolderService.Get: folder not found or already deleted, broadcasting delete",
+					zap.String(logpkg.FieldTraceID, c.TraceID),
+					zap.String(logpkg.FieldPath, delFolder.Path))
 				// Broadcast deletion with available info
 				c.BroadcastResponse(code.Success.WithData(
 					dto.FolderSyncDeleteMessage{
