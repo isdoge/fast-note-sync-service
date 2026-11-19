@@ -141,7 +141,7 @@ func (p *interceptorPeer) sendJSON(t *testing.T, action string, payload map[stri
 // the JSON-decoded data payload (unhandled response actions fall back to JSON
 // bytes inside the envelope, matching the plugin's default branch).
 // readProtobufResponse 解出一条 Protobuf 响应帧的动作名，以及经 JSON 解码的 data 载荷
-//（未专门编码的响应动作在信封里是 JSON 字节，与插件 default 分支一致）。
+// （未专门编码的响应动作在信封里是 JSON 字节，与插件 default 分支一致）。
 func (p *interceptorPeer) readProtobufResponse(t *testing.T) (string, int, map[string]any) {
 	t.Helper()
 	select {

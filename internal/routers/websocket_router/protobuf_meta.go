@@ -24,36 +24,36 @@ type protobufRequestMeta struct {
 // field 2 (context occupies field 1), everything else on field 1.
 // protobufRequestMetaFields 把接收动作映射到上述字段在 wire 上的编号，0 表示该动作没有这个字段。
 // 编号取自 internal/proto/v1/sync.proto；同步请求与分页确认的 vault 在第 2 字段
-//（第 1 字段是 context），其余动作在第 1 字段。
+// （第 1 字段是 context），其余动作在第 1 字段。
 var protobufRequestMetaFields = map[string]struct {
 	vault, path, pathHash, oldPath, oldPathHash int
 }{
-	NoteReceiveSync:            {vault: 2},
-	NoteReceiveModify:          {vault: 1, path: 2, pathHash: 3},
-	NoteReceiveCheck:           {vault: 1, path: 2, pathHash: 3},
-	NoteReceiveDelete:          {vault: 1, path: 2, pathHash: 3},
-	NoteReceiveRename:          {vault: 1, path: 2, pathHash: 3, oldPath: 4, oldPathHash: 5},
-	NoteReceiveRePush:          {vault: 1, path: 2, pathHash: 3},
-	FileReceiveSync:            {vault: 2},
-	FileReceiveUploadCheck:     {vault: 1, path: 2, pathHash: 3},
-	FileReceiveDelete:          {vault: 1, path: 2, pathHash: 3},
-	FileReceiveRename:          {vault: 1, path: 2, pathHash: 3, oldPath: 4, oldPathHash: 5},
-	FileReceiveChunkDownload:   {vault: 1, path: 2, pathHash: 3},
-	FileReceiveRePush:          {vault: 1, path: 2, pathHash: 3},
-	SettingReceiveSync:         {vault: 2},
-	SettingReceiveModify:       {vault: 1, path: 2, pathHash: 3},
-	SettingReceiveCheck:        {vault: 1, path: 2, pathHash: 3},
-	SettingReceiveDelete:       {vault: 1, path: 2, pathHash: 3},
-	SettingReceiveClear:        {vault: 1},
-	SettingReceiveRePush:       {vault: 1, path: 2, pathHash: 3},
-	FolderReceiveSync:          {vault: 2},
-	FolderReceiveModify:        {vault: 1, path: 2, pathHash: 3},
-	FolderReceiveDelete:        {vault: 1, path: 2, pathHash: 3},
-	FolderReceiveRename:        {vault: 1, path: 2, pathHash: 3, oldPath: 4, oldPathHash: 5},
-	NoteSyncPageAck:            {vault: 2},
-	FileSyncPageAck:            {vault: 2},
-	SettingSyncPageAck:         {vault: 2},
-	FolderSyncPageAck:          {vault: 2},
+	NoteReceiveSync:          {vault: 2},
+	NoteReceiveModify:        {vault: 1, path: 2, pathHash: 3},
+	NoteReceiveCheck:         {vault: 1, path: 2, pathHash: 3},
+	NoteReceiveDelete:        {vault: 1, path: 2, pathHash: 3},
+	NoteReceiveRename:        {vault: 1, path: 2, pathHash: 3, oldPath: 4, oldPathHash: 5},
+	NoteReceiveRePush:        {vault: 1, path: 2, pathHash: 3},
+	FileReceiveSync:          {vault: 2},
+	FileReceiveUploadCheck:   {vault: 1, path: 2, pathHash: 3},
+	FileReceiveDelete:        {vault: 1, path: 2, pathHash: 3},
+	FileReceiveRename:        {vault: 1, path: 2, pathHash: 3, oldPath: 4, oldPathHash: 5},
+	FileReceiveChunkDownload: {vault: 1, path: 2, pathHash: 3},
+	FileReceiveRePush:        {vault: 1, path: 2, pathHash: 3},
+	SettingReceiveSync:       {vault: 2},
+	SettingReceiveModify:     {vault: 1, path: 2, pathHash: 3},
+	SettingReceiveCheck:      {vault: 1, path: 2, pathHash: 3},
+	SettingReceiveDelete:     {vault: 1, path: 2, pathHash: 3},
+	SettingReceiveClear:      {vault: 1},
+	SettingReceiveRePush:     {vault: 1, path: 2, pathHash: 3},
+	FolderReceiveSync:        {vault: 2},
+	FolderReceiveModify:      {vault: 1, path: 2, pathHash: 3},
+	FolderReceiveDelete:      {vault: 1, path: 2, pathHash: 3},
+	FolderReceiveRename:      {vault: 1, path: 2, pathHash: 3, oldPath: 4, oldPathHash: 5},
+	NoteSyncPageAck:          {vault: 2},
+	FileSyncPageAck:          {vault: 2},
+	SettingSyncPageAck:       {vault: 2},
+	FolderSyncPageAck:        {vault: 2},
 }
 
 // isJSONMessagePayload reports whether the action-level payload is a JSON object
