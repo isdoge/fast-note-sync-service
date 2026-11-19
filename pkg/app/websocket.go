@@ -1569,10 +1569,13 @@ func (w *WebsocketServer) UpdateTokenScope(uid int64, tokenID int64, newScope st
 // KickToken closes all connections for a specific token
 // KickToken 关闭特定令牌的所有连接
 func (w *WebsocketServer) KickToken(uid int64, tokenID int64) {
+	// Finish event removal before acquiring w.mu; the two locks never nest.
+	// 事件订阅移除完成后再获取 w.mu；两把锁绝不嵌套。
+	uidStr := strconv.FormatInt(uid, 10)
+	w.events.KickToken(uidStr, tokenID)
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	uidStr := strconv.FormatInt(uid, 10)
 	if clients, ok := w.userClients[uidStr]; ok {
 		for _, client := range clients {
 			if client.TokenID == tokenID {

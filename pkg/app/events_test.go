@@ -60,7 +60,7 @@ func TestEventHubVaultFilters(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			hub := NewEventHub()
-			sub, err := hub.Subscribe("1", test.allowed, test.declared)
+			sub, err := hub.Subscribe("1", 5, test.allowed, test.declared)
 			require.NoError(t, err)
 			hub.Publish("2", test.vault, "NoteSyncModify", nil)
 			require.Empty(t, sub.ch)
@@ -76,13 +76,13 @@ func TestEventHubLimitsOverflowAndClose(t *testing.T) {
 	hub := NewEventHub()
 	var subs []*EventSubscriber
 	for i := 0; i < maxUserEventStreams; i++ {
-		sub, err := hub.Subscribe("1", "", nil)
+		sub, err := hub.Subscribe("1", 5, "", nil)
 		require.NoError(t, err)
 		subs = append(subs, sub)
 	}
-	_, err := hub.Subscribe("1", "", nil)
+	_, err := hub.Subscribe("1", 5, "", nil)
 	require.ErrorIs(t, err, ErrEventStreamLimit)
-	_, err = hub.Subscribe("2", "", nil)
+	_, err = hub.Subscribe("2", 5, "", nil)
 	require.NoError(t, err)
 	for i := 0; i < eventBufferSize+1; i++ {
 		hub.Publish("1", "A", "NoteSyncModify", nil)
@@ -97,7 +97,7 @@ func TestEventHubLimitsOverflowAndClose(t *testing.T) {
 	default:
 		t.Fatal("订阅未关闭")
 	}
-	_, err = hub.Subscribe("1", "", nil)
+	_, err = hub.Subscribe("1", 5, "", nil)
 	require.NoError(t, err)
 	hub.Close()
 	hub.Close()
@@ -109,7 +109,7 @@ func TestEventHubLimitsOverflowAndClose(t *testing.T) {
 			t.Fatal("中心关闭未通知订阅")
 		}
 	}
-	_, err = hub.Subscribe("1", "", nil)
+	_, err = hub.Subscribe("1", 5, "", nil)
 	require.ErrorIs(t, err, ErrEventHubClosed)
 	hub.Publish("1", "A", "NoteSyncModify", nil)
 }
@@ -122,12 +122,13 @@ func TestEventHubConcurrentPublishUnsubscribe(t *testing.T) {
 		go func(uid string) {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				sub, err := hub.Subscribe(uid, "A", []string{"A"})
+				sub, err := hub.Subscribe(uid, 5, "A", []string{"A"})
 				if err != nil {
 					return
 				}
 				hub.Publish(uid, "A", "NoteSyncModify", nil)
 				sub.Overflowed()
+				hub.KickToken(uid, 5)
 				hub.Unsubscribe(uid, sub)
 			}
 		}(fmt.Sprint(i % 2))
@@ -143,9 +144,42 @@ func TestEventHubConcurrentPublishUnsubscribe(t *testing.T) {
 	require.Empty(t, hub.users)
 }
 
+func TestKickTokenClosesOnlyMatchingEventStreams(t *testing.T) {
+	w := NewWebsocketServer(WSConfig{}, &websocketSecurityApp{})
+	defer w.CloseAllConnections()
+	type subscription struct {
+		uid     string
+		tokenID int64
+		closed  bool
+	}
+	var subs []*EventSubscriber
+	fixtures := []subscription{{"1", 5, true}, {"1", 5, true}, {"1", 6, false}, {"2", 5, false}}
+	for _, fixture := range fixtures {
+		sub, err := w.SubscribeEvents(fixture.uid, fixture.tokenID, "", nil)
+		require.NoError(t, err)
+		subs = append(subs, sub)
+	}
+	w.KickToken(1, 5)
+	w.KickToken(1, 5)
+	w.events.Publish("1", "A", "NoteSyncModify", nil)
+	w.events.Publish("2", "A", "NoteSyncModify", nil)
+	for i, fixture := range fixtures {
+		sub := subs[i]
+		select {
+		case <-sub.Done():
+			require.True(t, fixture.closed, "误关了其它令牌或用户的订阅")
+		default:
+			require.False(t, fixture.closed, "目标令牌的订阅未关闭")
+		}
+		require.Equal(t, !fixture.closed, len(sub.ch) == 1)
+		w.UnsubscribeEvents(fixture.uid, sub)
+	}
+	require.Empty(t, w.events.users)
+}
+
 func TestBroadcastEventsWithoutWebsocketConnections(t *testing.T) {
 	w := NewWebsocketServer(WSConfig{}, &websocketSecurityApp{})
-	sub, err := w.SubscribeEvents("1", "", nil)
+	sub, err := w.SubscribeEvents("1", 5, "", nil)
 	require.NoError(t, err)
 	defer w.UnsubscribeEvents("1", sub)
 	c := &WebsocketClient{Server: w, User: &UserEntity{}}

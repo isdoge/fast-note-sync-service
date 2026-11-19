@@ -44,7 +44,7 @@ func TestEventMetadataForEveryBroadcastAction(t *testing.T) {
 	} {
 		t.Run(test.action, func(t *testing.T) {
 			hub := app.NewEventHub()
-			sub, err := hub.Subscribe("1", "", nil)
+			sub, err := hub.Subscribe("1", 5, "", nil)
 			require.NoError(t, err)
 			hub.Publish("1", "A", test.action, test.data)
 			select {

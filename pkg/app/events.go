@@ -82,6 +82,7 @@ type EventSubscriber struct {
 	ch          chan BroadcastEvent
 	done        chan struct{}
 	overflow    atomic.Bool
+	tokenID     int64
 	tokenVaults string
 	vaults      map[string]struct{}
 }
@@ -111,7 +112,7 @@ type EventHub struct {
 
 func NewEventHub() *EventHub { return &EventHub{users: make(map[string]map[*EventSubscriber]struct{})} }
 
-func (h *EventHub) Subscribe(uid, tokenVaults string, vaults []string) (*EventSubscriber, error) {
+func (h *EventHub) Subscribe(uid string, tokenID int64, tokenVaults string, vaults []string) (*EventSubscriber, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
@@ -120,7 +121,7 @@ func (h *EventHub) Subscribe(uid, tokenVaults string, vaults []string) (*EventSu
 	if len(h.users[uid]) >= maxUserEventStreams {
 		return nil, ErrEventStreamLimit
 	}
-	sub := &EventSubscriber{ch: make(chan BroadcastEvent, eventBufferSize), done: make(chan struct{}), tokenVaults: tokenVaults, vaults: make(map[string]struct{})}
+	sub := &EventSubscriber{ch: make(chan BroadcastEvent, eventBufferSize), done: make(chan struct{}), tokenID: tokenID, tokenVaults: tokenVaults, vaults: make(map[string]struct{})}
 	for _, vault := range vaults {
 		if vault != "" {
 			sub.vaults[vault] = struct{}{}
@@ -166,6 +167,22 @@ func (h *EventHub) Publish(uid, vault, action string, data any) {
 	}
 }
 
+// KickToken removes matching subscriptions before notifying their handlers.
+// KickToken 先移除匹配的订阅，再通知处理器退出。
+func (h *EventHub) KickToken(uid string, tokenID int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for sub := range h.users[uid] {
+		if sub.tokenID == tokenID {
+			delete(h.users[uid], sub)
+			close(sub.done)
+		}
+	}
+	if len(h.users[uid]) == 0 {
+		delete(h.users, uid)
+	}
+}
+
 func (h *EventHub) Close() {
 	if h == nil {
 		return
@@ -183,8 +200,8 @@ func (h *EventHub) Close() {
 
 // SubscribeEvents exposes the event hub without exposing its locks to handlers.
 // SubscribeEvents 向处理器提供订阅接口，不暴露中心的锁。
-func (w *WebsocketServer) SubscribeEvents(uid, tokenVaults string, vaults []string) (*EventSubscriber, error) {
-	return w.events.Subscribe(uid, tokenVaults, vaults)
+func (w *WebsocketServer) SubscribeEvents(uid string, tokenID int64, tokenVaults string, vaults []string) (*EventSubscriber, error) {
+	return w.events.Subscribe(uid, tokenID, tokenVaults, vaults)
 }
 func (w *WebsocketServer) UnsubscribeEvents(uid string, sub *EventSubscriber) {
 	w.events.Unsubscribe(uid, sub)

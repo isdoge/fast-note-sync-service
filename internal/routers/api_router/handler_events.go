@@ -1,6 +1,7 @@
 package api_router
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,11 +22,12 @@ import (
 type EventHandler struct {
 	*Handler
 	heartbeatInterval time.Duration
+	maxLifetime       time.Duration
 	shutdown          <-chan struct{}
 }
 
 func NewEventHandler(a *app.App, wss *pkgapp.WebsocketServer) *EventHandler {
-	return &EventHandler{Handler: NewHandlerWithWSS(a, wss), heartbeatInterval: 20 * time.Second, shutdown: a.ShutdownCh()}
+	return &EventHandler{Handler: NewHandlerWithWSS(a, wss), heartbeatInterval: 20 * time.Second, maxLifetime: 30 * time.Minute, shutdown: a.ShutdownCh()}
 }
 
 func (h *EventHandler) Stream(c *gin.Context) {
@@ -47,7 +49,7 @@ func (h *EventHandler) Stream(c *gin.Context) {
 			vaults = append(vaults, vault)
 		}
 	}
-	sub, err := h.WSS.SubscribeEvents(uid, c.GetString("vaults"), vaults)
+	sub, err := h.WSS.SubscribeEvents(uid, pkgapp.GetTokenID(c), c.GetString("vaults"), vaults)
 	if err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, pkgapp.ErrEventStreamLimit) {
@@ -62,10 +64,14 @@ func (h *EventHandler) Stream(c *gin.Context) {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	// Interrupt a stalled network write on cancellation or shutdown; join before Gin reuses c.
-	// 取消或关闭时中断卡住的网络写入；退出前等待监视协程结束，避免 Gin 复用 c 时发生竞争。
+	// Limit each stream so reconnecting clients authenticate again.
+	// 限制单条流的存活时间，让客户端重连时重新鉴权。
+	streamContext, cancel := context.WithTimeout(c.Request.Context(), h.maxLifetime)
+	defer cancel()
+	// Interrupt stalled writes on cancellation, expiry or shutdown; join before Gin reuses c.
+	// 取消、到期或关闭时中断卡住的写入；退出前等待监视协程结束，避免 Gin 复用 c 时发生竞争。
 	finished, watcherDone := make(chan struct{}), make(chan struct{})
-	requestDone := c.Request.Context().Done()
+	requestDone := streamContext.Done()
 	go func() {
 		defer close(watcherDone)
 		select {

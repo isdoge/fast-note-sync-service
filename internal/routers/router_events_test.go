@@ -88,3 +88,29 @@ func TestWebGUIEventRouteAuthentication(t *testing.T) {
 		})
 	}
 }
+
+func TestWebGUIEventRouteKickToken(t *testing.T) {
+	tokenSvc := &adminGroupTokenService{activeToken: &domain.AuthToken{ID: 5, UID: 1, TokenString: "event-test-nonce", Scope: "p:rest c:* f:*", IssueType: 1, ClientType: "webgui"}}
+	a := newAdminGroupTestApp(t, tokenSvc)
+	a.Config().Security.AuthTokenKey = "event-test-signing-key"
+	a.Config().App.DefaultContextTimeout = 0
+	wss := pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, a)
+	router := gin.New()
+	registerAPIRoutes(router, a, wss, ut.New(en.New(), en.New(), zh.New()))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/webgui/events?client=webgui", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+adminGroupJWT(t, a.Config().Security.AuthTokenKey, "event-test-nonce", 1, 5))
+	rec := &routeEventRecorder{ResponseRecorder: httptest.NewRecorder()}
+	rec.flush = func(body string) {
+		if strings.Contains(body, `"reason":"reconnect"`) {
+			wss.KickToken(1, 5)
+			wss.BroadcastToUser(1, code.Success.WithVault("A").WithData(dto.NoteDTO{Path: "revoked.md"}), "NoteSyncModify")
+		}
+	}
+	router.ServeHTTP(rec, req)
+	require.NoError(t, ctx.Err(), "吊销未结束事件流")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"reason":"reconnect"`)
+	require.NotContains(t, rec.Body.String(), "event: change")
+}

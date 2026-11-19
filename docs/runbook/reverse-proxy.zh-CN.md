@@ -4,7 +4,7 @@
 
 ## Nginx
 
-`GET /api/webgui/events` 是长连接 SSE 事件流，每 20 秒发送一次心跳。该端点的代理必须关闭响应缓冲，并将读取超时设为大于心跳间隔。
+`GET /api/webgui/events` 是长连接 SSE 事件流，每 20 秒发送一次心跳。该端点的代理必须关闭响应缓冲，并将读取超时设为大于心跳间隔。服务端每 30 分钟会主动结束连接，客户端自动重连属正常现象。
 
 以下配置在仓库示例 `scripts/https-nginx-example.conf` 基础上补了 WebSocket 超时。证书路径与上游地址按实际部署替换。
 

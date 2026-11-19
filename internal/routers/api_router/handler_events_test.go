@@ -53,7 +53,7 @@ func eventTestHandler(t *testing.T) (*EventHandler, *pkgapp.WebsocketServer, *gi
 	h.shutdown = shutdown
 	router := gin.New()
 	router.GET("/api/webgui/events", func(c *gin.Context) {
-		c.Set("user_token", &pkgapp.UserEntity{UID: 1})
+		c.Set("user_token", &pkgapp.UserEntity{UID: 1, TokenID: 5})
 		c.Set("vaults", "A")
 		h.Stream(c)
 	})
@@ -63,7 +63,7 @@ func eventTestHandler(t *testing.T) (*EventHandler, *pkgapp.WebsocketServer, *gi
 func assertEventSubscriptionsRemoved(t *testing.T, wss *pkgapp.WebsocketServer) {
 	t.Helper()
 	for i := 0; i < 16; i++ {
-		sub, err := wss.SubscribeEvents("1", "", nil)
+		sub, err := wss.SubscribeEvents("1", 5, "", nil)
 		require.NoError(t, err, "请求结束后仍然占用订阅名额")
 		t.Cleanup(func() { wss.UnsubscribeEvents("1", sub) })
 	}
@@ -144,7 +144,7 @@ func TestEventStreamExitAndCleanup(t *testing.T) {
 func TestEventStreamLimit(t *testing.T) {
 	_, wss, router, _ := eventTestHandler(t)
 	for i := 0; i < 16; i++ {
-		sub, err := wss.SubscribeEvents("1", "", nil)
+		sub, err := wss.SubscribeEvents("1", 5, "", nil)
 		require.NoError(t, err)
 		defer wss.UnsubscribeEvents("1", sub)
 	}
@@ -152,6 +152,25 @@ func TestEventStreamLimit(t *testing.T) {
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/webgui/events", nil))
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 	require.NotContains(t, rec.Body.String(), "event: hello")
+}
+
+func TestEventStreamMaxLifetime(t *testing.T) {
+	h, wss, router, _ := eventTestHandler(t)
+	require.Equal(t, 30*time.Minute, h.maxLifetime)
+	h.maxLifetime = 20 * time.Millisecond
+	h.heartbeatInterval = time.Hour
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/webgui/events", nil).WithContext(ctx))
+	require.NoError(t, ctx.Err(), "处理器只在请求兜底超时后退出")
+	require.GreaterOrEqual(t, time.Since(start), h.maxLifetime)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "event: hello\n"))
+	require.Equal(t, 1, strings.Count(rec.Body.String(), "event: resync\n"))
+	require.Equal(t, 2, strings.Count(rec.Body.String(), "event: "))
+	assertEventSubscriptionsRemoved(t, wss)
 }
 
 // A real HTTP server is required to verify net/http's connection write deadline.
@@ -200,9 +219,12 @@ func (w *stalledEventWriter) SetWriteDeadline(deadline time.Time) error {
 }
 
 func TestEventStreamCancellationInterruptsStalledWrite(t *testing.T) {
-	for _, mode := range []string{"cancel", "shutdown"} {
+	for _, mode := range []string{"cancel", "shutdown", "kick token", "max lifetime"} {
 		t.Run(mode, func(t *testing.T) {
-			_, wss, router, shutdown := eventTestHandler(t)
+			h, wss, router, shutdown := eventTestHandler(t)
+			if mode == "max lifetime" {
+				h.maxLifetime = 20 * time.Millisecond
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			rec := &stalledEventWriter{ResponseRecorder: httptest.NewRecorder(), started: make(chan struct{}), interrupted: make(chan struct{})}
@@ -216,15 +238,18 @@ func TestEventStreamCancellationInterruptsStalledWrite(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("未进入写入")
 			}
-			if mode == "cancel" {
+			switch mode {
+			case "cancel":
 				cancel()
-			} else {
+			case "shutdown":
 				close(shutdown)
+			case "kick token":
+				wss.KickToken(1, 5)
 			}
 			select {
 			case <-done:
 			case <-time.After(time.Second):
-				t.Fatal("取消/关闭未中断卡住的写入")
+				t.Fatal("取消、关闭、吊销或到期未中断卡住的写入")
 			}
 			assertEventSubscriptionsRemoved(t, wss)
 		})
