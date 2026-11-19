@@ -12,7 +12,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
+	"github.com/haierkeys/fast-note-sync-service/internal/middleware"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
+	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"go.uber.org/zap"
 )
 
@@ -24,10 +26,29 @@ type EventHandler struct {
 	maxLifetime       time.Duration
 	closeGrace        time.Duration
 	shutdown          <-chan struct{}
+	// revalidateToken re-checks the token after the subscription is registered.
+	// Defaults to the entry middleware's checks; tests may replace it.
+	// revalidateToken 在订阅注册后重新校验令牌，默认复用入口中间件的判定；
+	// 测试可替换。
+	revalidateToken func(*gin.Context) *code.Code
+	// afterSubscribe is a test hook run between subscription registration and
+	// token revalidation so the revocation race can be reproduced deterministically.
+	// afterSubscribe 是测试钩子，在订阅注册与令牌复核之间执行，用于确定性复现
+	// “吊销与订阅并发”的时序。
+	afterSubscribe func()
 }
 
 func NewEventHandler(a *app.App, wss *pkgapp.WebsocketServer) *EventHandler {
-	return &EventHandler{Handler: NewHandlerWithWSS(a, wss), heartbeatInterval: 20 * time.Second, maxLifetime: 30 * time.Minute, closeGrace: 2 * time.Second, shutdown: a.ShutdownCh()}
+	return &EventHandler{
+		Handler:           NewHandlerWithWSS(a, wss),
+		heartbeatInterval: 20 * time.Second,
+		maxLifetime:       30 * time.Minute,
+		closeGrace:        2 * time.Second,
+		shutdown:          a.ShutdownCh(),
+		revalidateToken: func(c *gin.Context) *code.Code {
+			return middleware.RevalidateUserToken(c, a.Config().Security.AuthTokenKey, a.TokenService)
+		},
+	}
 }
 
 func (h *EventHandler) Stream(c *gin.Context) {
@@ -64,6 +85,22 @@ func (h *EventHandler) Stream(c *gin.Context) {
 		return
 	}
 	defer h.WSS.UnsubscribeEvents(uid, sub)
+	// Re-check the token now that the subscription exists. A revocation that
+	// completed between the entry authentication and SubscribeEvents was not
+	// seen by KickToken (the subscription did not exist yet); without this
+	// check the stream could keep receiving events for up to maxLifetime.
+	// 订阅建立后再确认令牌有效：入口鉴权与 SubscribeEvents 之间完成的吊销，
+	// KickToken 当时扫不到（订阅尚不存在）；不补这次检查，流最多还能接收
+	// maxLifetime 时长的事件。
+	if h.afterSubscribe != nil {
+		h.afterSubscribe()
+	}
+	if h.revalidateToken != nil {
+		if appErr := h.revalidateToken(c); appErr != nil {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+	}
 	controller := http.NewResponseController(c.Writer)
 	if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		c.AbortWithStatus(http.StatusInternalServerError)

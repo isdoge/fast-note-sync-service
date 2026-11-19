@@ -272,6 +272,12 @@ func (s *tokenService) Update(ctx context.Context, uid int64, tokenID int64, par
 		return code.ErrorInvalidParams.WithDetails(fmt.Sprintf("expiredDays must be between 1 and %d", util.MaxDurationDays))
 	}
 
+	// Remember the authorization inputs so a real change can invalidate the
+	// decision already made by live connections.
+	// 记录授权输入，真正的变化需要让在线连接按旧范围做出的判定失效。
+	originalScope := token.Scope
+	originalVaults := token.Vaults
+
 	// Update fields if provided
 	if params.ClientType != "" {
 		token.ClientType = params.ClientType
@@ -327,9 +333,19 @@ func (s *tokenService) Update(ctx context.Context, uid int64, tokenID int64, par
 		return code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
-	// Trigger sync hook if set
+	// Trigger sync hook if set. A changed scope or vault allowlist invalidates
+	// the authentication decision of live WebSocket connections and event
+	// streams, so they are kicked through the existing hook (the same path as
+	// revoke); clients reconnect and re-authenticate with the new range.
+	// Metadata-only edits (expiry, IP/UA binding, client type, same values)
+	// update the live scope without disconnecting anyone.
+	// 触发同步钩子。scope 或库白名单真的变化时，在线 WebSocket 连接与事件流
+	// 已按旧范围鉴权，必须通过既有钩子（与吊销同一条路径）踢掉，让客户端
+	// 重连并按新范围鉴权；仅备注性改动（续期、IP/UA 绑定、客户端类型、
+	// 值未变）只更新在线 scope，不踢连接。
+	kick := token.Scope != originalScope || token.Vaults != originalVaults
 	if s.SyncHandler != nil {
-		s.SyncHandler(uid, tokenID, token.Scope, false)
+		s.SyncHandler(uid, tokenID, token.Scope, kick)
 	}
 	return nil
 }

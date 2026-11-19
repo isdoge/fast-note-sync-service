@@ -39,8 +39,43 @@ func UserAuthTokenWithConfigStrict(secretKey string, tokenService service.TokenS
 		// 注入服务端 Token 属性，供下游中间件（如 RequireWebGUI）进行联合校验，防止请求头伪造绕过
 		c.Set("token_issue_type", dbToken.IssueType)
 		c.Set("token_client_type", dbToken.ClientType)
+		// Keep the entry-time client and strictness so handler-level checks that
+		// depend on the request body (e.g. whole-recycle-bin clear) decide
+		// permissions exactly like the route-level check did.
+		// 记录入口时的客户端与严格开关，供依赖请求体的 handler 级功能点检查
+		//（例如整库清空回收站）与路由级检查保持一致。
+		c.Set(contextKeyStrictEmptyProtocol, strictEmptyProtocol)
 		c.Next()
 	}
+}
+
+// contextKeyStrictEmptyProtocol / contextKeyAuthRestClient hold the entry-time
+// authentication inputs used by RestFunctionAllowed.
+// contextKeyStrictEmptyProtocol / contextKeyAuthRestClient 保存入口鉴权时的
+// 输入，供 RestFunctionAllowed 复用。
+const (
+	contextKeyStrictEmptyProtocol = "auth_strict_empty_protocol"
+	contextKeyAuthRestClient      = "auth_rest_client"
+)
+
+// RestFunctionAllowed reports whether the authenticated request's token scope
+// admits the given REST function point. The decision reuses the same
+// protocol/client/strictness the entry middleware applied, so handlers can
+// enforce a different function point for a body-dependent code path (such as
+// a whole-recycle-bin clear versus a single-path clear).
+// RestFunctionAllowed 报告已认证请求的令牌 scope 是否包含指定 REST 功能点。
+// 判定复用入口中间件的协议/客户端/严格开关，供 handler 对依赖请求体的分支
+// （例如整库清空回收站与单条清理）追加不同的功能点校验。
+func RestFunctionAllowed(c *gin.Context, function string) bool {
+	strict, _ := c.Get(contextKeyStrictEmptyProtocol)
+	strictEmptyProtocol, _ := strict.(bool)
+	return verifyRestFunction(
+		c.GetString("scope"),
+		"rest",
+		c.GetString(contextKeyAuthRestClient),
+		function,
+		strictEmptyProtocol,
+	)
 }
 
 func ExtractUserAuthToken(c *gin.Context) string {
@@ -100,6 +135,7 @@ func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService 
 	if reqClientType == "" && dbToken.IssueType == 1 && isHeaderlessLoginTokenResourceRead(c) {
 		reqClientType = dbToken.ClientType
 	}
+	c.Set(contextKeyAuthRestClient, reqClientType)
 
 	if dbToken.IssueType == 1 && !app.MatchWildcard(dbToken.ClientType, reqClientType) {
 		return nil, "", "", nil, code.ErrorAuthTokenClientRestricted.WithDetails("Client mismatch")
@@ -188,6 +224,44 @@ func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService 
 	return user, dbToken.Scope, dbToken.Vaults, dbToken, nil
 }
 
+// RevalidateUserToken re-checks a request's token after a delayed setup step
+// (e.g. registering an SSE subscription). It applies the same validity checks
+// as AuthenticateUserTokenStrict — signature, active database token and the
+// rotation nonce — so a revocation that raced the entry middleware cannot leave
+// an authenticated stream behind. Static per-request properties (client, UA,
+// IP, scope, vault allowlist) are not repeated: they were enforced on entry.
+// RevalidateUserToken 在延迟的初始化步骤（如注册 SSE 订阅）之后重新校验请求令牌，
+// 判定与 AuthenticateUserTokenStrict 相同：签名、数据库中的有效令牌、轮转 nonce，
+// 避免入口鉴权与订阅之间发生的吊销留下仍可用的流。客户端/UA/IP/scope/库白名单
+// 属于请求的静态属性，入口已校验，不重复。
+func RevalidateUserToken(c *gin.Context, secretKey string, tokenService service.TokenService) *code.Code {
+	token := ExtractUserAuthToken(c)
+	if token == "" {
+		return code.ErrorNotUserAuthToken
+	}
+
+	user, err := app.ParseTokenWithKey(token, secretKey)
+	if err != nil {
+		if appErr, ok := err.(*code.Code); ok {
+			return appErr
+		}
+		return code.ErrorInvalidUserAuthToken
+	}
+
+	dbToken, err := tokenService.GetActiveToken(c.Request.Context(), user.UID, user.TokenID)
+	if err != nil || dbToken == nil {
+		if appErr, ok := err.(*code.Code); ok {
+			return appErr
+		}
+		return code.ErrorInvalidUserAuthToken
+	}
+
+	if dbToken.TokenString != "" && user.Nonce != dbToken.TokenString {
+		return code.ErrorInvalidUserAuthToken.WithDetails("Token has been rotated")
+	}
+	return nil
+}
+
 func isHeaderlessLoginTokenResourceRead(c *gin.Context) bool {
 	return c.Request.URL.Path == "/api/file" &&
 		(c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead)
@@ -252,6 +326,19 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 			return "vault_r|note_r|file_r", nil
 		}
 		return "vault_w", nil
+
+	// ---------------- Recycle bin clear (body-dependent) ----------------
+	// Both a single-path clear and a whole-recycle-bin clear reach the same
+	// route, so the route-level check accepts either capability; the handler
+	// then requires note_purge/file_purge for the whole-bin form (empty path
+	// and path hash) and note_w/file_w otherwise, matching the MCP tools.
+	// 单条清理与整库清空共用同一路由，路由层接受任一能力；handler 绑定参数后
+	// 对整库清空（路径与路径哈希均为空）要求 note_purge/file_purge，其余仍为
+	// note_w/file_w，与 MCP 工具一致。
+	case path == "/api/note/recycle-clear":
+		return "note_w|note_purge", nil
+	case path == "/api/file/recycle-clear":
+		return "file_w|file_purge", nil
 
 	// ---------------- Note ----------------
 	case strings.HasPrefix(path, "/api/note"), strings.HasPrefix(path, "/api/folder"):
@@ -320,6 +407,15 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 	// 令牌可用，仅笔记/附件权限的受限令牌被拒。两个接口均不适用库限制：
 	// 升级 handler 不触碰库内数据，check 属用户级。
 	case path == "/api/admin/check":
+		return "", nil
+	case path == "/api/admin/ws_clients":
+		// Read-only online client list: the handler requires the effective
+		// admin, so no function point is needed. Kept out of the config_r
+		// classification below so an admin's own sync token (note/file scopes)
+		// still works, matching the pre-3.8.0 client behavior.
+		// 只读在线客户端列表：handler 要求生效管理员，无需功能点。不归入下方
+		// 的 config_r 分类，管理员自己的同步令牌（笔记/附件权限）仍可用，
+		// 与 3.8.0 之前的客户端行为一致。
 		return "", nil
 	case path == "/api/admin/upgrade":
 		return "config_w", nil

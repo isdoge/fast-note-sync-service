@@ -968,6 +968,22 @@ func (h *NoteHandler) RecycleClear(c *gin.Context) {
 		return
 	}
 
+	// Clearing the whole recycle bin (empty path and path hash) permanently
+	// destroys every deleted note and requires the dedicated note_purge
+	// capability. A single-path clear keeps note_w. The route-level check
+	// accepts either capability because the body is not available there.
+	// 整库清空回收站（路径与路径哈希均为空）会永久销毁全部已删除笔记，需要
+	// 专属 note_purge 能力；指定路径的清理仍为 note_w。路由层因拿不到请求体
+	// 而接受任一能力。
+	requiredFunction := "note_w"
+	if params.Path == "" && params.PathHash == "" {
+		requiredFunction = "note_purge"
+	}
+	if !middleware.RestFunctionAllowed(c, requiredFunction) {
+		response.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Permission denied: " + requiredFunction))
+		return
+	}
+
 	ctx := c.Request.Context()
 	noteSvc := h.App.GetNoteService(h.getClientInfo(c))
 	if err := noteSvc.RecycleClear(ctx, uid, params); err != nil {
