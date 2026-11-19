@@ -190,7 +190,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 	updateMode, fileSvc, err := fileService.UploadCheck(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorFileUploadCheckFailed, err, "websocket_router.file.FileUploadCheck.UploadCheck")
+		h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, params.Path, msg.Type, "websocket_router.file.FileUploadCheck.UploadCheck")
 		return
 	}
 
@@ -200,7 +200,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 
 		session, err := h.handleFileUploadSessionCreate(c, params.Vault, params.Path, params.PathHash, params.ContentHash, params.Size, params.Ctime, params.Mtime, params.Context)
 		if err != nil {
-			h.respondError(c, code.ErrorFileUploadCheckFailed, err, "websocket_router.file.FileUploadCheck.handleFileUploadSessionCreate")
+			h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, params.Path, msg.Type, "websocket_router.file.FileUploadCheck.handleFileUploadSessionCreate")
 			return
 		}
 
@@ -226,8 +226,27 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 		).WithContext(params.Context), FileSyncMtime)
 		return
 	default:
-		// 无需更新
-		c.ToResponse(code.SuccessNoUpdate.WithVault(params.Vault).WithContext(params.Context))
+		// 无需更新也需回 FileUploadAck：默认配置 is-return-sussess=false 下 SuccessNoUpdate 什么都不回，
+		// 官方插件发检查前占用的并发名额（等 FileUpload/FileSyncMtime/FileUploadAck 才释放）会被成批占住，
+		// 被分页上传抢先传完的附件其监听检查全部无回包，整轮同步不收尾（笔记入口 NoteModify 无更新时回 NoteModifyAck 是同样的处理）。
+		// LastTime 故意留 0：本次检查未改动服务端内容，不应推进客户端同步游标；
+		// 2.4.0 插件收到非零 lastTime 会无条件取较大值推进游标（服务端#101 漏拉成因），留 0 对已知客户端最安全。
+		// No-update also needs a FileUploadAck: with the default is-return-sussess=false config,
+		// SuccessNoUpdate sends nothing, so the concurrency slot the official plugin reserved before
+		// the check (released only by FileUpload/FileSyncMtime/FileUploadAck) gets held in bulk when
+		// paged uploads finish first and the watcher checks get no reply at all, stalling the round.
+		// LastTime is deliberately 0: this check changed nothing server-side, so it must not advance
+		// the client's sync cursor; 2.4.0 plugins unconditionally take max(lastTime) on non-zero values
+		// (the server#101 missed-pull cause), so 0 is safest for all known clients.
+		if fileSvc != nil {
+			c.ToResponse(code.Success.WithData(dto.FileUploadAckMessage{
+				Path:     params.Path,
+				PathHash: params.PathHash,
+			}).WithVault(params.Vault).WithContext(params.Context), string(FileUploadAck))
+		} else {
+			// 无需更新
+			c.ToResponse(code.SuccessNoUpdate.WithVault(params.Vault).WithContext(params.Context))
+		}
 	}
 }
 
@@ -447,6 +466,19 @@ func (h *FileWSHandler) FileUploadChunkBinary(c *pkgapp.WebsocketClient, data []
 		session.isCompleted = true
 		session.mu.Unlock()
 		c.Server.RemoveSession(c.User.ID, session.ID)
+		// 回收会话资源：正常落库路径的临时文件已被 DAO rename 搬走（此处 Stat
+		// 不存在、跳过），而"内容与 mtime 完全一致直接返回"和"只更新 mtime"两条
+		// 幂等短路路径不搬文件——超时定时器又已在上文取消，没人会再清理，必须在
+		// 这里删掉，否则临时文件在 temp 目录永久残留。Cleanup 幂等（SavePath 置
+		// 空后为空操作），文件不存在时静默跳过、删除失败只记 Warn 不影响 ack。
+		// Reclaim session resources: on the normal persistence path the temp file
+		// was already renamed away by the DAO (Stat misses and we skip), while the
+		// two short-circuit paths — "content and mtime fully identical, return
+		// directly" and "mtime-only update" — never move it, and the timeout timer
+		// was already cancelled above, so nothing else would clean it up. Cleanup is
+		// idempotent (no-op once SavePath is cleared), skips missing files silently
+		// and only logs a Warn on removal failure, never affecting the ack.
+		session.Cleanup()
 
 		// Broadcast file update message (only when fileSvc is available)
 		// 广播文件更新消息（仅在 fileSvc 可用时）
@@ -498,7 +530,7 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	fileSvc, err := fileService.Delete(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorFileDeleteFailed, err, "websocket_router.file.FileDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorFileDeleteFailed, err, params.Path, msg.Type, "websocket_router.file.FileDelete.Delete")
 		return
 	}
 
@@ -572,7 +604,7 @@ func (h *FileWSHandler) FileRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			}).WithVault(params.Vault).WithContext(params.Context), string(FileRenameAck))
 			return
 		}
-		h.respondError(c, code.ErrorFileRenameFailed, err, "websocket_router.file.FileRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorFileRenameFailed, err, params.Path, msg.Type, "websocket_router.file.FileRename.Rename")
 		return
 	}
 
@@ -625,14 +657,14 @@ func (h *FileWSHandler) FileChunkDownload(c *pkgapp.WebsocketClient, msg *pkgapp
 	fileSvc, err := fileService.Get(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorFileGetFailed, err, "websocket_router.file.FileChunkDownload.Get")
+		h.respondErrorWithPath(c, code.ErrorFileGetFailed, err, params.Path, msg.Type, "websocket_router.file.FileChunkDownload.Get")
 		return
 	}
 
 	// Check if file exists on disk
 	// 检查文件是否存在于磁盘
 	if _, err := os.Stat(fileSvc.SavePath); os.IsNotExist(err) {
-		h.respondError(c, code.ErrorFileGetFailed, fmt.Errorf("file not found on disk: %s (path: %s, pathHash: %s)", fileSvc.SavePath, fileSvc.Path, fileSvc.PathHash), "websocket_router.file.FileChunkDownload.Stat")
+		h.respondErrorWithPath(c, code.ErrorFileGetFailed, fmt.Errorf("file not found on disk: %s (path: %s, pathHash: %s)", fileSvc.SavePath, fileSvc.Path, fileSvc.PathHash), params.Path, msg.Type, "websocket_router.file.FileChunkDownload.Stat")
 		return
 	}
 
@@ -1075,8 +1107,49 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 	// Handle files that exist on client but not synced on server (request client upload)
 	// 处理客户端存在但服务端未同步的文件（请求客户端上传）
 	if remaining := cFiles.remaining(); len(remaining) > 0 {
+		// 增量同步（lastTime > 0）时，窗口外条目先按路径批量查服务端当前行：
+		// 最新一行是存活行且内容哈希、修改时间都与客户端上报一致时静默跳过，
+		// 不建上传会话、不打无权限警告。其余情形（服务端没有、墓碑、哈希或修改时间
+		// 不同）保持原有"要求上传"的判定不变。
+		// In incremental sync (lastTime > 0), batch-fetch the server's current rows for
+		// out-of-window entries first: when the latest row is alive and both content hash
+		// and mtime match the client report, skip silently — no upload session and no
+		// permission-denied warning. All other cases keep the existing verdict.
+		var serverFiles map[string]*dto.FileDTO
+		if params.LastTime > 0 {
+			paths := make([]string, 0, len(remaining))
+			for _, file := range remaining {
+				if file.Path != "" {
+					paths = append(paths, file.Path)
+				}
+			}
+			metaMap, metaErr := fileService.GetPathsMetaBatch(ctx, c.User.UID, params.Vault, paths)
+			if metaErr != nil {
+				// 查询失败退回原有行为：当作服务端没有，照旧要求上传
+				// On query failure fall back to the old behavior: treat as missing and request upload
+				h.App.Logger().Warn("websocket_router.file.FileSync.GetPathsMetaBatch",
+					zap.String(logger.FieldTraceID, c.TraceID),
+					zap.Int64(logger.FieldUID, c.User.UID),
+					zap.Error(metaErr))
+			} else {
+				serverFiles = metaMap
+			}
+		}
+
 		hasWritePermission := pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "file_w")
 		for _, file := range remaining {
+			// 客户端带了路径时按路径核对（与窗口内 cFiles.take 的路径优先语义一致，
+			// 路径哈希碰撞的两条不同路径不会互相顶替）；老客户端没带路径时不做比对。
+			// When the client supplied a path, match by path (same path-first
+			// semantics as cFiles.take in-window; colliding paths never substitute for
+			// each other); legacy clients without a path are not compared.
+			if file.Path != "" {
+				if sFile, ok := serverFiles[file.Path]; ok && sFile != nil &&
+					sFile.Action != "delete" && sFile.ContentHash == file.ContentHash && sFile.Mtime == file.Mtime {
+					continue
+				}
+			}
+
 			// Create upload session and return FileUpload message
 			// 创建上传会话并返回 FileUpload 消息
 			if hasWritePermission {
@@ -1242,7 +1315,11 @@ func (h *FileWSHandler) handleFileUploadSessionCreate(c *pkgapp.WebsocketClient,
 					zap.String("sessionID", session.ID),
 					zap.String("path", path),
 				)
-				session.Context = context
+				// Preserve the sync context when a delayed context-free upload check reuses the session, so its completion ack still counts toward the sync round.
+				// 延迟到达的无 context 上传检查复用会话时保留同步 context，确保完成确认仍能计入该轮同步。
+				if context != "" {
+					session.Context = context
+				}
 				return session, nil
 			}
 		}

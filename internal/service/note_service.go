@@ -84,6 +84,12 @@ type NoteService interface {
 	// ExistsPathsBatch 按完整路径判断存在性。
 	ExistsPathsBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]bool, error)
 
+	// GetPathsMetaBatch 按完整路径批量获取笔记元数据（含所有状态，不读正文），
+	// 供增量同步窗口外条目比对使用。
+	// GetPathsMetaBatch batch-fetches note metadata by full path (all statuses,
+	// no content) for diffing out-of-window entries in incremental sync.
+	GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.NoteDTO, error)
+
 	// Sync syncs notes (alias for ListByLastTime, used for WebSocket sync)
 	// Sync 同步笔记（ListByLastTime 的别名，用于 WebSocket 同步）
 	Sync(ctx context.Context, uid int64, params *dto.NoteSyncRequest) ([]*dto.NoteDTO, error)
@@ -1603,6 +1609,29 @@ func (s *noteService) ExistsPathsBatch(ctx context.Context, uid int64, vault str
 	for _, path := range paths {
 		n, ok := metaMap[path]
 		result[path] = ok && n.Action != domain.NoteActionDelete
+	}
+	return result, nil
+}
+
+// GetPathsMetaBatch 按完整路径批量获取笔记元数据（含所有状态，不读正文）。
+func (s *noteService) GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.NoteDTO, error) {
+	result := make(map[string]*dto.NoteDTO, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
+	if err != nil {
+		return nil, err
+	}
+
+	metaMap, err := s.noteRepo.ListByPathsMeta(ctx, paths, vaultID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	for path, n := range metaMap {
+		result[path] = s.domainToDTO(n)
 	}
 	return result, nil
 }

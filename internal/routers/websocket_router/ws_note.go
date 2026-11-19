@@ -105,7 +105,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	updateMode, checkedNote, nodeCheck, err := noteSvc.UpdateCheckWithNote(ctx, c.User.UID, checkParams)
 
 	if err != nil {
-		h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.UpdateCheck")
+		h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.UpdateCheck")
 		return
 	}
 
@@ -254,7 +254,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 					if !params.BaseHashMissing {
 						noteHistory, err := h.App.NoteHistoryService.GetByNoteIDAndHash(ctx, c.User.UID, nodeCheck.ID, baseHash)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.GetByNoteIDAndHash")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.GetByNoteIDAndHash")
 							return
 						}
 
@@ -342,7 +342,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 						// 使用带冲突检测的文本检测
 						mergeResult, err = diff.MergeTexts(baseContent, clientContent, serverContent, pc1First)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.MergeTexts")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.MergeTexts")
 							return
 						}
 
@@ -366,7 +366,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 						// 强制合并 保留PC1 PC2全部文本
 						mergeResult.Content, err = diff.MergeTextsIgnoreConflictIgnoreDelete(baseContent, clientContent, serverContent, pc1First)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.MergeTextsIgnoreConflictIgnoreDelete")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.MergeTextsIgnoreConflictIgnoreDelete")
 							return
 						}
 
@@ -388,7 +388,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 								zap.Int64(logger.FieldUID, c.User.UID),
 								zap.String(logger.FieldPath, params.Path),
 								zap.Error(err))
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.CreateConflictFile")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.CreateConflictFile")
 							return
 						}
 
@@ -441,7 +441,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				}
 				return
 			}
-			h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.ModifyOrCreate")
+			h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.note.NoteModify.ModifyOrCreate")
 			return
 		}
 
@@ -634,7 +634,7 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	note, err := noteSvc.Delete(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorNoteDeleteFailed, err, "websocket_router.note.handleNoteDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorNoteDeleteFailed, err, params.Path, msg.Type, "websocket_router.note.handleNoteDelete.Delete")
 		return
 	}
 
@@ -699,7 +699,7 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	uid := c.User.UID
 	oldNote, newNote, err := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Rename(c.Context(), uid, params)
 	if err != nil {
-		h.respondError(c, code.ErrorRenameNoteTargetExist, err, "websocket_router.note.NoteRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorRenameNoteTargetExist, err, params.Path, msg.Type, "websocket_router.note.NoteRename.Rename")
 		return
 	}
 
@@ -1178,7 +1178,48 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 	// 使用查询前记录的 syncStartTime 作为 lastTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
 	lastTime = syncStartTime
 	if remaining := cNotes.remaining(); len(remaining) > 0 {
+		// 增量同步（lastTime > 0）时，窗口外条目先按路径批量查服务端当前行：
+		// 最新一行是存活行且内容哈希、修改时间都与客户端上报一致时静默跳过，
+		// 不再要求客户端无谓重传。其余情形（服务端没有、墓碑、哈希或修改时间不同）
+		// 保持原有"要求上传"的判定不变。
+		// In incremental sync (lastTime > 0), batch-fetch the server's current rows for
+		// out-of-window entries first: when the latest row is alive and both content hash
+		// and mtime match the client report, skip silently instead of requesting a
+		// needless re-upload. All other cases (missing, tombstone, hash or mtime
+		// mismatch) keep the existing "request upload" verdict unchanged.
+		var serverNotes map[string]*dto.NoteDTO
+		if params.LastTime > 0 {
+			paths := make([]string, 0, len(remaining))
+			for _, note := range remaining {
+				if note.Path != "" {
+					paths = append(paths, note.Path)
+				}
+			}
+			metaMap, metaErr := noteSvc.GetPathsMetaBatch(ctx, c.User.UID, params.Vault, paths)
+			if metaErr != nil {
+				// 查询失败退回原有行为：当作服务端没有，照旧要求上传
+				// On query failure fall back to the old behavior: treat as missing and request upload
+				h.App.Logger().Warn("websocket_router.note.NoteSync.GetPathsMetaBatch",
+					zap.String(logger.FieldTraceID, c.TraceID),
+					zap.Int64(logger.FieldUID, c.User.UID),
+					zap.Error(metaErr))
+			} else {
+				serverNotes = metaMap
+			}
+		}
+
 		for _, note := range remaining {
+			// 客户端带了路径时按路径核对（与窗口内 cNotes.take 的路径优先语义一致，
+			// 路径哈希碰撞的两条不同路径不会互相顶替）；老客户端没带路径时不做比对。
+			// When the client supplied a path, match by path (same path-first
+			// semantics as cNotes.take in-window; colliding paths never substitute for
+			// each other); legacy clients without a path are not compared.
+			if note.Path != "" {
+				if sNote, ok := serverNotes[note.Path]; ok && sNote != nil &&
+					sNote.Action != "delete" && sNote.ContentHash == note.ContentHash && sNote.Mtime == note.Mtime {
+					continue
+				}
+			}
 
 			if c.OfflineSyncStrategy() == "ignoreTimeMerge" || c.OfflineSyncStrategy() == "newTimeMerge" || c.OfflineSyncStrategy() == "manualMerge" {
 				c.DiffMergePathsMu.Lock()

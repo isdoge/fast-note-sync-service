@@ -86,6 +86,14 @@ func (m *MockFileService) ListByLastTime(ctx context.Context, uid int64, params 
 	return nil, args.Error(1)
 }
 
+func (m *MockFileService) GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FileDTO, error) {
+	args := m.Called(ctx, uid, vault, paths)
+	if v := args.Get(0); v != nil {
+		return v.(map[string]*dto.FileDTO), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
 func (m *MockFileService) CountSizeSum(ctx context.Context, vaultID int64, uid int64) error {
 	args := m.Called(ctx, vaultID, uid)
 	return args.Error(0)

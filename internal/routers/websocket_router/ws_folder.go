@@ -453,7 +453,7 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	uid := c.User.UID
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).Delete(c.Context(), uid, params)
 	if err != nil {
-		h.respondError(c, code.ErrorFolderDeleteFailed, err, "websocket_router.folder.FolderDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorFolderDeleteFailed, err, params.Path, msg.Type, "websocket_router.folder.FolderDelete.Delete")
 		return
 	}
 
@@ -493,7 +493,7 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	folderSvc := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion())
 	oldFolder, newFolder, err := folderSvc.Rename(c.Context(), uid, params)
 	if err != nil {
-		h.respondError(c, code.ErrorFolderRenameFailed, err, "websocket_router.folder.FolderRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorFolderRenameFailed, err, params.Path, msg.Type, "websocket_router.folder.FolderRename.Rename")
 		return
 	}
 

@@ -121,6 +121,32 @@ func extractMsgMeta(data []byte) (msgCtx, vault, path string) {
 	return meta.Context, meta.Vault, meta.Path
 }
 
+// errPathData builds the error-response data payload carrying the client-reported
+// path as-is. The official plugin's generic error branch releases the concurrency
+// slot reserved for the action only when data.path is a string, so every error
+// return of a slot-reserving action must carry it.
+// errPathData 构造携带客户端上报原样路径的出错响应 data 载荷。官方插件的通用出错分支
+// 只有在 data.path 为字符串时才释放该动作占用的并发名额，因此占名额动作的出错返回都必须带上。
+func errPathData(path string) map[string]string {
+	return map[string]string{"path": path}
+}
+
+// respondErrorWithPath mirrors respondError's msg branch but attaches the client-reported
+// path in data, so the plugin can release the concurrency slot on error. The action name
+// (msg.Type) is kept so the frame stays an action-scoped reply like the old behavior;
+// error code, details and message semantics are unchanged, data only gains the path key.
+// respondErrorWithPath 与 respondError 的 msg 分支一致，只是在 data 里附带客户端上报路径，
+// 让插件出错时能释放并发名额。保留动作名（msg.Type），出错帧与旧行为一样是带动作名的应答；
+// 错误码、details 与文案语义不变，data 仅新增 path 键。
+func (h *WSHandler) respondErrorWithPath(c *pkgapp.WebsocketClient, codeErr *code.Code, err error, path, action, method string) {
+	h.logError(c, method, err)
+	if cErr, ok := err.(*code.Code); ok {
+		c.ToResponse(cErr.WithData(errPathData(path)), action)
+		return
+	}
+	c.ToResponse(codeErr.WithDetails(err.Error()).WithData(errPathData(path)), action)
+}
+
 // respondError unified error response method
 // Records error log and sends error response with Details to client
 // respondError 统一错误响应方法

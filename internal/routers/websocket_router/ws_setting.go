@@ -47,6 +47,16 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
+	// mtime 缺省（<=0）时用服务端当前毫秒时间兜底：写 0 会让后续窗口内比较
+	// s.Mtime >= cSetting.Mtime 恒为假，服务端新改的配置被误判成"客户端更新"。
+	// ctime 不兜底，保持客户端上报值。
+	// Fall back to the server's current millisecond time when mtime is missing
+	// (<=0): storing 0 makes the in-window comparison s.Mtime >= cSetting.Mtime
+	// always false, misjudging freshly server-updated settings as "client newer".
+	// ctime keeps the client-reported value.
+	if params.Mtime <= 0 {
+		params.Mtime = timex.Now().UnixMilli()
+	}
 
 	ctx := c.Context()
 
@@ -59,7 +69,7 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 	checkParams := convert.StructAssign(params, &dto.SettingUpdateCheckRequest{}).(*dto.SettingUpdateCheckRequest)
 	updateMode, settingCheck, err := settingSvc.UpdateCheck(ctx, c.User.UID, checkParams)
 	if err != nil {
-		h.respondError(c, code.ErrorSettingModifyOrCreateFailed, err, "websocket_router.setting.SettingModify.UpdateCheck")
+		h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingModify.UpdateCheck")
 		return
 	}
 
@@ -67,7 +77,7 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 	case "UpdateContent", "Create":
 		_, setting, err := settingSvc.ModifyOrCreate(ctx, c.User.UID, params, true)
 		if err != nil {
-			h.respondError(c, code.ErrorSettingModifyOrCreateFailed, err, "websocket_router.setting.SettingModify.ModifyOrCreate")
+			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
 			return
 		}
 
@@ -190,7 +200,7 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	setting, err := settingSvc.Delete(ctx, c.User.UID, params)
 	if err != nil {
-		h.respondError(c, code.ErrorSettingDeleteFailed, err, "websocket_router.setting.SettingDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorSettingDeleteFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingDelete.Delete")
 		return
 	}
 
@@ -597,8 +607,46 @@ func (h *SettingWSHandler) doSettingSync(c *pkgapp.WebsocketClient, params *dto.
 	// 使用查询前记录的 syncStartTime 作为 lastTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
 	lastTime = syncStartTime
 	hasWritePermission := pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "config_w")
+
+	// 增量同步（lastTime > 0）时，窗口外条目先按路径哈希批量查服务端当前行：
+	// 最新一行是存活行且内容哈希、修改时间都与客户端上报一致时静默跳过，
+	// 不发上传指令、不打无权限警告。其余情形（服务端没有、墓碑、哈希或修改时间不同）
+	// 保持原有判定不变。
+	// In incremental sync (lastTime > 0), batch-fetch the server's current rows for
+	// out-of-window entries first: when the latest row is alive and both content hash
+	// and mtime match the client report, skip silently — no upload directive and no
+	// permission-denied warning. All other cases keep the existing verdict.
+	var serverSettings map[string]*dto.SettingDTO
+	if params.LastTime > 0 && len(cSettingsKeys) > 0 {
+		remainingHashes := make([]string, 0, len(cSettingsKeys))
+		for pathHash := range cSettingsKeys {
+			remainingHashes = append(remainingHashes, pathHash)
+		}
+		metaMap, metaErr := settingSvc.GetByPathHashesMetaBatch(ctx, c.User.UID, params.Vault, remainingHashes)
+		if metaErr != nil {
+			// 查询失败退回原有行为：当作服务端没有，照旧要求上传
+			// On query failure fall back to the old behavior: treat as missing and request upload
+			h.App.Logger().Warn("websocket_router.setting.SettingSync.GetByPathHashesMetaBatch",
+				zap.String(logger.FieldTraceID, c.TraceID),
+				zap.Int64(logger.FieldUID, c.User.UID),
+				zap.Error(metaErr))
+		} else {
+			serverSettings = metaMap
+		}
+	}
+
 	for pathHash := range cSettingsKeys {
 		s := cSettings[pathHash]
+		// 配置清单本来就按路径哈希索引（与窗口内 delete(cSettingsKeys, s.PathHash) 的
+		// 匹配键一致）；客户端带了路径时再核对路径相等，避免哈希碰撞误判。
+		// The setting inventory is keyed by path hash (same key as the in-window
+		// delete(cSettingsKeys, s.PathHash)); when the client supplied a path, also
+		// require it to match so hash collisions cannot substitute.
+		if sSetting, ok := serverSettings[pathHash]; ok && sSetting != nil &&
+			sSetting.Action != "delete" && sSetting.ContentHash == s.ContentHash && sSetting.Mtime == s.Mtime &&
+			(s.Path == "" || sSetting.Path == s.Path) {
+			continue
+		}
 		// Add message to queue instead of sending immediately
 		// 将消息添加到队列而非立即发送
 		if hasWritePermission {
