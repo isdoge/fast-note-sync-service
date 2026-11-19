@@ -801,6 +801,10 @@ func (d *Dao) getModelDBKey(uid int64, modelKey string) string {
 	return ""
 }
 
+// autoMigrateKeyPrefix scopes first-use migration singleflight keys.
+// autoMigrateKeyPrefix 用于区分首次建表 singleflight 键。
+const autoMigrateKeyPrefix = "auto-migrate#"
+
 func (d *Dao) AutoMigrate(uid int64, modelKey string) error {
 	// 1. If modelKey is empty, it means "full migration", route migration separately by model
 	// 1. 如果 modelKey 为空，说明是“全量迁移”，按模型分别路由迁移
@@ -827,7 +831,19 @@ func (d *Dao) AutoMigrate(uid int64, modelKey string) error {
 	if b == nil {
 		return fmt.Errorf("database connection is nil for model %s (uid=%d, dbKey=%s)", modelKey, uid, dbKey)
 	}
-	return model.AutoMigrate(b, modelKey)
+	onceKey := autoMigrateKeyPrefix + dbKey + "#" + modelKey
+	_, err, _ := d.poolCreate.Do(onceKey, func() (interface{}, error) {
+		return nil, model.AutoMigrate(b, modelKey)
+	})
+	return err
+}
+
+func (d *Dao) autoMigrateRepositoryDB(b *gorm.DB, dbKey, modelKey string) error {
+	onceKey := autoMigrateKeyPrefix + dbKey + "#" + modelKey
+	_, err, _ := d.poolCreate.Do(onceKey, func() (interface{}, error) {
+		return nil, model.AutoMigrate(b, modelKey)
+	})
+	return err
 }
 
 // user gets the user query object (internal method)
