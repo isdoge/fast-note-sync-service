@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	stdjson "encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -1748,6 +1749,12 @@ func isNormalDisconnectError(err error) bool {
 		return true
 	}
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return true
+	}
+	// 识别正常关闭和客户端离开的关闭码，包括被包装的关闭错误
+	// Recognize normal closure and going-away codes, including wrapped close errors
+	var closeErr *gws.CloseError
+	if errors.As(err, &closeErr) && (closeErr.Code == 1000 || closeErr.Code == 1001) {
 		return true
 	}
 	errStr := err.Error()
