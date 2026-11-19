@@ -131,6 +131,33 @@ func errPathData(path string) map[string]string {
 	return map[string]string{"path": path}
 }
 
+// clientSlotPath returns the path the client used to reserve its concurrency slot.
+// normalizeBoundPaths rewrites backslashes in the decoded params before handlers
+// run, so an error response carrying params.Path would name a different key than
+// the one the plugin holds (e.g. "a\b.md" became "a/b.md"). Read the raw request
+// field instead; JSON and Protobuf uplink are both supported.
+// clientSlotPath 返回客户端占并发名额所用的原始路径。绑定阶段会把反斜杠归一化，
+// 直接用 params.Path 回包会让插件对不上自己的槽位键（如 "a\b.md" 变成 "a/b.md"），
+// 因此从原始请求载荷里取 path；JSON 与 Protobuf 上行都支持。
+func clientSlotPath(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, normalized string) string {
+	if msg == nil {
+		return normalized
+	}
+	if meta, ok := requestMeta(msg); ok {
+		if meta.Path != "" {
+			return meta.Path
+		}
+		return normalized
+	}
+	var pathInfo struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(msg.Data, &pathInfo); err == nil && pathInfo.Path != "" {
+		return pathInfo.Path
+	}
+	return normalized
+}
+
 // respondErrorWithPath mirrors respondError's msg branch but attaches the client-reported
 // path in data, so the plugin can release the concurrency slot on error. The action name
 // (msg.Type) is kept so the frame stays an action-scoped reply like the old behavior;

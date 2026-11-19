@@ -150,22 +150,23 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// Required parameter validation
 	// 必填参数校验
 	if params.PathHash == "" {
-		c.ToResponse(code.ErrorInvalidParams.WithDetails("pathHash is required"))
+		c.ToResponse(code.ErrorInvalidParams.WithDetails("pathHash is required").WithData(errPathData(slotPath)))
 		return
 	}
 	if params.ContentHash == "" {
-		c.ToResponse(code.ErrorInvalidParams.WithDetails("contentHash is required"))
+		c.ToResponse(code.ErrorInvalidParams.WithDetails("contentHash is required").WithData(errPathData(slotPath)))
 		return
 	}
 	if params.Mtime == 0 {
-		c.ToResponse(code.ErrorInvalidParams.WithDetails("mtime is required"))
+		c.ToResponse(code.ErrorInvalidParams.WithDetails("mtime is required").WithData(errPathData(slotPath)))
 		return
 	}
 	if params.Ctime == 0 {
-		c.ToResponse(code.ErrorInvalidParams.WithDetails("ctime is required"))
+		c.ToResponse(code.ErrorInvalidParams.WithDetails("ctime is required").WithData(errPathData(slotPath)))
 		return
 	}
 	// 部分第三方客户端传秒级时间戳，归一化为毫秒（#461）
@@ -174,7 +175,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 
 	// 只校验、不改写路径（#342 S-8）：同步协议要求按客户端上报的原样路径落库
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -191,7 +192,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 	updateMode, fileSvc, err := fileService.UploadCheck(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, params.Path, msg.Type, "websocket_router.file.FileUploadCheck.UploadCheck")
+		h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, slotPath, msg.Type, "websocket_router.file.FileUploadCheck.UploadCheck")
 		return
 	}
 
@@ -201,7 +202,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 
 		session, err := h.handleFileUploadSessionCreate(c, params.Vault, params.Path, params.PathHash, params.ContentHash, params.Size, params.Ctime, params.Mtime, params.Context)
 		if err != nil {
-			h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, params.Path, msg.Type, "websocket_router.file.FileUploadCheck.handleFileUploadSessionCreate")
+			h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, slotPath, msg.Type, "websocket_router.file.FileUploadCheck.handleFileUploadSessionCreate")
 			return
 		}
 
@@ -552,9 +553,10 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写路径（#342 S-8）：不去前导 "/"，仅按段拒绝越界与 NUL
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -571,7 +573,7 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	fileSvc, err := fileService.Delete(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondErrorWithPath(c, code.ErrorFileDeleteFailed, err, params.Path, msg.Type, "websocket_router.file.FileDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorFileDeleteFailed, err, slotPath, msg.Type, "websocket_router.file.FileDelete.Delete")
 		return
 	}
 
@@ -613,9 +615,10 @@ func (h *FileWSHandler) FileRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	uid := c.User.UID
 	uidStr := strconv.FormatInt(uid, 10)
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写新旧两个路径（#342 S-8）
 	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -645,7 +648,7 @@ func (h *FileWSHandler) FileRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			}).WithVault(params.Vault).WithContext(params.Context), string(FileRenameAck))
 			return
 		}
-		h.respondErrorWithPath(c, code.ErrorFileRenameFailed, err, params.Path, msg.Type, "websocket_router.file.FileRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorFileRenameFailed, err, slotPath, msg.Type, "websocket_router.file.FileRename.Rename")
 		return
 	}
 
@@ -685,6 +688,7 @@ func (h *FileWSHandler) FileChunkDownload(c *pkgapp.WebsocketClient, msg *pkgapp
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	ctx := c.Context()
 
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "FileChunkDownload", params.Path, params.Vault)
@@ -698,14 +702,14 @@ func (h *FileWSHandler) FileChunkDownload(c *pkgapp.WebsocketClient, msg *pkgapp
 	fileSvc, err := fileService.Get(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondErrorWithPath(c, code.ErrorFileGetFailed, err, params.Path, msg.Type, "websocket_router.file.FileChunkDownload.Get")
+		h.respondErrorWithPath(c, code.ErrorFileGetFailed, err, slotPath, msg.Type, "websocket_router.file.FileChunkDownload.Get")
 		return
 	}
 
 	// Check if file exists on disk
 	// 检查文件是否存在于磁盘
 	if _, err := os.Stat(fileSvc.SavePath); os.IsNotExist(err) {
-		h.respondErrorWithPath(c, code.ErrorFileGetFailed, fmt.Errorf("file not found on disk: %s (path: %s, pathHash: %s)", fileSvc.SavePath, fileSvc.Path, fileSvc.PathHash), params.Path, msg.Type, "websocket_router.file.FileChunkDownload.Stat")
+		h.respondErrorWithPath(c, code.ErrorFileGetFailed, fmt.Errorf("file not found on disk: %s (path: %s, pathHash: %s)", fileSvc.SavePath, fileSvc.Path, fileSvc.PathHash), slotPath, msg.Type, "websocket_router.file.FileChunkDownload.Stat")
 		return
 	}
 

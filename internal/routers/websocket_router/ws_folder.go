@@ -465,16 +465,17 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写路径（#342 S-8）：不去前导 "/"，仅按段拒绝越界与 NUL
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path").WithData(errPathData(slotPath)))
 		return
 	}
 
 	uid := c.User.UID
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).Delete(c.Context(), uid, params)
 	if err != nil {
-		h.respondErrorWithPath(c, code.ErrorFolderDeleteFailed, err, params.Path, msg.Type, "websocket_router.folder.FolderDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorFolderDeleteFailed, err, slotPath, msg.Type, "websocket_router.folder.FolderDelete.Delete")
 		return
 	}
 
@@ -504,9 +505,10 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写新旧两个路径（#342 S-8）
 	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -514,7 +516,7 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	folderSvc := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion())
 	oldFolder, newFolder, err := folderSvc.Rename(c.Context(), uid, params)
 	if err != nil {
-		h.respondErrorWithPath(c, code.ErrorFolderRenameFailed, err, params.Path, msg.Type, "websocket_router.folder.FolderRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorFolderRenameFailed, err, slotPath, msg.Type, "websocket_router.folder.FolderRename.Rename")
 		return
 	}
 
