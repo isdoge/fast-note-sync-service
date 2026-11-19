@@ -363,9 +363,18 @@ func (c *WebsocketClient) UseProtobuf() bool {
 }
 
 // acceptsBroadcast checks both the token's vault allowlist and the vaults declared on this connection.
-// Empty declaredVaults preserves the legacy behavior for connections that have not declared a vault yet.
+// Vault-specific broadcasts (a non-empty vault) are delivered only after the connection
+// has declared that vault through a successfully bound request. A connection that has
+// not declared any vault yet may still be scanning its local library (e.g. the CLI
+// hashes the whole directory before its first NoteSync), and delivering another
+// library's live changes in that window would write them into the local directory.
+// Its first sync round pulls the complete state anyway, so skipping is safe.
+// Vault-less broadcasts (user-level notifications) are still delivered to everyone.
 // acceptsBroadcast 同时检查令牌的笔记库白名单和本连接已声明的笔记库。
-// declaredVaults 为空时保留旧行为，供尚未声明笔记库的连接接收广播。
+// 带具体库名的广播只投给已通过成功绑定声明过该库的连接。还没声明任何库的连接可能仍在
+// 扫描本地目录（例如命令行客户端在首条 NoteSync 之前要对整个目录算哈希），此窗口内
+// 投递别的库的实时变更会被写进本地目录。它随后的首次同步会把内容拉齐，跳过是安全的。
+// 不带库名的广播（用户级通知）仍然投给所有连接。
 func (c *WebsocketClient) acceptsBroadcast(vault string) bool {
 	if c.Vaults != "" && !util.VerifyVaultAccess(c.Vaults, vault) {
 		return false
@@ -375,9 +384,8 @@ func (c *WebsocketClient) acceptsBroadcast(vault string) bool {
 	}
 	c.broadcastVaultsMu.RLock()
 	_, declared := c.declaredVaults[vault]
-	hasDeclarations := len(c.declaredVaults) > 0
 	c.broadcastVaultsMu.RUnlock()
-	return !hasDeclarations || declared
+	return declared
 }
 
 // recordBoundVault records a vault only after its request was bound and validated successfully.

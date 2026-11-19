@@ -129,8 +129,16 @@ func TestWebsocketBindAndValid_RecordsDeclaredVaultAfterSuccess(t *testing.T) {
 		}{}); !ok {
 			t.Fatal("无 Vault 字段的请求应绑定成功")
 		}
-		if !c.acceptsBroadcast("vault-a") {
-			t.Fatal("无 Vault 字段的请求不得限制后续广播")
+		if len(c.declaredVaults) != 0 {
+			t.Fatalf("无 Vault 字段的请求不得声明笔记库：%v", c.declaredVaults)
+		}
+		// 尚未声明任何库的连接不接收带库名的广播（随后的首次同步会把内容拉齐），
+		// 但用户级（不带库名）广播照常接收。
+		if c.acceptsBroadcast("vault-a") {
+			t.Fatal("未声明库的连接不应接收带库名的广播")
+		}
+		if !c.acceptsBroadcast("") {
+			t.Fatal("未声明库的连接仍应接收用户级广播")
 		}
 	})
 
@@ -140,8 +148,11 @@ func TestWebsocketBindAndValid_RecordsDeclaredVaultAfterSuccess(t *testing.T) {
 		if ok, _ := c.BindAndValidWithAction("NoteModify", []byte(`{"vault":"vault-a"}`), &req); ok {
 			t.Fatal("参数校验失败的请求不得绑定成功")
 		}
-		if !c.acceptsBroadcast("vault-b") {
-			t.Fatal("参数校验失败不得声明笔记库")
+		if len(c.declaredVaults) != 0 {
+			t.Fatalf("参数校验失败不得声明笔记库：%v", c.declaredVaults)
+		}
+		if c.acceptsBroadcast("vault-b") {
+			t.Fatal("未声明库的连接不应接收带库名的广播")
 		}
 	})
 }
