@@ -60,8 +60,20 @@ func newMySQLModel(value any) (any, string, error) {
 
 // mysqlMigrator makes ALTER use the same custom types as CREATE. Stock MySQL
 // AlterColumn uses only Go's generic types and would undo a varbinary path.
+//
+// These overrides are reached through GORM's dynamic dispatch, not through Go
+// embedding: AutoMigrate calls execTx.Migrator().MigrateColumn, and the base
+// MigrateColumn calls m.DB.Migrator().FullDataTypeOf / AlterColumn. Because the
+// session's Dialector is mysqlDialector, all three resolve to this wrapper.
+// TestMySQLMigratorOverridesDispatch pins that path down on a real server.
 // mysqlMigrator 让 ALTER 与 CREATE 使用相同的自定义类型。标准 MySQL
 // AlterColumn 只按 Go 通用类型生成 SQL，会把 varbinary 路径改回 longtext。
+//
+// 这些覆盖由 GORM 的动态派发调用，而不是 Go 嵌入：AutoMigrate 调用
+// execTx.Migrator().MigrateColumn，基类 MigrateColumn 又调用
+// m.DB.Migrator().FullDataTypeOf / AlterColumn；会话的 Dialector 是
+// mysqlDialector，因此三者都会落到本包装器。真实服务器上的调用路径由
+// TestMySQLMigratorOverridesDispatch 固定。
 type mysqlMigrator struct {
 	gorm.Migrator
 	db    *gorm.DB
