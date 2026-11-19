@@ -31,11 +31,11 @@
 | `-u, --user <user>` | SSH 用户 | `root` |
 | `-p, --port <port>` | SSH 端口 | `22` |
 | `-i, --key <path>` | SSH 私钥路径 | ssh 默认配置 |
-| `-v, --version <ver>` | 要安装的版本 | `latest` |
-| `--http-port <port>` | 服务端 HTTP 端口 | 沿用服务端配置 `:9000` |
+| `-v, --version <ver>` | 要安装的版本（binary 与 Docker 均生效） | `latest` |
+| `--http-port <port>` | 服务端 HTTP 端口（数字，1–65535） | 沿用服务端配置 `:9000` |
 | `--mode <binary\|docker>` | 部署方式 | `binary` |
 | `--tarball <path>` | 本地 tar.gz 安装包（仅 binary 模式） | 从 GitHub Release 下载 |
-| `--force` | 已安装与 Docker 模式冲突时强制继续 | 关 |
+| `--force` | 确认在 binary 与 Docker 间切换 | 关 |
 
 ## 认证与密码安全
 
@@ -48,7 +48,7 @@
 
 ### binary + systemd（默认）
 
-流程：SSH 连通性与权限检查（root 或可 sudo）→ 探测远端系统与架构 → 上传 `quest_install.sh`（及可选的本地安装包）→ 非交互执行 `install --yes` → 有 systemd 时注册服务并开机自启 → 健康检查。
+流程：SSH 连通性与权限检查（root 或可 sudo）→ 探测远端系统与架构 → 上传 `quest_install.sh`（及可选的本地安装包）→ 非交互执行 `install <version> --yes` → 安装器在有 systemd 时注册服务并开机自启 → 健康检查；指定具体版本时核对健康接口返回的运行版本，不一致即报错。
 
 - 远端没有 systemd（如部分容器环境）时，服务以后台进程方式启动并给出警告，重启机器后不会自启。
 - `--http-port` 会修改远端 `config/config.yaml` 的 `http-port` 并重启服务。
@@ -62,8 +62,11 @@ compose 要点：镜像 `ghcr.io/isdoge/fast-note-sync-service`；数据与配�
 ## 已安装时的行为
 
 - 远端已存在 `/opt/fast-note/fast-note-sync-service` 时，默认执行**升级**：替换二进制、保留 `config/` 与 `storage/` 数据（安装脚本对 config 只补缺不覆盖）。
-- 已有二进制安装又指定 `--mode docker` 时视为冲突，需 `--force` 确认后才继续。
-- 任何一步失败脚本都会报错退出，并说明已完成到哪一步。
+- 已有二进制安装又指定 `--mode docker`，或已有同名 Docker 容器又指定 binary 时，需 `--force` 确认后才继续。
+- 如果远端装有 Docker，脚本会先检查守护进程和同名容器；无法检查时中止，请先修复 Docker 权限或守护进程状态。
+- 切换到 Docker 前，会禁用并停止旧 systemd 服务、停止残留后台进程并确认退出；切换到 binary 前，会关闭旧容器的自动重启、停止容器并确认停止。停止或状态确认失败就中止，避免两种实例同时操作数据目录。
+- 切换保留旧程序、容器和数据。新部署失败后旧实例保持停止，不自动回滚；如需恢复，先确认新实例已停止，再在远端手动执行 `sudo systemctl enable --now fast-note.service`（后台部署用 `sudo fns start`），或 `sudo docker update --restart=unless-stopped fast-note-sync-service && sudo docker start fast-note-sync-service`。
+- 任何一步失败脚本都会报错退出；退出时只清理本次创建的远端临时目录。
 
 ## 部署后必做的安全配置
 
