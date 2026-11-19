@@ -148,7 +148,7 @@ In addition, **the MySQL / MariaDB backend is not recommended in the current ver
 
 - [x] Add support for WebSocket `Protobuf` transfer format to enhance synchronization efficiency.
 - [x] Isolate and optimize the existing authorization mechanism to improve overall security.
-- [ ] Add real-time note updates to the Web UI.
+- [x] Add real-time note updates to the Web UI.
 - [ ] Add peer-to-peer message transfer between clients (non-notes & attachments, similar to LocalSend; client-side storage is not supported, but server-side is).
 - [x] Improve various help documentations.
 - [ ] Provide support for more intranet penetration (relay gateway) options.
