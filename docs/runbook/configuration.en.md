@@ -1,10 +1,10 @@
 # Configuration reference
 
-This reference follows the 3.7.0 implementation in `internal/config/*.go`, `internal/app/config.go`, and `config/config.yaml`. Defaults below are the values actually applied by code, not inferred from comments. Relative paths start at the service working directory. Durations support `s`, `m`, `h`, and this project's `d` extension.
+This reference follows the 3.8.0 implementation in `internal/config/*.go`, `internal/app/config.go`, and `config/config.yaml`. Defaults below are the values actually applied by code, not inferred from comments. Relative paths start at the service working directory. Durations support `s`, `m`, `h`, and this project's `d` extension.
 
 ## Security checks before deployment
 
-- Generate a key with `openssl rand -base64 32` and set `security.auth-token-key`; do not keep the default. Changing it invalidates existing tokens. Existing user and share tokens also become invalid when the machine identity changes, even if this key stays unchanged.
+- Generate a key with `openssl rand -base64 32` and set `security.auth-token-key`; do not keep the default. Changing it invalidates existing tokens. Without a stable signing key, existing user and share tokens still become invalid when the machine identity changes; after setting `security.token-signing-key` (or keeping the auto-generated `storage/token-signing.key`), tokens issued from then on no longer depend on the machine identity.
 - Set `security.share-token-key` to a separate random value as well.
 - Set `user.register-is-enable: false` unless public registration is required.
 - Prefer setting `user.admin-uid` to the intended administrator UID during deployment. `0` means no explicit admin is configured: the user with the smallest existing UID is then treated as the administrator (nobody, if there are no users), which keeps single-user deployments working without configuration. Multi-user or open-registration instances must set it explicitly, otherwise every login except the earliest-registered user loses admin access. With `admin-uid: 0`, registration also stops accepting new users once any user exists, even when registration is enabled.
@@ -76,6 +76,7 @@ This reference follows the 3.7.0 implementation in `internal/config/*.go`, `inte
 | Key | Type | Default | Purpose and when to change |
 | --- | --- | --- | --- |
 | `auth-token-key` | string | `fast-note-sync-Auth-Token` | Part of the user-token signing key; replace before deployment. |
+| `token-signing-key` | string | Empty | Stable signing seed for all user and share tokens. When set, tokens no longer derive from the machine identity and survive container rebuilds, OS reinstallation and machine migration. When empty, first startup generates `storage/token-signing.key` (mode 600); tokens issued after that also survive migration as long as the file is kept. Tokens issued under the machine-ID scheme before this was enabled still become invalid on a machine with a different ID. |
 | `token-expiry` | duration | `365d` | Default lifetime in the low-level JWT issuer. Manual tokens use requested `expiredDays`; WebGUI tokens use the dedicated setting below for their database expiry. Must be positive and representable. |
 | `share-token-key` | string | `fns` | Part of the share-token signing key; replace before deployment. |
 | `share-token-expiry` | duration | `30d` | Share token lifetime. |

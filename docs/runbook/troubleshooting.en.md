@@ -24,8 +24,9 @@ Keep service logs, client error codes, and timestamps before changing settings. 
 
 ### All tokens become invalid after moving hosts or recreating a container
 
-- **Cause**: The user JWT HMAC key is `security.auth-token-key + "_" + machine identity`; share tokens also include that identity. The identity prefers the system machine ID, then motherboard serial, and only then `config/.server_uuid`. Preserving just the UUID file cannot cover a change in either higher-priority source.
-- **Current workaround**: Preserve the original machine-identity source and secrets. If that is impossible, log in to WebGUI again, issue and configure new plugin/API tokens, and recreate invalid shares. This release has no separate static signing-key setting, so `.server_uuid` is not a general migration solution. A fix is planned for a later release; 3.7.0 does not contain it.
+- **Cause**: Without a stable signing key, the user JWT HMAC key is `security.auth-token-key + "_" + machine identity`; share tokens also include that identity. The identity prefers the system machine ID, then motherboard serial, and only then `config/.server_uuid`. Preserving just the UUID file cannot cover a change in either higher-priority source.
+- **Action**: Upgrade to 3.8.0. Set `security.token-signing-key`, or leave it empty so first startup generates `storage/token-signing.key`, and keep that setting or key file across migration or reinstallation. Tokens issued after that no longer become invalid when the machine identity changes.
+- **Limits**: Tokens issued under the machine-ID scheme before the stable key was enabled still become invalid on a machine with a different ID; log in again and reissue them. In-place upgrades on the same machine are unaffected. `.server_uuid` is still not a general migration solution. If upgrading is impossible, preserve the original machine-identity source and secrets; otherwise log in to WebGUI again, issue and configure new plugin/API tokens, and recreate invalid shares.
 
 ### Protobuf decode failed and sync cannot recover
 

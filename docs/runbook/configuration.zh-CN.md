@@ -1,10 +1,10 @@
 # 配置项参考
 
-本文以 3.7.0 的 `internal/config/*.go`、`internal/app/config.go` 和 `config/config.yaml` 为准。表中默认值是代码实际填充的值，不是注释推断值。路径相对于服务工作目录。时长支持 `s`、`m`、`h`，以及本项目扩展的 `d`。
+本文以 3.8.0 的 `internal/config/*.go`、`internal/app/config.go` 和 `config/config.yaml` 为准。表中默认值是代码实际填充的值，不是注释推断值。路径相对于服务工作目录。时长支持 `s`、`m`、`h`，以及本项目扩展的 `d`。
 
 ## 部署时先检查安全项
 
-- 用 `openssl rand -base64 32` 生成并设置 `security.auth-token-key`，不要保留默认值。修改它会使既有令牌失效；即使不修改，机器标识变化也会使既有用户令牌和分享令牌失效。
+- 用 `openssl rand -base64 32` 生成并设置 `security.auth-token-key`，不要保留默认值。修改它会使既有令牌失效。未启用稳定签名密钥时，机器标识变化仍会使既有用户令牌和分享令牌失效；设置 `security.token-signing-key`（或保留自动生成的 `storage/token-signing.key`）后，此后新签发的令牌不再受机器标识变化影响。
 - 同时把 `security.share-token-key` 改成独立随机值。
 - 无需开放注册时设置 `user.register-is-enable: false`。
 - 部署时建议把 `user.admin-uid` 设为指定管理员的 UID。`0` 表示未显式配置，此时按“现存用户中 UID 最小者”认定管理员（无任何用户时无人是管理员），单用户部署无需配置即可用；多用户、开放注册的实例必须显式设置，否则除最早注册用户外的其它登录用户都没有管理权限。此外 `admin-uid: 0` 时，即使开启注册，已有用户后也不再允许新注册。
@@ -76,6 +76,7 @@
 | 键 | 类型 | 默认值 | 作用与修改场景 |
 | --- | --- | --- | --- |
 | `auth-token-key` | string | `fast-note-sync-Auth-Token` | 用户令牌签名密钥组成部分；部署时必须更换。 |
+| `token-signing-key` | string | 空 | 所有用户与分享令牌的稳定签名种子。设置后不再依赖机器标识，重建容器、重装系统或迁移机器后令牌仍然有效；留空时首次启动在 `storage/token-signing.key` 生成随机密钥（权限 600），此后签发且迁移时保留该文件的令牌同样继续有效。启用前按机器标识签发的旧令牌换机器后仍会失效。 |
 | `token-expiry` | duration | `365d` | 底层 JWT 签发器的默认有效期；手工令牌按请求的 `expiredDays`、WebGUI 令牌按下述专用配置设置数据库过期时间。配置校验要求正值且不能溢出。 |
 | `share-token-key` | string | `fns` | 分享令牌签名密钥组成部分；部署时必须更换。 |
 | `share-token-expiry` | duration | `30d` | 分享令牌有效期。 |
