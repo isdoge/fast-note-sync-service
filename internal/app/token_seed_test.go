@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/config"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
@@ -182,5 +184,110 @@ func TestResolveTokenSigningSeed_CorruptKeyFileFallsBackWithLog(t *testing.T) {
 	}
 	if strings.TrimSpace(string(data)) != "x" {
 		t.Fatalf("corrupt key file must not be silently overwritten")
+	}
+}
+
+// 多个进程在同一个全新 storage 目录上并发首次启动时，必须最终拿到同一个完整密钥。
+func TestLoadOrCreateTokenSigningKeyFile_ConcurrentStartupAgree(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "storage", TokenSigningKeyFileName)
+
+	const workers = 32
+	start := make(chan struct{})
+	keys := make(chan string, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			key, err := loadOrCreateTokenSigningKeyFile(path)
+			keys <- key
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(keys)
+	close(errs)
+
+	var first string
+	for key := range keys {
+		if key == "" {
+			continue
+		}
+		if first == "" {
+			first = key
+			continue
+		}
+		if key != first {
+			t.Fatalf("concurrent starters observed different keys: %q vs %q", first, key)
+		}
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent startup must not fail: %v", err)
+		}
+	}
+	if first == "" {
+		t.Fatal("no key returned")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != first {
+		t.Fatalf("persisted key must match the returned key")
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0600 {
+		t.Fatalf("key file mode should be 600, got %v", fi.Mode().Perm())
+	}
+}
+
+// 竞争失败的一方读到刚创建但尚未写入的空文件时，应等待胜出者写完并返回其内容，
+// 而不是报错或生成另一把密钥。
+func TestLoadOrCreateTokenSigningKeyFile_WaitsForConcurrentWriter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "storage", TokenSigningKeyFileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		key string
+		err error
+	}
+	read := make(chan result, 1)
+	go func() {
+		key, err := loadOrCreateTokenSigningKeyFile(path)
+		read <- result{key: key, err: err}
+	}()
+
+	// Give the reader time to observe the empty file and enter its retry loop;
+	// the retry window is much larger, so the outcome does not depend on this delay.
+	time.Sleep(100 * time.Millisecond)
+	winner := "winner-key-0123456789abcdef-0123456789"
+	if _, err := f.WriteString(winner + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := <-read
+	if got.err != nil {
+		t.Fatalf("reader must wait for the winner, got error: %v", got.err)
+	}
+	if got.key != winner {
+		t.Fatalf("reader must return the winner key %q, got %q", winner, got.key)
 	}
 }
