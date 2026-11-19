@@ -51,7 +51,7 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		userHandler := api_router.NewUserHandler(appContainer)
 		vaultHandler := api_router.NewVaultHandler(appContainer)
 		noteHandler := api_router.NewNoteHandler(appContainer, wss)
-		folderHandler := api_router.NewFolderHandler(appContainer)
+		folderHandler := api_router.NewFolderHandler(appContainer, wss)
 		fileHandler := api_router.NewFileHandler(appContainer, wss)
 		noteHistoryHandler := api_router.NewNoteHistoryHandler(appContainer, wss)
 		versionHandler := api_router.NewVersionHandler(appContainer)

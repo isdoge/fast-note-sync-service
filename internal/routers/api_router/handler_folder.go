@@ -15,8 +15,8 @@ type FolderHandler struct {
 	*Handler
 }
 
-func NewFolderHandler(appContainer *app.App) *FolderHandler {
-	return &FolderHandler{Handler: NewHandler(appContainer)}
+func NewFolderHandler(appContainer *app.App, wss *pkgapp.WebsocketServer) *FolderHandler {
+	return &FolderHandler{Handler: NewHandlerWithWSS(appContainer, wss)}
 }
 
 // Get retrieves a folder
@@ -114,6 +114,17 @@ func (h *FolderHandler) Create(c *gin.Context) {
 	}
 
 	response.ToResponse(code.Success.WithData(res))
+	// Mirror the WebSocket folder write path so other devices and open WebGUI
+	// sessions see the new folder without waiting for a manual refresh.
+	// 与 WebSocket 的目录写入路径保持一致：让其它设备和打开着的 WebGUI 立即
+	// 收到新目录，不必手动刷新。
+	h.WSS.BroadcastToUser(uid, code.Success.WithData(dto.FolderSyncModifyMessage{
+		Path:             res.Path,
+		PathHash:         res.PathHash,
+		Ctime:            res.Ctime,
+		Mtime:            res.Mtime,
+		UpdatedTimestamp: res.UpdatedTimestamp,
+	}).WithVault(params.Vault), "FolderSyncModify")
 }
 
 // Delete deletes a folder
@@ -148,13 +159,22 @@ func (h *FolderHandler) Delete(c *gin.Context) {
 	params.Path = cleaned
 
 	uid := pkgapp.GetUID(c)
-	_, err := h.App.GetFolderService(h.getClientInfo(c)).Delete(c.Request.Context(), uid, params)
+	res, err := h.App.GetFolderService(h.getClientInfo(c)).Delete(c.Request.Context(), uid, params)
 	if err != nil {
 		apperrors.ErrorResponse(c, err)
 		return
 	}
 
 	response.ToResponse(code.Success)
+	// Same broadcast shape as the WebSocket delete path (see FolderDelete).
+	// 广播结构与 WebSocket 删除路径一致（见 FolderDelete）。
+	h.WSS.BroadcastToUser(uid, code.Success.WithData(dto.FolderSyncDeleteMessage{
+		Path:             res.Path,
+		PathHash:         res.PathHash,
+		Ctime:            res.Ctime,
+		Mtime:            res.Mtime,
+		UpdatedTimestamp: res.UpdatedTimestamp,
+	}).WithVault(params.Vault), "FolderSyncDelete")
 }
 
 // ListNotes retrieves notes in a folder
