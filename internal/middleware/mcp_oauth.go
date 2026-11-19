@@ -14,6 +14,7 @@ import (
 	internaloauth "github.com/haierkeys/fast-note-sync-service/internal/oauth"
 	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 )
 
 type MCPOAuthVerifier interface {
@@ -71,7 +72,7 @@ func MCPOAuthWithConfigStrict(oauthCfg config.OAuthConfig, secretKey string, tok
 		DefaultClientName:    oauthCfg.DefaultClientName,
 		DefaultClientVersion: oauthCfg.DefaultClientVersion,
 		StrictEmptyProtocol:  strictEmptyProtocol,
-		OAuthVaults:          strings.Join(oauthCfg.Vaults, ","),
+		OAuthVaults:          util.JoinVaultAllowlist(oauthCfg.Vaults),
 	})
 }
 
