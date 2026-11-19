@@ -226,8 +226,27 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 		).WithContext(params.Context), FileSyncMtime)
 		return
 	default:
-		// 无需更新
-		c.ToResponse(code.SuccessNoUpdate.WithVault(params.Vault).WithContext(params.Context))
+		// 无需更新也需回 FileUploadAck：默认配置 is-return-sussess=false 下 SuccessNoUpdate 什么都不回，
+		// 官方插件发检查前占用的并发名额（等 FileUpload/FileSyncMtime/FileUploadAck 才释放）会被成批占住，
+		// 被分页上传抢先传完的附件其监听检查全部无回包，整轮同步不收尾（同 ws_note.go NoteModifyCheck 的处理）。
+		// LastTime 故意留 0：本次检查未改动服务端内容，不应推进客户端同步游标；
+		// 2.4.0 插件收到非零 lastTime 会无条件取较大值推进游标（服务端#101 漏拉成因），留 0 对已知客户端最安全。
+		// No-update also needs a FileUploadAck: with the default is-return-sussess=false config,
+		// SuccessNoUpdate sends nothing, so the concurrency slot the official plugin reserved before
+		// the check (released only by FileUpload/FileSyncMtime/FileUploadAck) gets held in bulk when
+		// paged uploads finish first and the watcher checks get no reply at all, stalling the round.
+		// LastTime is deliberately 0: this check changed nothing server-side, so it must not advance
+		// the client's sync cursor; 2.4.0 plugins unconditionally take max(lastTime) on non-zero values
+		// (the server#101 missed-pull cause), so 0 is safest for all known clients.
+		if fileSvc != nil {
+			c.ToResponse(code.Success.WithData(dto.FileUploadAckMessage{
+				Path:     params.Path,
+				PathHash: params.PathHash,
+			}).WithVault(params.Vault).WithContext(params.Context), string(FileUploadAck))
+		} else {
+			// 无需更新
+			c.ToResponse(code.SuccessNoUpdate.WithVault(params.Vault).WithContext(params.Context))
+		}
 	}
 }
 
