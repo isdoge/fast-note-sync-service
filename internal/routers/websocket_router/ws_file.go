@@ -23,6 +23,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // FileWSHandler WebSocket file handler
@@ -1602,7 +1603,15 @@ func (h *FileWSHandler) FileRePush(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 
 	fileSvc, err := h.App.GetFileService(c.ClientType(), c.ClientName(), c.ClientVersion()).Get(ctx, c.User.UID, params)
 	if err != nil {
-		h.App.Logger().Debug("websocket_router.file.FileRePush.Get: record not found or error, proceeding to send delete",
+		// 只有"确实不存在"才下发删除；哈希歧义、数据库错误等必须回错误，否则客户端
+		// 会删掉服务端明明存活的附件。
+		// Only a genuine "not found" may turn into a delete; ambiguous hashes and
+		// database errors must return an error instead of deleting a live file locally.
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			h.respondErrorWithPath(c, code.ErrorFileGetFailed, err, params.Path, msg.Type, "websocket_router.file.FileRePush.Get")
+			return
+		}
+		h.App.Logger().Debug("websocket_router.file.FileRePush.Get: file not found, proceeding to send delete",
 			zap.String(logger.FieldTraceID, c.TraceID),
 			zap.Error(err))
 	}

@@ -738,7 +738,15 @@ func (h *NoteWSHandler) NoteRePush(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	uid := c.User.UID
 	note, err := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Get(c.Context(), uid, params)
 	if err != nil {
-		h.App.Logger().Debug("websocket_router.note.NoteRePush.Get: record not found or error, proceeding to send delete",
+		// 只有"确实不存在"才下发删除；哈希歧义、数据库错误等必须回错误，否则客户端
+		// 会删掉服务端明明存活的笔记。
+		// Only a genuine "not found" may turn into a delete; ambiguous hashes and
+		// database errors must return an error instead of deleting a live note locally.
+		if !errors.Is(err, code.ErrorNoteNotFound) {
+			h.respondErrorWithPath(c, code.ErrorNoteGetFailed, err, params.Path, msg.Type, "websocket_router.note.NoteRePush.Get")
+			return
+		}
+		h.App.Logger().Debug("websocket_router.note.NoteRePush.Get: note not found, proceeding to send delete",
 			zap.String(logger.FieldTraceID, c.TraceID),
 			zap.Error(err))
 	}

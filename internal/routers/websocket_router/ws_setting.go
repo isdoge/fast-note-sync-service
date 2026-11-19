@@ -1,6 +1,7 @@
 package websocket_router
 
 import (
+	"errors"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
@@ -771,7 +772,15 @@ func (h *SettingWSHandler) SettingRePush(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	setting, err := h.App.GetSettingService(c.ClientType(), c.ClientName(), c.ClientVersion()).Get(ctx, c.User.UID, params)
 	if err != nil {
-		h.App.Logger().Debug("websocket_router.setting.SettingRePush.Get: record not found or error, proceeding to send delete",
+		// 只有"确实不存在"才下发删除；数据库错误等必须回错误，否则客户端会删掉
+		// 服务端明明存活的配置。
+		// Only a genuine "not found" may turn into a delete; database errors must
+		// return an error instead of deleting a live setting locally.
+		if !errors.Is(err, code.ErrorSettingNotFound) {
+			h.respondErrorWithPath(c, code.ErrorSettingGetFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingRePush.Get")
+			return
+		}
+		h.App.Logger().Debug("websocket_router.setting.SettingRePush.Get: setting not found, proceeding to send delete",
 			zap.String(logger.FieldTraceID, c.TraceID),
 			zap.Error(err))
 	}
