@@ -917,11 +917,15 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		}
 		existsMap, batchErr := noteSvc.ExistsPathsBatch(ctx, c.User.UID, params.Vault, delPaths)
 		if batchErr != nil {
-			h.App.Logger().Warn("websocket_router.note.NoteSync.noteSvc.ExistsPathsBatch",
-				zap.String(logger.FieldTraceID, c.TraceID),
-				zap.Int64(logger.FieldUID, c.User.UID),
-				zap.Error(batchErr))
-			existsMap = map[string]bool{}
+			// 批量存在性查询失败时无法判断哪些删除是真实的：若当作"服务端没有"继续，
+			// 客户端本轮上报的删除会被全部静默跳过，随后照常下发 NoteSyncEnd 推进游标，
+			// 下一轮服务端存活笔记会把客户端已删的笔记复活。这里直接让本轮同步失败。
+			// If the batch existence check fails we cannot tell which client deletions
+			// are real. Continuing with an empty result would silently skip every
+			// deletion and still advance the cursor via NoteSyncEnd, resurrecting
+			// locally deleted notes on the next round. Fail this sync round instead.
+			h.respondError(c, code.ErrorNoteListFailed, batchErr, "websocket_router.note.NoteSync.noteSvc.ExistsPathsBatch")
+			return
 		}
 
 		for _, delNote := range params.DelNotes {
