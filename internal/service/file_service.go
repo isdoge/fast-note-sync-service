@@ -63,6 +63,12 @@ type FileService interface {
 	// ListByLastTime 获取在 lastTime 之后更新的文件
 	ListByLastTime(ctx context.Context, uid int64, params *dto.FileSyncRequest) ([]*dto.FileDTO, error)
 
+	// GetPathsMetaBatch 按完整路径批量获取附件元数据（含所有状态），
+	// 供增量同步窗口外条目比对使用。
+	// GetPathsMetaBatch batch-fetches file metadata by full path (all statuses)
+	// for diffing out-of-window entries in incremental sync.
+	GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FileDTO, error)
+
 	// CountSizeSum counts total number and total size of files in a vault
 	// CountSizeSum 统计 vault 中文件总数与总大小
 	CountSizeSum(ctx context.Context, vaultID int64, uid int64) error
@@ -559,6 +565,29 @@ func (s *fileService) ListByLastTime(ctx context.Context, uid int64, params *dto
 	}
 
 	return results, nil
+}
+
+// GetPathsMetaBatch 按完整路径批量获取附件元数据（含所有状态）。
+func (s *fileService) GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FileDTO, error) {
+	result := make(map[string]*dto.FileDTO, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
+	if err != nil {
+		return nil, err
+	}
+
+	metaMap, err := s.fileRepo.ListByPathsMeta(ctx, paths, vaultID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	for path, f := range metaMap {
+		result[path] = s.domainToDTO(f)
+	}
+	return result, nil
 }
 
 // CountSizeSum counts total number and total size of files in a vault
