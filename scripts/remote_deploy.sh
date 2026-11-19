@@ -92,6 +92,29 @@ if [ -n "$TARBALL" ] && [ ! -f "$TARBALL" ]; then
 fi
 [ "$DEPLOY_MODE" = "docker" ] && [ -n "$TARBALL" ] && die "--tarball 只用于 binary 模式（docker 模式用镜像）"
 
+# 在建立连接前校验，避免 SSH/SCP 选项注入及 compose 内容注入。
+validate_port() {
+    [[ "$2" =~ ^[0-9]{1,5}$ ]] && (( 10#$2 >= 1 && 10#$2 <= 65535 )) \
+        || die "$1 端口必须为 1–65535 的数字"
+}
+validate_port SSH "$SSH_PORT"
+SSH_PORT="$((10#$SSH_PORT))"
+if [ -n "$HTTP_PORT" ]; then
+    validate_port HTTP "$HTTP_PORT"
+    HTTP_PORT="$((10#$HTTP_PORT))"
+fi
+[[ "$HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.:%_-]*$ ]] || die "服务器地址含不支持的字符"
+[[ "$SSH_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || die "SSH 用户名含不支持的字符"
+[[ "$VERSION" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ ]] || die "版本号含不支持的字符"
+
+# printf %q 生成的 Bash 参数在明确的 Bash 中解析，外层只用 POSIX 单引号。
+run_remote() {
+    local command
+    printf -v command '%q ' "$@"
+    command=${command//\'/\'\"\'\"\'}
+    run_ssh "bash -c '$command'"
+}
+
 # --- 本地安装脚本路径 ---
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALLER="$SCRIPT_DIR/quest_install.sh"
@@ -105,8 +128,18 @@ fi
 
 # ControlMaster socket 路径必须足够短 (macOS Unix domain socket 上限约 104 字节)
 SSH_CTRL="/tmp/fns-rd-%r@%h:%p.$$"
-cleanup() { ssh -o ControlPath="$SSH_CTRL" -O exit "$SSH_USER@$HOST" -p "$SSH_PORT" >/dev/null 2>&1 || true; rm -f "$SSH_CTRL".* 2>/dev/null || true; }
+REMOTE_TMP=""
+PROBE_LOCAL=""
+cleanup() {
+    if [ -n "$REMOTE_TMP" ]; then
+        run_remote find "$REMOTE_TMP" -depth -delete >/dev/null 2>&1 || true
+    fi
+    [ -z "$PROBE_LOCAL" ] || rm -f -- "$PROBE_LOCAL"
+    ssh -o ControlPath="$SSH_CTRL" -O exit -p "$SSH_PORT" "$SSH_USER@$HOST" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 SSH_BASE=(ssh "${SSH_OPTS[@]}" -o ControlMaster=auto -o ControlPersist=300 -o ControlPath="$SSH_CTRL" -p "$SSH_PORT" "$SSH_USER@$HOST")
 SCP_BASE=(scp "${SSH_OPTS[@]}" -o ControlPath="$SSH_CTRL" -P "$SSH_PORT")
@@ -131,10 +164,11 @@ fi
 ok "SSH 连接成功: $SSH_USER@$HOST:$SSH_PORT"
 
 # --- 远端环境检查 ---
-# 探测脚本先上传再执行，避免多层引号嵌套被远端 shell 二次解析
+REMOTE_TMP="$(run_ssh "mktemp -d /tmp/fns-rd.XXXXXX")" || die "远端创建临时目录失败"
+[[ "$REMOTE_TMP" =~ ^/tmp/fns-rd\.[a-zA-Z0-9]{6}$ ]] || { REMOTE_TMP=""; die "远端临时目录格式异常"; }
 probe_remote() {
-    run_scp -q "$PROBE_LOCAL" "$SSH_USER@$HOST:/tmp/fns-probe.sh" || return 1
-    run_ssh "bash /tmp/fns-probe.sh; rm -f /tmp/fns-probe.sh"
+    run_scp -q "$PROBE_LOCAL" "$SSH_USER@$HOST:$REMOTE_TMP/fns-probe.sh" || return 1
+    run_remote bash "$REMOTE_TMP/fns-probe.sh"
 }
 PROBE_LOCAL="$(mktemp)"
 cat > "$PROBE_LOCAL" <<'PROBE'
@@ -184,6 +218,45 @@ if run_ssh "[ -x $INSTALL_DIR/fast-note-sync-service ]"; then
     fi
 fi
 
+# 切换前停止另一种部署，保留其程序、配置及数据供手工恢复。
+DOCKER_EXISTS=0
+if run_ssh "command -v docker >/dev/null 2>&1"; then
+    run_ssh "$SUDO_CMD docker info >/dev/null 2>&1" || die "无法检查 Docker 旧实例，请检查 Docker 权限或守护进程"
+    if run_ssh "$SUDO_CMD docker inspect --format '{{.Name}}' fast-note-sync-service >/dev/null 2>&1"; then
+        DOCKER_EXISTS=1
+    fi
+fi
+if [ "$DEPLOY_MODE" = "binary" ] && [ "$DOCKER_EXISTS" -eq 1 ]; then
+    [ "$FORCE" -eq 1 ] || die "已存在 Docker 容器；切换到 binary 模式需 --force"
+    step "停止旧 Docker 实例并关闭其自动重启..."
+    run_ssh "$SUDO_CMD docker update --restart=no fast-note-sync-service && $SUDO_CMD docker stop fast-note-sync-service" \
+        || die "停止旧 Docker 实例失败，已中止；请检查容器状态"
+    RUNNING="$(run_ssh "$SUDO_CMD docker inspect --format '{{.State.Running}}' fast-note-sync-service")" \
+        || die "无法确认旧 Docker 实例已停止，已中止"
+    [ "$RUNNING" = "false" ] || die "旧 Docker 实例仍在运行，已中止"
+fi
+
+stop_binary() {
+    # 同时处理 systemd 和脱离 systemd 的 nohup 实例，停不下来则不启动容器。
+    run_remote ${SUDO_CMD:+"$SUDO_CMD"} bash -c '
+set -e
+if command -v systemctl >/dev/null 2>&1 && systemctl cat fast-note.service >/dev/null 2>&1; then
+    systemctl disable --now fast-note.service
+    if systemctl is-active --quiet fast-note.service; then exit 1; fi
+fi
+pattern="^([^[:space:]]*/)?fast-note-sync-service[[:space:]]+run([[:space:]]|$)"
+if pgrep -f "$pattern" >/dev/null; then pkill -TERM -f "$pattern"; fi
+for ((i=0; i<10; i++)); do
+    if pgrep -f "$pattern" >/dev/null; then sleep 1; else
+        rc=$?
+        [ "$rc" -eq 1 ] && exit 0
+        exit "$rc"
+    fi
+done
+exit 1
+'
+}
+
 # --- 部署 ---
 if [ "$DEPLOY_MODE" = "binary" ]; then
     step "部署方式: 二进制 + systemd"
@@ -195,23 +268,21 @@ if [ "$DEPLOY_MODE" = "binary" ]; then
     fi
 
     step "上传安装脚本与安装包..."
-    REMOTE_TMP="$(run_ssh "mktemp -d /tmp/fns-rd.XXXXXX")" || die "远端创建临时目录失败"
     run_scp -q "$INSTALLER" "$SSH_USER@$HOST:$REMOTE_TMP/quest_install.sh" || die "上传 quest_install.sh 失败"
 
-    REMOTE_TARBALL_ARG=""
+    INSTALL_ARGS=(install "$VERSION" --yes)
     if [ -n "$TARBALL" ]; then
-        # 保留原始文件名，quest_install.sh 依赖包名推断版本号
-        run_scp -q "$TARBALL" "$SSH_USER@$HOST:$REMOTE_TMP/$(basename "$TARBALL")" || die "上传安装包失败"
-        REMOTE_TARBALL_ARG="--tarball $REMOTE_TMP/$(basename "$TARBALL")"
+        # 上传到固定目录，SCP 的远端参数不含用户包名（兼容旧 SCP 协议）。
+        TARBALL="$(cd "$(dirname "$TARBALL")" && pwd)/$(basename "$TARBALL")"
+        run_scp -q "$TARBALL" "$SSH_USER@$HOST:$REMOTE_TMP/" || die "上传安装包失败"
+        INSTALL_ARGS+=(--tarball "$REMOTE_TMP/$(basename "$TARBALL")")
     fi
 
-    # 安装与自启注册合并为一次远端执行：sudo 需要密码时只提示一次
-    AUTOSTART_ARG=""
-    [ "$HAS_SYSTEMD" = "systemd" ] && AUTOSTART_ARG="&& bash $REMOTE_TMP/quest_install.sh enable-autostart"
+    # 安装器自身负责自启注册，不再以普通用户重复调用。
     step "远端执行非交互安装..."
-    run_ssh "$SUDO_CMD bash $REMOTE_TMP/quest_install.sh install --yes $REMOTE_TARBALL_ARG $AUTOSTART_ARG" \
+    run_remote ${SUDO_CMD:+"$SUDO_CMD"} bash "$REMOTE_TMP/quest_install.sh" "${INSTALL_ARGS[@]}" \
         || die "远端安装失败（已完成的步骤: 环境检查、上传）"
-    run_ssh "rm -rf '$REMOTE_TMP'" || true
+
 else
     step "部署方式: Docker Compose"
     run_ssh "command -v docker >/dev/null 2>&1" || die "远端没有安装 docker（请先安装 docker，本脚本不会擅自安装）"
@@ -223,6 +294,7 @@ else
     PORT_MAP="9000:9000"
     [ -n "$HTTP_PORT" ] && PORT_MAP="$HTTP_PORT:9000"
 
+    stop_binary || die "停止旧二进制实例失败，已中止；请检查 systemd/nohup 进程状态"
     step "写入 compose 文件并拉取镜像..."
     run_ssh "$SUDO_CMD mkdir -p $COMPOSE_DIR" || die "创建 $COMPOSE_DIR 失败"
     run_ssh "$SUDO_CMD tee $COMPOSE_DIR/docker-compose.yaml >/dev/null" <<EOF
@@ -239,12 +311,14 @@ services:
 EOF
     run_ssh "cd $COMPOSE_DIR && $SUDO_CMD \$(command -v docker >/dev/null 2>&1 && (docker compose version >/dev/null 2>&1 && echo 'docker compose up -d --pull always' || echo 'docker-compose up -d'))" \
         || die "docker compose 启动失败（已完成的步骤: 环境检查、compose 文件写入）"
+    run_ssh "$SUDO_CMD docker update --restart=unless-stopped fast-note-sync-service >/dev/null" \
+        || die "恢复 Docker 自动重启策略失败"
 fi
 
 # --- 可选: 修改 HTTP 端口 (binary 模式) ---
 if [ "$DEPLOY_MODE" = "binary" ] && [ -n "$HTTP_PORT" ]; then
     step "设置 HTTP 端口为 :$HTTP_PORT"
-    run_ssh "$SUDO_CMD sed -i 's|^\([[:space:]]*http-port:\).*$|\1 \":$HTTP_PORT\"|' $INSTALL_DIR/config/config.yaml" \
+    run_remote ${SUDO_CMD:+"$SUDO_CMD"} sed -i "s|^\\([[:space:]]*http-port:\\).*$|\\1 \":$HTTP_PORT\"|" "$INSTALL_DIR/config/config.yaml" \
         || die "修改 http-port 失败"
     if [ "$HAS_SYSTEMD" = "systemd" ]; then
         run_ssh "$SUDO_CMD systemctl restart fast-note.service || true"
@@ -260,7 +334,7 @@ HEALTH_PORT="${HTTP_PORT:-9000}"
 step "等待健康检查 http://$HOST:$HEALTH_PORT$HEALTH_PATH ..."
 HEALTH_OK=0
 for i in $(seq 1 30); do
-    if run_ssh "curl -fsS -m 3 http://127.0.0.1:$HEALTH_PORT$HEALTH_PATH >/dev/null 2>&1"; then
+    if HEALTH_BODY="$(run_remote curl -fsS -m 3 "http://127.0.0.1:$HEALTH_PORT$HEALTH_PATH" 2>/dev/null)"; then
         HEALTH_OK=1
         break
     fi
@@ -270,11 +344,15 @@ if [ "$HEALTH_OK" -ne 1 ]; then
     run_ssh "$SUDO_CMD tail -n 20 /var/log/fast-note.log 2>/dev/null || $SUDO_CMD journalctl -u fast-note.service -n 20 --no-pager 2>/dev/null || true" || true
     die "健康检查 30 次未通过，部署未完全成功（安装已完成，请检查远端日志）"
 fi
+if [ "$DEPLOY_MODE" = "binary" ] && [ "$VERSION" != "latest" ]; then
+    ACTUAL_VERSION="$(printf '%s' "$HEALTH_BODY" | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p')"
+    [ "${ACTUAL_VERSION#v}" = "${VERSION#v}" ] \
+        || die "运行版本不匹配：请求 ${VERSION}，实际 ${ACTUAL_VERSION:-未知}"
+fi
 ok "健康检查通过，服务已就绪"
 ok "访问地址: http://$HOST:$HEALTH_PORT"
 
 # --- 收尾提示 ---
-run_ssh "rm -rf /tmp/fns-rd.* 2>/dev/null" || true
 
 cat <<EOF
 
