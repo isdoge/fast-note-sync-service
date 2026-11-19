@@ -1,8 +1,9 @@
 package websocket_router
 
-// 拦截器两种拒绝（库访问受限、RBAC 权限不足）的响应附带 data.path（JSON 上行可提取时），
-// 让插件释放占用的并发名额；写操作的补偿逻辑（回推 / 改名回滚）不变。Protobuf 上行
-// 提取不到路径（拦截器没有按动作分发的解码器），拒绝响应保持原样——见 resolveErrorSlotPath。
+// 拦截器两种拒绝（库访问受限、RBAC 权限不足）的响应附带 data.path（JSON 与 Protobuf
+// 上行都能提取时），让插件释放占用的并发名额；写操作的补偿逻辑（回推 / 改名回滚）不变。
+// Protobuf 上行的完整覆盖见 interceptor_protobuf_test.go；本文件保留 JSON 与
+// 无路径 Protobuf 载荷的原有断言。
 
 import (
 	"encoding/json"
@@ -78,14 +79,15 @@ func TestInterceptorDeniedResponsesCarryPath(t *testing.T) {
 		}
 	})
 
-	t.Run("protobuf uplink denial keeps no data", func(t *testing.T) {
-		// Protobuf 上行：拦截器不做 pb 解码，载荷字节不是 JSON，提取不到路径，data 缺省
+	t.Run("protobuf uplink without path field keeps no data", func(t *testing.T) {
+		// Protobuf 上行：该载荷只有 vault 字段（field 1 = "abc"），没有 path 字段，
+		// 库名不匹配被拒，但没有可回传的路径，data 缺省。
 		res := drive(t, "vault-a", "", NoteReceiveModify, []byte{0x0a, 0x03, 'a', 'b', 'c'})
 		if res["code"] != float64(315) {
 			t.Fatalf("应为 315 权限受限，实际 %v", res["code"])
 		}
 		if _, has := res["data"]; has {
-			t.Fatalf("Protobuf 上行提取不到路径，data 应缺省，实际 %v", res["data"])
+			t.Fatalf("无 path 字段的 Protobuf 载荷，data 应缺省，实际 %v", res["data"])
 		}
 	})
 }
