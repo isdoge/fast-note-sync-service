@@ -228,7 +228,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 	default:
 		// 无需更新也需回 FileUploadAck：默认配置 is-return-sussess=false 下 SuccessNoUpdate 什么都不回，
 		// 官方插件发检查前占用的并发名额（等 FileUpload/FileSyncMtime/FileUploadAck 才释放）会被成批占住，
-		// 被分页上传抢先传完的附件其监听检查全部无回包，整轮同步不收尾（同 ws_note.go NoteModifyCheck 的处理）。
+		// 被分页上传抢先传完的附件其监听检查全部无回包，整轮同步不收尾（笔记入口 NoteModify 无更新时回 NoteModifyAck 是同样的处理）。
 		// LastTime 故意留 0：本次检查未改动服务端内容，不应推进客户端同步游标；
 		// 2.4.0 插件收到非零 lastTime 会无条件取较大值推进游标（服务端#101 漏拉成因），留 0 对已知客户端最安全。
 		// No-update also needs a FileUploadAck: with the default is-return-sussess=false config,
