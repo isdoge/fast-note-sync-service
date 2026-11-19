@@ -39,6 +39,14 @@ func (m *MockFileRepository) ListByPathHash(ctx context.Context, pathHash string
 	return args.Get(0).([]*domain.File), args.Error(1)
 }
 
+func (m *MockFileRepository) ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*domain.File, error) {
+	args := m.Called(ctx, paths, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[string]*domain.File), args.Error(1)
+}
+
 func (m *MockFileRepository) GetByPath(ctx context.Context, path string, vaultID, uid int64) (*domain.File, error) {
 	args := m.Called(ctx, path, vaultID, uid)
 	if args.Get(0) == nil {

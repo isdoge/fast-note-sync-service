@@ -222,6 +222,44 @@ func (r *fileRepository) ListByPathHash(ctx context.Context, pathHash string, va
 	return list, nil
 }
 
+// ListByPathsMeta batch-queries file metadata keyed by path (all statuses included).
+// For duplicate rows of one path the one with the latest updated_timestamp wins.
+// Chunked (500 per IN query) to stay below SQLite's parameter limit; used to diff
+// out-of-window entries in incremental sync without reading file bytes.
+// ListByPathsMeta 以路径为键批量获取文件元数据（含所有状态），同一路径多行时保留
+// updated_timestamp 最新的一条。每批 500 条分块查询以避开 SQLite 参数上限；用于
+// 增量同步窗口外条目的比对，不读文件内容。
+func (r *fileRepository) ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*domain.File, error) {
+	result := make(map[string]*domain.File, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	u := r.file(uid).File
+	const chunkSize = 500
+	for start := 0; start < len(paths); start += chunkSize {
+		end := start + chunkSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		ms, err := u.WithContext(ctx).Where(
+			u.VaultID.Eq(vaultID),
+			u.Path.In(paths[start:end]...),
+		).Order(u.UpdatedTimestamp.Desc()).Find()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			// 同一路径的历史重复行保留 UpdatedTimestamp 最新的一条。
+			// Keep the latest metadata row for each path.
+			if _, ok := result[m.Path]; !ok {
+				result[m.Path] = r.toDomain(m, uid)
+			}
+		}
+	}
+	return result, nil
+}
+
 // GetByPath retrieves file by path
 // GetByPath 根据路径获取文件
 func (r *fileRepository) GetByPath(ctx context.Context, path string, vaultID, uid int64) (*domain.File, error) {

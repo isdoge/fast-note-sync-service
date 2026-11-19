@@ -180,6 +180,7 @@ func TestSyncNewEntries_PathValidationAndTimes(t *testing.T) {
 				endAction = FolderSyncEnd
 			case "setting":
 				s.On("Sync", mock.Anything, int64(1), mock.Anything).Return([]*dto.SettingDTO{}, nil)
+				s.On("GetByPathHashesMetaBatch", mock.Anything, int64(1), "v", mock.Anything).Return(map[string]*dto.SettingDTO{}, nil).Maybe()
 				s.On("Get", mock.Anything, int64(1), mock.MatchedBy(func(p *dto.SettingGetRequest) bool { return p.PathHash == "missing-good" })).Return(nil, nil).Once()
 				s.On("Get", mock.Anything, int64(1), mock.MatchedBy(func(p *dto.SettingGetRequest) bool { return p.PathHash == "delete-good" })).Return(&dto.SettingDTO{}, nil).Once()
 				s.On("Delete", mock.Anything, int64(1), mock.MatchedBy(func(p *dto.SettingDeleteRequest) bool { return p.Path == "normal/deleted" })).Return(&dto.SettingDTO{}, nil).Once()

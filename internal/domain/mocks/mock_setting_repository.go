@@ -31,6 +31,14 @@ func (m *MockSettingRepository) ListByPathHash(ctx context.Context, pathHash str
 	return args.Get(0).([]*domain.Setting), args.Error(1)
 }
 
+func (m *MockSettingRepository) ListByPathHashesMeta(ctx context.Context, pathHashes []string, vaultID, uid int64) (map[string]*domain.Setting, error) {
+	args := m.Called(ctx, pathHashes, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[string]*domain.Setting), args.Error(1)
+}
+
 func (m *MockSettingRepository) Create(ctx context.Context, setting *domain.Setting, uid int64) (*domain.Setting, error) {
 	args := m.Called(ctx, setting, uid)
 	if args.Get(0) == nil {
