@@ -324,15 +324,6 @@ func (d *Dao) ResolveDB(key ...string) *gorm.DB {
 	if len(key) == 0 || key[0] == "" {
 		return d.Db
 	}
-	// An empty user-database.type explicitly means "use the main database".
-	// Unlike SQLite's per-key files, a relational main DB stores all repository
-	// tables together; routing upgrades to user_<uid> would inspect another DB.
-	// user-database.type 为空明确表示使用主数据库。关系型主库集中存放所有
-	// 仓储表，不能再把升级路由到 user_<uid>，否则会检查另一套数据库。
-	if d.config != nil && (d.config.Type == "mysql" || d.config.Type == "postgres") &&
-		(d.userConfig == nil || d.userConfig.Type == "") {
-		return d.Db
-	}
 	return d.GetOrCreateDB(key[0])
 }
 

@@ -108,23 +108,6 @@ func TestTenantCacheKey_SQLiteKeepsOriginalKeys(t *testing.T) {
 	require.Equal(t, "user_vault_1", d.tenantCacheKey("user_vault_1"))
 }
 
-// TestResolveDB_RelationalMainDatabaseFallback verifies the documented empty
-// user-database.type behavior for both CRUD and startup migrations.
-// TestResolveDB_RelationalMainDatabaseFallback 验证 user-database.type 为空时，
-// CRUD 与启动迁移都使用配置文档约定的主数据库。
-func TestResolveDB_RelationalMainDatabaseFallback(t *testing.T) {
-	mainDB, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "main.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	require.NoError(t, err)
-	for _, typ := range []string{"mysql", "postgres"} {
-		t.Run(typ, func(t *testing.T) {
-			cfg := &config.DatabaseConfig{Type: typ, EnableWriteQueue: util.Ptr(false)}
-			d := New(mainDB, context.Background(), WithConfig(cfg), WithUserDatabaseConfig(&config.DatabaseConfig{}), WithLogger(zap.NewNop()))
-			require.Same(t, mainDB, d.ResolveDB("user_note_1"))
-			require.Zero(t, d.PoolCount())
-		})
-	}
-}
-
 // TestGetOrCreateDB_SameNormalizedKeyBuildsOnce proves singleflight semantics
 // at the normalized cache key: N concurrent first accesses to repository keys
 // of one PostgreSQL/MySQL user call the pool creator exactly once.
