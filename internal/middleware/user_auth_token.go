@@ -224,6 +224,44 @@ func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService 
 	return user, dbToken.Scope, dbToken.Vaults, dbToken, nil
 }
 
+// RevalidateUserToken re-checks a request's token after a delayed setup step
+// (e.g. registering an SSE subscription). It applies the same validity checks
+// as AuthenticateUserTokenStrict — signature, active database token and the
+// rotation nonce — so a revocation that raced the entry middleware cannot leave
+// an authenticated stream behind. Static per-request properties (client, UA,
+// IP, scope, vault allowlist) are not repeated: they were enforced on entry.
+// RevalidateUserToken 在延迟的初始化步骤（如注册 SSE 订阅）之后重新校验请求令牌，
+// 判定与 AuthenticateUserTokenStrict 相同：签名、数据库中的有效令牌、轮转 nonce，
+// 避免入口鉴权与订阅之间发生的吊销留下仍可用的流。客户端/UA/IP/scope/库白名单
+// 属于请求的静态属性，入口已校验，不重复。
+func RevalidateUserToken(c *gin.Context, secretKey string, tokenService service.TokenService) *code.Code {
+	token := ExtractUserAuthToken(c)
+	if token == "" {
+		return code.ErrorNotUserAuthToken
+	}
+
+	user, err := app.ParseTokenWithKey(token, secretKey)
+	if err != nil {
+		if appErr, ok := err.(*code.Code); ok {
+			return appErr
+		}
+		return code.ErrorInvalidUserAuthToken
+	}
+
+	dbToken, err := tokenService.GetActiveToken(c.Request.Context(), user.UID, user.TokenID)
+	if err != nil || dbToken == nil {
+		if appErr, ok := err.(*code.Code); ok {
+			return appErr
+		}
+		return code.ErrorInvalidUserAuthToken
+	}
+
+	if dbToken.TokenString != "" && user.Nonce != dbToken.TokenString {
+		return code.ErrorInvalidUserAuthToken.WithDetails("Token has been rotated")
+	}
+	return nil
+}
+
 func isHeaderlessLoginTokenResourceRead(c *gin.Context) bool {
 	return c.Request.URL.Path == "/api/file" &&
 		(c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead)

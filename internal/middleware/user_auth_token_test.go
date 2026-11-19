@@ -469,3 +469,54 @@ func TestRestFunctionAllowedUsesEntryClientAndStrictness(t *testing.T) {
 	c.Set("auth_strict_empty_protocol", true)
 	assert.False(t, RestFunctionAllowed(c, "note_purge"), "严格模式下空 scope 拒绝")
 }
+
+func newRevalidateContext(t *testing.T, token string) *gin.Context {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodGet, "/api/webgui/events", nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	c.Request = req
+	return c
+}
+
+// 订阅建立后的令牌复核与入口中间件使用同一套有效性判定。
+func TestRevalidateUserToken(t *testing.T) {
+	secretKey := "test-secret"
+	active := &domain.AuthToken{
+		ID: 2, UID: 1, TokenString: "nonce-ok", Status: 1,
+		Scope: "p:rest c:webgui f:*", IssueType: 1,
+		ExpiredAt: time.Now().Add(time.Hour),
+	}
+
+	t.Run("active token passes", func(t *testing.T) {
+		c := newRevalidateContext(t, newMiddlewareJWT(t, secretKey, "nonce-ok"))
+		require.Nil(t, RevalidateUserToken(c, secretKey, &fakeMiddlewareTokenService{activeToken: active}))
+	})
+
+	t.Run("revoked token fails", func(t *testing.T) {
+		c := newRevalidateContext(t, newMiddlewareJWT(t, secretKey, "nonce-ok"))
+		appErr := RevalidateUserToken(c, secretKey, &fakeMiddlewareTokenService{
+			activeErr: code.ErrorInvalidUserAuthToken.WithDetails("Token has been revoked or no longer exists"),
+		})
+		require.NotNil(t, appErr)
+		require.Equal(t, code.ErrorInvalidUserAuthToken.Code(), appErr.Code())
+	})
+
+	t.Run("rotated nonce fails", func(t *testing.T) {
+		c := newRevalidateContext(t, newMiddlewareJWT(t, secretKey, "old-nonce"))
+		appErr := RevalidateUserToken(c, secretKey, &fakeMiddlewareTokenService{activeToken: active})
+		require.NotNil(t, appErr)
+		require.Equal(t, code.ErrorInvalidUserAuthToken.Code(), appErr.Code())
+		require.Equal(t, []string{"Token has been rotated"}, appErr.Details())
+	})
+
+	t.Run("missing token fails", func(t *testing.T) {
+		c := newRevalidateContext(t, "")
+		appErr := RevalidateUserToken(c, secretKey, &fakeMiddlewareTokenService{activeToken: active})
+		require.NotNil(t, appErr)
+		require.Equal(t, code.ErrorNotUserAuthToken.Code(), appErr.Code())
+	})
+}

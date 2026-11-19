@@ -55,6 +55,10 @@ func eventTestHandlerWithVaults(t *testing.T, tokenVaults string) (*EventHandler
 	a := internalapp.NewTestApp(&internalapp.Services{})
 	wss := pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, a)
 	h := NewEventHandler(a, wss)
+	// These tests exercise streaming mechanics, not token validation; the
+	// real revalidation is covered by TestEventStreamTokenRevokedDuringSubscribeIsRejected
+	// and middleware's RevalidateUserToken tests.
+	h.revalidateToken = func(*gin.Context) *code.Code { return nil }
 	h.heartbeatInterval = time.Millisecond
 	shutdown := make(chan struct{})
 	h.shutdown = shutdown
@@ -452,4 +456,25 @@ func TestEventStreamCancellationInterruptsStalledWrite(t *testing.T) {
 			assertEventSubscriptionsRemoved(t, wss)
 		})
 	}
+}
+
+// 令牌在入口鉴权与订阅注册之间被吊销：订阅刚建立时 KickToken 已经扫过，
+// 必须靠订阅后的复核把这条流按未授权结束，不能留下任何订阅名额。
+func TestEventStreamTokenRevokedDuringSubscribeIsRejected(t *testing.T) {
+	h, wss, router, _ := eventTestHandler(t)
+	revoked := false
+	h.afterSubscribe = func() { revoked = true }
+	h.revalidateToken = func(*gin.Context) *code.Code {
+		if revoked {
+			return code.ErrorInvalidUserAuthToken
+		}
+		return nil
+	}
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/webgui/events", nil))
+
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.NotContains(t, rec.Body.String(), "event: hello")
+	assertEventSubscriptionsRemoved(t, wss)
 }
