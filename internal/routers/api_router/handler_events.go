@@ -23,11 +23,12 @@ type EventHandler struct {
 	*Handler
 	heartbeatInterval time.Duration
 	maxLifetime       time.Duration
+	closeGrace        time.Duration
 	shutdown          <-chan struct{}
 }
 
 func NewEventHandler(a *app.App, wss *pkgapp.WebsocketServer) *EventHandler {
-	return &EventHandler{Handler: NewHandlerWithWSS(a, wss), heartbeatInterval: 20 * time.Second, maxLifetime: 30 * time.Minute, shutdown: a.ShutdownCh()}
+	return &EventHandler{Handler: NewHandlerWithWSS(a, wss), heartbeatInterval: 20 * time.Second, maxLifetime: 30 * time.Minute, closeGrace: 2 * time.Second, shutdown: a.ShutdownCh()}
 }
 
 func (h *EventHandler) Stream(c *gin.Context) {
@@ -83,10 +84,26 @@ func (h *EventHandler) Stream(c *gin.Context) {
 		}
 		_ = controller.SetWriteDeadline(time.Now())
 	}()
-	defer func() { close(finished); <-watcherDone }()
+	defer func() {
+		close(finished)
+		<-watcherDone
+		// The watcher expires the write deadline on exit; restore a grace period so the terminating chunk can be written.
+		// 监视协程退出时会把写截止时间设为当前时间，这里重设宽限期，让分块传输的结束块有机会写出。
+		_ = controller.SetWriteDeadline(time.Now().Add(h.closeGrace))
+	}()
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
+	// The handler overrides this connection's write deadline, so HTTP/1.x connections must not be reused.
+	// With server.write-timeout: 0, net/http does not reset the deadline before the next request, so a stale
+	// deadline would break later responses on the same connection; "Connection: close" closes it after this one.
+	// HTTP/2 deadlines are per-stream and its server turns "Connection: close" into a whole-connection graceful
+	// shutdown, so the header is omitted there.
+	// 处理函数改过这条连接的写截止时间；服务端配置 server.write-timeout: 0 时 net/http 不会在下一个请求开始前
+	// 重置写截止时间，复用连接会让后续响应写失败，因此 HTTP/1.x 用 Connection: close 让服务端在本响应后关闭连接。
+	// HTTP/2 的写截止时间按流生效，且其服务端会把 Connection: close 当作整条连接的优雅关闭，不能写。
+	if c.Request.ProtoMajor == 1 {
+		c.Header("Connection", "close")
+	}
 	c.Header("X-Accel-Buffering", "no")
 	write := func(kind string, data any) bool {
 		payload, err := json.Marshal(data)

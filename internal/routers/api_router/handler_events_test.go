@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -197,6 +198,53 @@ func TestEventStreamSurvivesHTTPWriteTimeout(t *testing.T) {
 		}
 	}
 	t.Fatalf("事件流提前中断：%v", scanner.Err())
+}
+
+// 到期结束时必须写出分块的结束块，客户端不应收到不完整的响应。
+// The server must write the final chunk on expiry so clients see a clean EOF.
+func TestEventStreamExpiryEndsCleanly(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("无法监听回环端口：%v", err)
+	}
+	h, _, router, shutdown := eventTestHandler(t)
+	h.maxLifetime = 50 * time.Millisecond
+	h.heartbeatInterval = time.Hour
+	server := &http.Server{Handler: router}
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(listener) }()
+	defer func() { close(shutdown); _ = server.Close(); <-served }()
+	client := &http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get("http://" + listener.Addr().String() + "/api/webgui/events")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err, "到期结束时客户端不应读到不完整的响应")
+	require.True(t, response.Close, "HTTP/1.1 事件流应声明关闭连接")
+	require.Contains(t, string(body), "event: hello")
+}
+
+// 订阅被踢后同样必须以干净的结束块收尾。
+// A kicked token must end the stream with a clean terminating chunk as well.
+func TestEventStreamKickEndsCleanly(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("无法监听回环端口：%v", err)
+	}
+	h, wss, router, shutdown := eventTestHandler(t)
+	h.heartbeatInterval = time.Hour
+	server := &http.Server{Handler: router}
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(listener) }()
+	defer func() { close(shutdown); _ = server.Close(); <-served }()
+	client := &http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get("http://" + listener.Addr().String() + "/api/webgui/events")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	wss.KickToken(1, 5)
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err, "被踢后客户端不应读到不完整的响应")
+	require.Contains(t, string(body), "event: hello")
 }
 
 type stalledEventWriter struct {
