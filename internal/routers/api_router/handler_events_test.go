@@ -44,6 +44,12 @@ func (w *eventRecorder) Write(data []byte) (int, error) {
 }
 
 func eventTestHandler(t *testing.T) (*EventHandler, *pkgapp.WebsocketServer, *gin.Engine, chan struct{}) {
+	return eventTestHandlerWithVaults(t, "A")
+}
+
+// eventTestHandlerWithVaults allows tests to model token vault restrictions.
+// tokenVaults 对应鉴权中间件写入的 c.Set("vaults")，空串表示不限制。
+func eventTestHandlerWithVaults(t *testing.T, tokenVaults string) (*EventHandler, *pkgapp.WebsocketServer, *gin.Engine, chan struct{}) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	a := internalapp.NewTestApp(&internalapp.Services{})
@@ -55,7 +61,7 @@ func eventTestHandler(t *testing.T) (*EventHandler, *pkgapp.WebsocketServer, *gi
 	router := gin.New()
 	router.GET("/api/webgui/events", func(c *gin.Context) {
 		c.Set("user_token", &pkgapp.UserEntity{UID: 1, TokenID: 5})
-		c.Set("vaults", "A")
+		c.Set("vaults", tokenVaults)
 		h.Stream(c)
 	})
 	return h, wss, router, shutdown
@@ -115,6 +121,149 @@ func TestEventStreamVaultIsolationAndOverflow(t *testing.T) {
 	assertEventSubscriptionsRemoved(t, wss)
 }
 
+// Commas are legal in vault names; each vault= value is one complete name.
+// 库名可以包含逗号；每个 vault= 参数就是一个完整库名，不得按逗号拆分。
+func TestEventStreamVaultNameWithComma(t *testing.T) {
+	_, wss, router, _ := eventTestHandlerWithVaults(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	rec := &eventRecorder{ResponseRecorder: httptest.NewRecorder()}
+	var once sync.Once
+	rec.onFlush = func(body string) {
+		once.Do(func() {
+			for _, vault := range []string{"a", "b", "a,b"} {
+				wss.BroadcastToUser(1, code.Success.WithVault(vault).WithData(struct{ Path string }{vault + ".md"}), "NoteSyncModify")
+			}
+		})
+		if strings.Contains(body, "event: change") {
+			cancel()
+		}
+	}
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/webgui/events?vault=a%2Cb", nil).WithContext(ctx))
+	require.Contains(t, rec.Body.String(), `"vault":"a,b"`)
+	require.NotContains(t, rec.Body.String(), `"path":"a.md"`)
+	require.NotContains(t, rec.Body.String(), `"path":"b.md"`)
+	assertEventSubscriptionsRemoved(t, wss)
+}
+
+// Repeating vault= subscribes to several vaults; unrelated vaults stay filtered out.
+// 重复写 vault= 才能订阅多个库；无关库的事件不会送达。
+func TestEventStreamRepeatedVaultParams(t *testing.T) {
+	_, wss, router, _ := eventTestHandlerWithVaults(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	rec := &eventRecorder{ResponseRecorder: httptest.NewRecorder()}
+	var once sync.Once
+	rec.onFlush = func(body string) {
+		once.Do(func() {
+			for _, vault := range []string{"A", "B", "C"} {
+				wss.BroadcastToUser(1, code.Success.WithVault(vault).WithData(struct{ Path string }{vault + ".md"}), "NoteSyncModify")
+			}
+		})
+		if strings.Contains(body, `"vault":"C"`) {
+			cancel()
+		}
+	}
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/webgui/events?vault=A&vault=C", nil).WithContext(ctx))
+	require.Contains(t, rec.Body.String(), `"vault":"A"`)
+	require.Contains(t, rec.Body.String(), `"vault":"C"`)
+	require.NotContains(t, rec.Body.String(), `"vault":"B"`)
+	assertEventSubscriptionsRemoved(t, wss)
+}
+
+// A restricted token must never receive events from a vault outside its allowlist,
+// even when the request asks for allowed and forbidden vaults together.
+// 受限令牌即使同时请求允许与禁止的库，也收不到无权库的事件（扇出时按令牌允许库再过滤）。
+func TestEventStreamRestrictedTokenFiltersUnauthorizedVault(t *testing.T) {
+	_, wss, router, _ := eventTestHandlerWithVaults(t, "A")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	rec := &eventRecorder{ResponseRecorder: httptest.NewRecorder()}
+	var once sync.Once
+	rec.onFlush = func(body string) {
+		once.Do(func() {
+			wss.BroadcastToUser(1, code.Success.WithVault("B").WithData(struct{ Path string }{"forbidden.md"}), "NoteSyncModify")
+			wss.BroadcastToUser(1, code.Success.WithVault("A").WithData(struct{ Path string }{"allowed.md"}), "NoteSyncModify")
+		})
+		if strings.Contains(body, `"path":"allowed.md"`) {
+			cancel()
+		}
+	}
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/webgui/events?vault=A&vault=B", nil).WithContext(ctx))
+	require.Contains(t, rec.Body.String(), `"vault":"A"`)
+	require.NotContains(t, rec.Body.String(), `"vault":"B"`)
+	require.NotContains(t, rec.Body.String(), "forbidden.md")
+	assertEventSubscriptionsRemoved(t, wss)
+}
+
+// HTTP/1.x must close the connection because the handler owns its write deadline;
+// HTTP/2 deadlines are per-stream and must not receive Connection: close.
+// HTTP/1.x 必须关闭连接；HTTP/2 的写截止时间按流生效，不能带 Connection: close。
+func TestEventStreamConnectionHeaderByProtocol(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		proto string
+		major int
+		want  string
+	}{
+		{name: "http/1.1", proto: "HTTP/1.1", major: 1, want: "close"},
+		{name: "http/2", proto: "HTTP/2.0", major: 2, want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, router, _ := eventTestHandler(t)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			req := httptest.NewRequest(http.MethodGet, "/api/webgui/events", nil).WithContext(ctx)
+			req.Proto = test.proto
+			req.ProtoMajor = test.major
+			req.ProtoMinor = 0
+			rec := &eventRecorder{ResponseRecorder: httptest.NewRecorder()}
+			rec.onFlush = func(body string) {
+				if strings.Contains(body, `"reason":"reconnect"`) {
+					cancel()
+				}
+			}
+			router.ServeHTTP(rec, req)
+			require.Equal(t, test.want, rec.Header().Get("Connection"))
+		})
+	}
+}
+
+// Shutting the server down must end a live stream with a clean terminating chunk.
+// 服务关闭时，真实监听客户端应读到干净的结尾而不是不完整的响应。
+func TestEventStreamShutdownEndsCleanly(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("无法监听回环端口：%v", err)
+	}
+	h, _, router, shutdown := eventTestHandler(t)
+	h.heartbeatInterval = time.Hour
+	server := &http.Server{Handler: router}
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(listener) }()
+	var closeOnce sync.Once
+	closeShutdown := func() { closeOnce.Do(func() { close(shutdown) }) }
+	defer func() { closeShutdown(); _ = server.Close(); <-served }()
+	client := &http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get("http://" + listener.Addr().String() + "/api/webgui/events")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	scanner := bufio.NewScanner(response.Body)
+	var body strings.Builder
+	closed := false
+	for scanner.Scan() {
+		body.WriteString(scanner.Text())
+		body.WriteString("\n")
+		if !closed && strings.Contains(body.String(), "event: hello") {
+			closed = true
+			closeShutdown()
+		}
+	}
+	require.NoError(t, scanner.Err(), "服务关闭时客户端不应读到不完整的响应")
+	require.True(t, closed, "未收到 hello 事件")
+	require.Contains(t, body.String(), "event: hello")
+}
+
 func TestEventStreamExitAndCleanup(t *testing.T) {
 	for _, mode := range []string{"shutdown", "hub close", "write error", "panic"} {
 		t.Run(mode, func(t *testing.T) {
@@ -152,6 +301,7 @@ func TestEventStreamLimit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/webgui/events", nil))
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "60", rec.Header().Get("Retry-After"))
 	require.NotContains(t, rec.Body.String(), "event: hello")
 }
 

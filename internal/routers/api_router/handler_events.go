@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -44,19 +43,24 @@ func (h *EventHandler) Stream(c *gin.Context) {
 		}
 	}()
 	uid := strconv.FormatInt(pkgapp.GetUID(c), 10)
+	// Each repeated vault= parameter is one complete vault name; commas are legal in vault names.
+	// 每个重复的 vault= 参数都是一个完整的库名（库名可以包含逗号），因此不按逗号拆分。
 	var vaults []string
-	for _, vault := range strings.Split(c.Query("vault"), ",") {
+	for _, vault := range c.QueryArray("vault") {
 		if vault != "" {
 			vaults = append(vaults, vault)
 		}
 	}
 	sub, err := h.WSS.SubscribeEvents(uid, pkgapp.GetTokenID(c), c.GetString("vaults"), vaults)
 	if err != nil {
-		status := http.StatusServiceUnavailable
 		if errors.Is(err, pkgapp.ErrEventStreamLimit) {
-			status = http.StatusTooManyRequests
+			// Tell the client how long to wait before reconnecting; the WebGUI defaults to 60s without it.
+			// 告知客户端重连前需要等待的秒数；前端在没有该头时默认退避 60 秒。
+			c.Header("Retry-After", "60")
+			c.AbortWithStatus(http.StatusTooManyRequests)
+			return
 		}
-		c.AbortWithStatus(status)
+		c.AbortWithStatus(http.StatusServiceUnavailable)
 		return
 	}
 	defer h.WSS.UnsubscribeEvents(uid, sub)

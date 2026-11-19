@@ -147,10 +147,14 @@ func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService 
 	if dbToken.Vaults != "" {
 		targetVault := app.RequestParam(c, "vault")
 		targets := []string{targetVault}
-		// Only the event endpoint accepts a comma-separated subscription filter.
-		// 仅事件端点接受逗号分隔的订阅库过滤条件。
+		// The event endpoint takes one complete vault name per repeated vault= parameter
+		// (commas are legal in vault names), so every value is checked individually.
+		// 事件端点每个重复的 vault= 参数是一个完整库名（库名可含逗号），逐值校验，任一越权即整体拒绝。
 		if path == "/api/webgui/events" {
-			targets = strings.Split(targetVault, ",")
+			targets = c.QueryArray("vault")
+			if len(targets) == 0 {
+				targets = []string{targetVault}
+			}
 		}
 		for _, vault := range targets {
 			if vault != "" && !util.VerifyVaultAccess(dbToken.Vaults, vault) {

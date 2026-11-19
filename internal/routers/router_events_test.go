@@ -39,11 +39,11 @@ func TestWebGUIEventRouteAuthentication(t *testing.T) {
 		{name: "spoofed WebGUI header", client: "webgui", issue: 1, bound: "obsidian", status: 403},
 		{name: "missing client", issue: 1, bound: "webgui", status: 403},
 		{name: "restricted denied", client: "webgui", issue: 1, bound: "webgui", vaults: "A", query: "?vault=B", status: 403},
-		{name: "multi vault denied", client: "webgui", issue: 1, bound: "webgui", vaults: "A", query: "?vault=A,B", status: 403},
+		{name: "multi vault denied", client: "webgui", issue: 1, bound: "webgui", vaults: "A", query: "?vault=A&vault=B", status: 403},
 		{name: "literal star", client: "webgui", issue: 1, bound: "webgui", vaults: "A", query: "?vault=*", status: 403},
 		{name: "login", client: "webgui", issue: 1, bound: "webgui", status: 200},
 		{name: "query client", issue: 1, bound: "webgui", query: "?client=webgui", status: 200},
-		{name: "restricted all allowed", client: "webgui", issue: 1, bound: "webgui", vaults: "A,B", query: "?vault=A,B", status: 200},
+		{name: "restricted all allowed", client: "webgui", issue: 1, bound: "webgui", vaults: "A,B", query: "?vault=A&vault=B", status: 200},
 		{name: "restricted implicit", client: "webgui", issue: 1, bound: "webgui", vaults: "A", status: 200},
 	} {
 		t.Run(test.name, func(t *testing.T) {
