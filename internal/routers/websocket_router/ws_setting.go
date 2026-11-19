@@ -47,6 +47,16 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
+	// mtime 缺省（<=0）时用服务端当前毫秒时间兜底：写 0 会让后续窗口内比较
+	// s.Mtime >= cSetting.Mtime 恒为假，服务端新改的配置被误判成"客户端更新"。
+	// ctime 不兜底，保持客户端上报值。
+	// Fall back to the server's current millisecond time when mtime is missing
+	// (<=0): storing 0 makes the in-window comparison s.Mtime >= cSetting.Mtime
+	// always false, misjudging freshly server-updated settings as "client newer".
+	// ctime keeps the client-reported value.
+	if params.Mtime <= 0 {
+		params.Mtime = timex.Now().UnixMilli()
+	}
 
 	ctx := c.Context()
 
