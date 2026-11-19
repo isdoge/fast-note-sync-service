@@ -49,16 +49,14 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
-	// mtime 缺省（<=0）时用服务端当前毫秒时间兜底：写 0 会让后续窗口内比较
-	// s.Mtime >= cSetting.Mtime 恒为假，服务端新改的配置被误判成"客户端更新"。
-	// ctime 不兜底，保持客户端上报值。
-	// Fall back to the server's current millisecond time when mtime is missing
-	// (<=0): storing 0 makes the in-window comparison s.Mtime >= cSetting.Mtime
-	// always false, misjudging freshly server-updated settings as "client newer".
-	// ctime keeps the client-reported value.
-	if params.Mtime <= 0 {
-		params.Mtime = timex.Now().UnixMilli()
-	}
+	// mtime 缺省（<=0）时先按 0 做更新检查：内容与服务端一致时 UpdateCheck 会
+	// 返回 UpdateMtime（不改库、不广播），这正是幂等返回；只有确需写入时才在下方
+	// 用服务端当前时间兜底，避免把内容未变的配置改写时间戳并广播。
+	// Run UpdateCheck with the client-reported mtime first (0 when missing): if the
+	// content is unchanged, UpdateCheck returns UpdateMtime (no write, no broadcast),
+	// which is the idempotent answer. Only an actual write falls back to the server's
+	// current time below, so unchanged settings keep their timestamps.
+	mtimeProvided := params.Mtime > 0
 
 	ctx := c.Context()
 
@@ -77,6 +75,14 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	switch updateMode {
 	case "UpdateContent", "Create":
+		if !mtimeProvided {
+			// 确需写入时才兜底：写 0 会让后续窗口内比较 s.Mtime >= cSetting.Mtime
+			// 恒为假，服务端新改的配置被误判成"客户端更新"。
+			// Fall back only when a write actually happens: storing 0 makes the
+			// in-window comparison s.Mtime >= cSetting.Mtime always false, so a
+			// freshly server-updated setting is misjudged as "client newer".
+			params.Mtime = timex.Now().UnixMilli()
+		}
 		_, setting, err := settingSvc.ModifyOrCreate(ctx, c.User.UID, params, true)
 		if err != nil {
 			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
