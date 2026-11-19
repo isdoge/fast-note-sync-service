@@ -56,6 +56,15 @@ type SettingRepository interface {
 	// ListByPathHash 根据路径哈希获取配置列表（处理重复记录）
 	ListByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) ([]*Setting, error)
 
+	// ListByPathHashesMeta 以路径哈希为键批量获取元数据（含所有状态），同一哈希多行时
+	// 保留 updated_timestamp 最新的一条；只查元数据列、不读正文文件，分块查询，
+	// 用于增量同步窗口外条目的比对。
+	// ListByPathHashesMeta batch-queries metadata keyed by path hash (all statuses
+	// included); for duplicate rows of one hash the one with the latest
+	// updated_timestamp wins. Only metadata columns are selected — content files are
+	// not read. Chunked; used to diff out-of-window entries in incremental sync.
+	ListByPathHashesMeta(ctx context.Context, pathHashes []string, vaultID, uid int64) (map[string]*Setting, error)
+
 	// Create 创建配置
 	Create(ctx context.Context, setting *Setting, uid int64) (*Setting, error)
 

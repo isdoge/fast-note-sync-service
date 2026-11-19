@@ -63,6 +63,13 @@ type FileRepository interface {
 	// ListByPathHash 根据路径哈希获取文件列表（处理重复记录）
 	ListByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) ([]*File, error)
 
+	// ListByPathsMeta 以路径为键批量获取元数据（含所有状态），同一路径多行时保留
+	// updated_timestamp 最新的一条；分块查询，用于增量同步窗口外条目的比对。
+	// ListByPathsMeta batch-queries metadata keyed by path (all statuses included);
+	// for duplicate rows of one path the one with the latest updated_timestamp wins.
+	// Chunked; used to diff out-of-window entries in incremental sync.
+	ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*File, error)
+
 	// 带完整路径的查询，碰撞路径互不影响。
 	ListByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*File, error)
 

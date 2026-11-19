@@ -180,6 +180,7 @@ func TestSyncNewEntries_PathValidationAndTimes(t *testing.T) {
 				endAction = FolderSyncEnd
 			case "setting":
 				s.On("Sync", mock.Anything, int64(1), mock.Anything).Return([]*dto.SettingDTO{}, nil)
+				s.On("GetByPathHashesMetaBatch", mock.Anything, int64(1), "v", mock.Anything).Return(map[string]*dto.SettingDTO{}, nil).Maybe()
 				s.On("Get", mock.Anything, int64(1), mock.MatchedBy(func(p *dto.SettingGetRequest) bool { return p.PathHash == "missing-good" })).Return(nil, nil).Once()
 				s.On("Get", mock.Anything, int64(1), mock.MatchedBy(func(p *dto.SettingGetRequest) bool { return p.PathHash == "delete-good" })).Return(&dto.SettingDTO{}, nil).Once()
 				s.On("Delete", mock.Anything, int64(1), mock.MatchedBy(func(p *dto.SettingDeleteRequest) bool { return p.Path == "normal/deleted" })).Return(&dto.SettingDTO{}, nil).Once()
@@ -210,10 +211,49 @@ func TestWSSettingModify_NormalizesBeforeWrite(t *testing.T) {
 					want = 0
 				}
 				require.Equal(t, want, p.Ctime)
-				require.Equal(t, want, p.Mtime)
+				if input == 0 {
+					// mtime 缺省时兜底为服务端当前毫秒时间，不得写 0。
+					require.Greater(t, p.Mtime, int64(0), "mtime 缺省必须兜底为正的毫秒时间")
+				} else {
+					require.Equal(t, want, p.Mtime)
+				}
 			}).Return(false, &dto.SettingDTO{}, nil).Once()
 			a := app.NewTestApp(&app.Services{SettingService: s, VaultService: v})
 			NewSettingWSHandler(a).SettingModify(newWSPathTestClient(a), wsMsg("SettingModify", map[string]any{"vault": "v", "path": "normal/x", "ctime": input, "mtime": input}))
+			s.AssertExpectations(t)
+		})
+	}
+}
+
+// 不带 mtime 的配置写入，入库的 mtime 必须为正（服务端当前毫秒时间兜底），
+// ctime 保持客户端上报值（含 0）。
+func TestWSSettingModify_MtimeFallbackPositive(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		payload    map[string]any
+		wantCtime  int64
+		checkMtime func(*testing.T, int64)
+	}{
+		{"mtime_omitted", map[string]any{"vault": "v", "path": "normal/x", "ctime": 1700000000000}, 1700000000000,
+			func(t *testing.T, got int64) { require.Greater(t, got, int64(0)) }},
+		{"mtime_zero", map[string]any{"vault": "v", "path": "normal/x", "ctime": 1700000000000, "mtime": 0}, 1700000000000,
+			func(t *testing.T, got int64) { require.Greater(t, got, int64(0)) }},
+		{"both_zero_keeps_ctime_zero", map[string]any{"vault": "v", "path": "normal/x", "ctime": 0, "mtime": 0}, 0,
+			func(t *testing.T, got int64) { require.Greater(t, got, int64(0)) }},
+		{"mtime_present_unchanged", map[string]any{"vault": "v", "path": "normal/x", "ctime": 1700000000000, "mtime": 1700000005000}, 1700000000000,
+			func(t *testing.T, got int64) { require.Equal(t, int64(1700000005000), got) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, v := new(svcmocks.MockSettingService), new(svcmocks.MockVaultService)
+			v.On("GetOrCreate", mock.Anything, int64(1), "v").Return(nil, nil)
+			s.On("UpdateCheck", mock.Anything, int64(1), mock.Anything).Return("Create", nil, nil).Once()
+			s.On("ModifyOrCreate", mock.Anything, int64(1), mock.Anything, true).Run(func(args mock.Arguments) {
+				p := args.Get(2).(*dto.SettingModifyOrCreateRequest)
+				require.Equal(t, tc.wantCtime, p.Ctime)
+				tc.checkMtime(t, p.Mtime)
+			}).Return(false, &dto.SettingDTO{}, nil).Once()
+			a := app.NewTestApp(&app.Services{SettingService: s, VaultService: v})
+			NewSettingWSHandler(a).SettingModify(newWSPathTestClient(a), wsMsg("SettingModify", tc.payload))
 			s.AssertExpectations(t)
 		})
 	}

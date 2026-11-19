@@ -90,6 +90,14 @@ func (m *MockSettingService) Sync(ctx context.Context, uid int64, params *dto.Se
 	return nil, args.Error(1)
 }
 
+func (m *MockSettingService) GetByPathHashesMetaBatch(ctx context.Context, uid int64, vault string, pathHashes []string) (map[string]*dto.SettingDTO, error) {
+	args := m.Called(ctx, uid, vault, pathHashes)
+	if v := args.Get(0); v != nil {
+		return v.(map[string]*dto.SettingDTO), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
 func (m *MockSettingService) List(ctx context.Context, uid int64, params *dto.SettingListRequest, pager *pkgapp.Pager) ([]*dto.SettingDTO, int64, error) {
 	args := m.Called(ctx, uid, params, pager)
 	if v := args.Get(0); v != nil {
