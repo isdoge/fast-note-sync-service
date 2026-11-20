@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -1157,17 +1159,30 @@ func (s *gitSyncService) processSettingsBatch(settings []*domain.Setting, conf *
 
 		_ = os.MkdirAll(filepath.Dir(fullPath), 0755)
 
+		// 二进制配置（fns-bin-v1: 前缀，如主题壁纸图片、.fonts 字体）导出到工作区时
+		// 写解码后的原始字节，Git 仓库里得到真实可用的文件而不是 base64 文本；
+		// 普通文本配置解码结果就是原字符串，行为不变。
+		// Binary settings (fns-bin-v1: prefix, e.g. theme wallpapers and .fonts files)
+		// are exported as their decoded raw bytes so the Git workspace holds real
+		// files instead of base64 text; plain text decodes to itself and is unchanged.
+		fileContent, _, decodeErr := util.DecodeSettingContentBytes(st.Content)
+		if decodeErr != nil {
+			s.logger.Warn("Skipping setting whose content cannot be decoded",
+				zap.String("path", st.Path), zap.Error(decodeErr))
+			continue
+		}
+
 		// Check if content is different before writing
 		if oldFile, err := os.Open(fullPath); err == nil {
 			defer oldFile.Close()
 			if oldContent, err := io.ReadAll(oldFile); err == nil {
-				if string(oldContent) == st.Content {
+				if bytes.Equal(oldContent, fileContent) {
 					continue // Skip writing if content is identical
 				}
 			}
 		}
 
-		if err := os.WriteFile(fullPath, []byte(st.Content), 0644); err != nil {
+		if err := os.WriteFile(fullPath, fileContent, 0644); err != nil {
 			return false, fmt.Errorf("failed to write setting to workspace: %w", err)
 		} else {
 			actuallyChanged = true

@@ -5,7 +5,6 @@ package dao
 import (
 	"context"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/domain"
@@ -19,7 +18,6 @@ import (
 type syncLogRepository struct {
 	dao             *Dao
 	customPrefixKey string
-	migrateOnce     sync.Map // tracks per-key migration completion // 记录每个 key 是否已完成 AutoMigrate
 }
 
 // NewSyncLogRepository creates a SyncLogRepository instance
@@ -46,16 +44,22 @@ func init() {
 
 // db returns the *gorm.DB for sync_log in the user's database, with one-time AutoMigrate
 // db 返回用户库中 sync_log 对应的 *gorm.DB，确保每个用户库只迁移一次
-func (r *syncLogRepository) db(uid int64) *gorm.DB {
+// It reuses autoMigrateRepositoryDB: concurrent first callers block on the same
+// singleflight key until the table exists, and a failed migration is not cached,
+// so the next call retries instead of leaving the key marked as migrated forever.
+// 复用 autoMigrateRepositoryDB：并发首次调用在同一 singleflight 键上等待建表完成，
+// 建表失败不缓存标记，下次调用会重试，不会像原来的 LoadOrStore 那样把失败永久
+// 记成“已迁移”。
+func (r *syncLogRepository) db(uid int64) (*gorm.DB, error) {
 	key := r.GetKey(uid)
-	onceKey := key + "#syncLog"
-	if _, loaded := r.migrateOnce.LoadOrStore(onceKey, true); !loaded {
-		db := r.dao.ResolveDB(key)
-		if db != nil {
-			model.AutoMigrate(db, "SyncLog")
-		}
+	db := r.dao.ResolveDB(key)
+	if db == nil {
+		return nil, gorm.ErrInvalidDB
 	}
-	return r.dao.ResolveDB(key)
+	if err := r.dao.autoMigrateRepositoryDB(db, key, "SyncLog"); err != nil {
+		return nil, err
+	}
+	return db, nil
 }
 
 // Create stores a new sync log entry
@@ -81,7 +85,11 @@ func (r *syncLogRepository) Create(ctx context.Context, log *domain.SyncLog, uid
 		if m.CreatedAt.IsZero() {
 			m.CreatedAt = timex.Now()
 		}
-		return r.db(uid).WithContext(ctx).Create(m).Error
+		d, err := r.db(uid)
+		if err != nil {
+			return err
+		}
+		return d.WithContext(ctx).Create(m).Error
 	})
 }
 
@@ -115,14 +123,21 @@ func (r *syncLogRepository) CreateBatch(ctx context.Context, logs []*domain.Sync
 			}
 			ms = append(ms, m)
 		}
-		return r.db(uid).WithContext(ctx).Create(&ms).Error
+		d, err := r.db(uid)
+		if err != nil {
+			return err
+		}
+		return d.WithContext(ctx).Create(&ms).Error
 	})
 }
 
 // List retrieves sync logs for a user with optional filters and pagination
 // List 按条件分页查询用户的同步日志
 func (r *syncLogRepository) List(ctx context.Context, uid int64, logType, action string, page, pageSize int) ([]*domain.SyncLog, int64, error) {
-	db := r.db(uid)
+	db, err := r.db(uid)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	query := db.WithContext(ctx).Model(&model.SyncLog{})
 	if logType != "" {
@@ -177,7 +192,11 @@ func (r *syncLogRepository) List(ctx context.Context, uid int64, logType, action
 // CleanupByTime 清理指定用户在指定时间戳之前的同步日志
 func (r *syncLogRepository) CleanupByTime(ctx context.Context, timestamp int64, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		return r.db(uid).WithContext(ctx).Where("created_at < ?", time.UnixMilli(timestamp)).Delete(&model.SyncLog{}).Error
+		d, err := r.db(uid)
+		if err != nil {
+			return err
+		}
+		return d.WithContext(ctx).Where("created_at < ?", time.UnixMilli(timestamp)).Delete(&model.SyncLog{}).Error
 	})
 }
 
@@ -204,7 +223,11 @@ func (r *syncLogRepository) CleanupByTimeAll(ctx context.Context, timestamp int6
 // DeleteByVaultID 删除指定仓库的所有同步日志
 func (r *syncLogRepository) DeleteByVaultID(ctx context.Context, vaultID, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		return r.db(uid).WithContext(ctx).Where("vault_id = ?", vaultID).Delete(&model.SyncLog{}).Error
+		d, err := r.db(uid)
+		if err != nil {
+			return err
+		}
+		return d.WithContext(ctx).Where("vault_id = ?", vaultID).Delete(&model.SyncLog{}).Error
 	})
 }
 
