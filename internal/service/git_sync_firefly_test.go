@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -503,6 +503,20 @@ func TestApplyRemoteHookOutput(t *testing.T) {
 // 安全状态接口：不泄露敏感字段、库级隔离
 // ---------------------------------------------------------------------------
 
+// TestGitSyncStatusMessageFormatIsStable locks the English LastMessage wire
+// format. WebGUI and the Obsidian plugin localize it client-side; existing
+// scripts and tests match these prefixes, so they must not drift.
+func TestGitSyncStatusMessageFormatIsStable(t *testing.T) {
+	var nilReport *gitSyncRunReport
+	require.Empty(t, nilReport.skipSummary())
+
+	report := &gitSyncRunReport{skipped: []gitSyncSkippedPost{{path: "p.md", reason: "missing published"}}}
+	require.Equal(t, "skipped 1 invalid post: p.md: missing published", report.skipSummary())
+
+	report.skipped = append(report.skipped, gitSyncSkippedPost{path: "q.md", reason: "bad date"})
+	require.Equal(t, "skipped 2 invalid posts: p.md: missing published", report.skipSummary())
+}
+
 func TestGetVaultStatuses_OmitsSensitiveFields(t *testing.T) {
 	repo := new(domainmocks.MockGitSyncRepository)
 	svc := newTestGitSyncService(repo)
@@ -514,6 +528,7 @@ func TestGetVaultStatuses_OmitsSensitiveFields(t *testing.T) {
 		{
 			ID: 6, UID: 1, VaultID: 5, RepoURL: "http://127.0.0.1:4323/blog.git", Username: "u", Password: "secret",
 			WebhookURL: "http://127.0.0.1:4323/__republish", Branch: "master", TargetSubdir: "src/content/posts",
+			SourceDir: "blog", RequireFrontmatter: "published: true", ValidateFrontmatter: true, BundleAssets: true,
 			IsEnabled: true, LastStatus: domain.GitSyncStatusSuccess, LastMessage: "ok", LastSyncTime: &lastSync,
 		},
 	}, nil)
@@ -523,9 +538,28 @@ func TestGetVaultStatuses_OmitsSensitiveFields(t *testing.T) {
 	require.Len(t, list, 1)
 	require.Equal(t, int64(6), list[0].ID)
 	require.Equal(t, "src/content/posts", list[0].TargetSubdir)
+	// 只读映射摘要字段必须原样返回，供插件展示当前导出配置。
+	require.Equal(t, "blog", list[0].SourceDir)
+	require.Equal(t, "published: true", list[0].RequireFrontmatter)
+	require.True(t, list[0].ValidateFrontmatter)
+	require.True(t, list[0].BundleAssets)
 
-	// 结构体本身没有这些字段（编译期保证），此处再确认没有以字符串形式带出
-	require.NotContains(t, strings.Join([]string{list[0].Vault, list[0].Branch, list[0].TargetSubdir, list[0].LastMessage}, "|"), "secret")
+	// 结构体本身没有敏感字段（编译期保证），此处再从序列化结果确认没有以字符串形式带出。
+	// The struct has no sensitive fields (compile-time guarantee); also assert the
+	// serialized payload never carries repository endpoints or credentials.
+	payload, err := json.Marshal(list[0])
+	require.NoError(t, err)
+	serialized := string(payload)
+	require.Contains(t, serialized, `"sourceDir":"blog"`)
+	require.Contains(t, serialized, `"requireFrontmatter":"published: true"`)
+	require.Contains(t, serialized, `"validateFrontmatter":true`)
+	require.Contains(t, serialized, `"bundleAssets":true`)
+	require.NotContains(t, serialized, "127.0.0.1:4323")
+	require.NotContains(t, serialized, "secret")
+	require.NotContains(t, serialized, "webhook")
+	require.NotContains(t, serialized, "repoUrl")
+	require.NotContains(t, serialized, "username")
+	require.NotContains(t, serialized, "password")
 }
 
 func TestTriggerByVault_RejectsForeignConfig(t *testing.T) {

@@ -137,6 +137,19 @@ func init() {
 					// 等待并在处理后退出循环
 					goto wait_and_exit
 				case <-configChanged:
+					// Parse the new file before touching the running server: an invalid
+					// edit (or a half-written YAML) must not take the live service down.
+					// 先解析新文件再动运行中的服务：无效编辑或写了一半的 YAML 不能让线上服务中断。
+					nextCfg, _, loadErr := internalApp.LoadConfig(runEnv.config)
+					if loadErr != nil {
+						s.logger.Error("config watcher reload parse failed, keeping current server", zap.Error(loadErr))
+						continue
+					}
+					if !s.GetApp().ApplyConfigFileReload(nextCfg) {
+						s.logger.Info("config change applied to running server without restart",
+							zap.String("file", runEnv.config))
+						continue
+					}
 					s.logger.Info("Reloading server due to config change...")
 					s.sc.SendCloseSignal(nil)
 					if err := s.sc.WaitClosed(); err != nil {
