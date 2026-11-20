@@ -149,6 +149,47 @@ func (c *AppConfig) GetWriteQueueConfig() writequeue.Config {
 	return cfg
 }
 
+// ConfigFingerprint returns a deterministic YAML representation of cfg, used to
+// detect config-file changes. When ignoreAdminUID is true, user.admin-uid is
+// normalized to 0 so callers can tell whether anything else changed too.
+// ConfigFingerprint 返回配置的确定性 YAML 指纹，用于检测配置文件变更；
+// ignoreAdminUID 为 true 时把 user.admin-uid 归一化为 0，便于判断是否只有该字段变化。
+func ConfigFingerprint(cfg *AppConfig, ignoreAdminUID bool) (string, error) {
+	if cfg == nil {
+		return "", errors.New("config is nil")
+	}
+	// Shallow copy is enough: yaml.Marshal only reads the nested values.
+	// 浅拷贝即可：yaml.Marshal 只读取嵌套值，不会写入。
+	clone := *cfg
+	clone.File = ""
+	if ignoreAdminUID {
+		clone.User.AdminUID = 0
+	}
+	data, err := yaml.Marshal(&clone)
+	if err != nil {
+		return "", errors.Wrap(err, "marshal config fingerprint failed")
+	}
+	return string(data), nil
+}
+
+// ConfigReloadRequiresRestart reports whether moving from current to next touches
+// any setting that is bound at server initialization. A change confined to
+// user.admin-uid is hot-reloadable: the admin resolver reads it live from the
+// config on every request, so rebuilding the HTTP servers is unnecessary.
+// ConfigReloadRequiresRestart 判断从 current 到 next 是否改动了服务初始化时绑定的设置。
+// 仅 user.admin-uid 变化属于热更新字段：管理员判定在每次请求时实时读取配置，无需重建 HTTP 服务。
+func ConfigReloadRequiresRestart(current, next *AppConfig) bool {
+	cur, err := ConfigFingerprint(current, true)
+	if err != nil {
+		return true
+	}
+	nxt, err := ConfigFingerprint(next, true)
+	if err != nil {
+		return true
+	}
+	return cur != nxt
+}
+
 // GetTokenExpiry gets Token expiry duration
 // GetTokenExpiry 获取 Token 过期时间
 func (c *AppConfig) GetTokenExpiry() time.Duration {

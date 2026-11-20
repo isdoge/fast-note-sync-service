@@ -834,6 +834,9 @@ type gitSyncSkippedPost struct {
 }
 
 // skipSummary 生成 "skipped N invalid post(s): foo.md: reason" 形式的摘要。
+// The English prefix is part of the wire format consumed by WebGUI/plugin
+// localization and existing automation; keep it stable.
+// 英文前缀属于 WebGUI/插件本地化与既有自动化依赖的回传格式，保持不变。
 func (r *gitSyncRunReport) skipSummary() string {
 	if r == nil || len(r.skipped) == 0 {
 		return ""

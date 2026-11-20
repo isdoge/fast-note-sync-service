@@ -35,17 +35,24 @@ type App struct {
 	*Services
 
 	// App-level state and control
-	shutdownCh       chan struct{}
-	UpgradeSignal    chan string
-	StartTime        time.Time
-	wg               sync.WaitGroup
-	checkVersionMu   sync.RWMutex
-	checkVersion     pkgapp.CheckVersionInfo
-	serviceReleases  []pkgapp.HistoricalVersion // Cached filtered service releases // 缓存的已过滤服务版本列表
-	pluginReleases   []pkgapp.HistoricalVersion // Cached filtered plugin releases // 缓存的已过滤插件版本列表
-	supportRecordsMu sync.RWMutex
-	supportRecords   map[string][]pkgapp.SupportRecord
-	wss              *pkgapp.WebsocketServer // WebSocket server reference // WebSocket 服务器引用
+	shutdownCh      chan struct{}
+	UpgradeSignal   chan string
+	StartTime       time.Time
+	wg              sync.WaitGroup
+	checkVersionMu  sync.RWMutex
+	checkVersion    pkgapp.CheckVersionInfo
+	serviceReleases []pkgapp.HistoricalVersion // Cached filtered service releases // 缓存的已过滤服务版本列表
+	pluginReleases  []pkgapp.HistoricalVersion // Cached filtered plugin releases // 缓存的已过滤插件版本列表
+	// configMu guards the config reload bookkeeping below. Fingerprints are taken
+	// when the server starts and refreshed only when a hot-reloadable field is
+	// applied, so the file watcher can tell "restart required" from "apply in place".
+	// configMu 保护下面的配置重载簿记。指纹在服务启动时记录，只有应用热更新字段时刷新，
+	// 文件监听器据此区分“需要重启”和“原地更新”。
+	configMu             sync.Mutex
+	configHotFingerprint string // Fingerprint of the running config, admin-uid normalized away // 运行中配置的指纹（已归一化 admin-uid）
+	supportRecordsMu     sync.RWMutex
+	supportRecords       map[string][]pkgapp.SupportRecord
+	wss                  *pkgapp.WebsocketServer // WebSocket server reference // WebSocket 服务器引用
 }
 
 // NewApp creates application container instance
@@ -91,6 +98,13 @@ func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS) (*App
 	// 4. Initialize Services (needs app context for some reason? No, it's just wiring)
 	a.Services = initServices(cfg, infra, repos, logger)
 
+	// Record the startup config fingerprint so the config-file watcher can decide
+	// later whether a change needs a full server rebuild or can be applied in place.
+	// 记录启动时的配置指纹，供配置文件监听器后续判断是整体重建服务还是原地热更新。
+	if err := a.captureConfigFingerprint(cfg); err != nil {
+		return nil, fmt.Errorf("failed to fingerprint startup config: %w", err)
+	}
+
 	// Load support records
 	a.loadSupportRecords(efs)
 
@@ -126,6 +140,57 @@ func (a *App) Close() error {
 // Config 获取应用配置
 func (a *App) Config() *AppConfig {
 	return a.config
+}
+
+// captureConfigFingerprint stores fingerprints of the config as it is bound into
+// the running server. Called once at startup and after each in-place hot reload.
+// captureConfigFingerprint 记录当前绑定到运行中服务的配置指纹；启动时调用一次，
+// 之后每次原地热更新再刷新。
+func (a *App) captureConfigFingerprint(cfg *AppConfig) error {
+	hot, err := ConfigFingerprint(cfg, true)
+	if err != nil {
+		return err
+	}
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	a.configHotFingerprint = hot
+	return nil
+}
+
+// ApplyConfigFileReload handles a config-file write detected by the watcher.
+// It returns true when settings bound at initialization changed and the caller
+// must rebuild the server. A change confined to user.admin-uid is applied to the
+// live in-memory config and returns false, so updating the administrator no
+// longer tears down listeners or resets in-flight connections.
+// ApplyConfigFileReload 处理监听器检测到的配置文件写入。
+// 返回 true 表示初始化时绑定的设置发生变化，调用方必须重建服务；
+// 若变化仅限 user.admin-uid，则直接更新内存配置并返回 false，
+// 避免设置管理员时关闭监听器、打断正在进行的连接。
+func (a *App) ApplyConfigFileReload(next *AppConfig) bool {
+	if a == nil || a.config == nil || next == nil {
+		return true
+	}
+	hot, err := ConfigFingerprint(next, true)
+	if err != nil {
+		a.logger.Error("config reload failed to fingerprint new config", zap.Error(err))
+		return true
+	}
+
+	a.configMu.Lock()
+	defer a.configMu.Unlock()
+	if hot != a.configHotFingerprint {
+		return true
+	}
+
+	previousAdminUID := a.config.User.AdminUID
+	a.config.User.AdminUID = next.User.AdminUID
+	a.configHotFingerprint = hot
+	if previousAdminUID != next.User.AdminUID {
+		a.logger.Info("config reload applied without restart",
+			zap.String("field", "user.admin-uid"),
+			zap.Int("value", next.User.AdminUID))
+	}
+	return false
 }
 
 // Logger gets logger
@@ -652,8 +717,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 			a.logger.Warn("Share service shutdown error", zap.Error(err))
 		}
 	}
-
-
 
 	// 0.2 Shutdown CloudflareService
 	if a.CloudflareService != nil {

@@ -99,19 +99,31 @@ type GitSyncVaultTriggerRequest struct {
 }
 
 // GitSyncPublicStatusDTO is the client-safe status view: no RepoURL, Username, Password or
-// WebhookURL, so a vault-scoped plugin token cannot learn private endpoints.
+// WebhookURL, so a vault-scoped plugin token cannot learn private endpoints. The mapping
+// summary fields (SourceDir, RequireFrontmatter, ValidateFrontmatter, BundleAssets) are
+// read-only configuration hints, never credentials.
 // GitSyncPublicStatusDTO 是客户端安全的状态视图：不含 RepoURL、Username、Password、WebhookURL，
-// 限定库的插件令牌无法借此获知私有地址。
+// 限定库的插件令牌无法借此获知私有地址。映射摘要字段（SourceDir、RequireFrontmatter、
+// ValidateFrontmatter、BundleAssets）是只读的配置提示，绝不包含凭据。
 type GitSyncPublicStatusDTO struct {
-	ID           int64      `json:"id"`
-	Vault        string     `json:"vault"`
-	Branch       string     `json:"branch"`
-	TargetSubdir string     `json:"targetSubdir"`
-	IsEnabled    bool       `json:"isEnabled"`
-	LastSyncTime timex.Time `json:"lastSyncTime"`
-	LastStatus   int64      `json:"lastStatus"`
-	LastMessage  string     `json:"lastMessage"`
-	UpdatedAt    timex.Time `json:"updatedAt"`
+	ID           int64  `json:"id"`
+	Vault        string `json:"vault"`
+	Branch       string `json:"branch"`
+	TargetSubdir string `json:"targetSubdir"`
+	// Read-only, non-secret mapping summary. These describe how notes are exported
+	// (which local folder, which frontmatter filter, whether assets are bundled) and
+	// never expose repository endpoints or credentials.
+	// 只读、非敏感的映射摘要：导出源目录、Frontmatter 过滤条件、是否预检与汇聚附件；
+	// 不包含仓库地址或任何凭据。
+	SourceDir           string     `json:"sourceDir"`
+	RequireFrontmatter  string     `json:"requireFrontmatter"`
+	ValidateFrontmatter bool       `json:"validateFrontmatter"`
+	BundleAssets        bool       `json:"bundleAssets"`
+	IsEnabled           bool       `json:"isEnabled"`
+	LastSyncTime        timex.Time `json:"lastSyncTime"`
+	LastStatus          int64      `json:"lastStatus"`
+	LastMessage         string     `json:"lastMessage"`
+	UpdatedAt           timex.Time `json:"updatedAt"`
 }
 
 // GitSyncHistoryRequest get sync history request

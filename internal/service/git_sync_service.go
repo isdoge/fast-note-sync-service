@@ -610,14 +610,18 @@ func (s *gitSyncService) GetVaultStatuses(ctx context.Context, uid int64, vaultN
 	res := make([]*dto.GitSyncPublicStatusDTO, 0, len(configs))
 	for _, conf := range configs {
 		item := &dto.GitSyncPublicStatusDTO{
-			ID:           conf.ID,
-			Vault:        v.Name,
-			Branch:       conf.Branch,
-			TargetSubdir: conf.TargetSubdir,
-			IsEnabled:    conf.IsEnabled,
-			LastStatus:   conf.LastStatus,
-			LastMessage:  conf.LastMessage,
-			UpdatedAt:    timex.Time(conf.UpdatedAt),
+			ID:                  conf.ID,
+			Vault:               v.Name,
+			Branch:              conf.Branch,
+			TargetSubdir:        conf.TargetSubdir,
+			SourceDir:           conf.SourceDir,
+			RequireFrontmatter:  conf.RequireFrontmatter,
+			ValidateFrontmatter: conf.ValidateFrontmatter,
+			BundleAssets:        conf.BundleAssets,
+			IsEnabled:           conf.IsEnabled,
+			LastStatus:          conf.LastStatus,
+			LastMessage:         conf.LastMessage,
+			UpdatedAt:           timex.Time(conf.UpdatedAt),
 		}
 		if conf.LastSyncTime != nil {
 			item.LastSyncTime = timex.Time(*conf.LastSyncTime)
@@ -878,6 +882,11 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 	} else {
 		s.logger.Info("Git sync task success", zap.Int64("configId", conf.ID))
 		finalStatus = domain.GitSyncStatusSuccess
+		// Keep the English wire format stable: WebGUI and the Obsidian plugin
+		// localize this message client-side, and existing scripts/tests match
+		// the "Sync completed at ..." prefix.
+		// 保持英文回传格式稳定：WebGUI 与 Obsidian 插件在客户端按界面语言本地化，
+		// 既有脚本与测试也匹配 “Sync completed at ...” 前缀。
 		message = "Sync completed at " + endTime.Format("2006-01-02 15:04:05")
 		if report != nil {
 			if receipt := report.hookReceipt; receipt != "" {
