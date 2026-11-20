@@ -11,6 +11,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/convert"
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -49,6 +50,23 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
+
+	// 客户端未上报内容哈希时先按内容回退计算，让下面的 UpdateCheck 与后续写入使用
+	// 同一哈希：fns-bin-v1: 二进制载荷按解码后的原始字节哈希，普通文本按原字符串。
+	// 非法 base64 在更新检查前就拒绝，避免写库后才发现无法还原。
+	// Derive a missing content hash before UpdateCheck so the check and the later
+	// write agree: binary fns-bin-v1: payloads hash their decoded raw bytes, plain
+	// text keeps the legacy string hash. Corrupt base64 is rejected before any
+	// database work.
+	if params.ContentHash == "" {
+		hash, err := util.SettingContentHashBytes(params.Content)
+		if err != nil {
+			h.respondErrorWithPath(c, code.ErrorInvalidParams, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ContentHash")
+			return
+		}
+		params.ContentHash = hash
+	}
+
 	// mtime 缺省（<=0）时先按 0 做更新检查：内容与服务端一致时 UpdateCheck 会
 	// 返回 UpdateMtime（不改库、不广播），这正是幂等返回；只有确需写入时才在下方
 	// 用服务端当前时间兜底，避免把内容未变的配置改写时间戳并广播。

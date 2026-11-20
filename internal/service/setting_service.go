@@ -214,6 +214,27 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 		return false, nil, err
 	}
 
+	// 客户端未上报内容哈希时由服务端回退计算：二进制配置（fns-bin-v1: 前缀）
+	// 必须按解码后的原始字节哈希，普通文本仍按原字符串哈希。非法 base64 直接
+	// 拒绝，避免把客户端永远算不出哈希的脏数据写进库。
+	// When the client omits contentHash the server derives it: binary settings
+	// (fns-bin-v1: prefix) hash their decoded raw bytes while plain text keeps the
+	// legacy string hash. Corrupt base64 is rejected instead of persisted.
+	if params.ContentHash == "" {
+		hash, err := util.SettingContentHashBytes(params.Content)
+		if err != nil {
+			return false, nil, code.ErrorInvalidParams.WithDetails(err.Error())
+		}
+		params.ContentHash = hash
+	} else if util.IsEncodedSettingContent(params.Content) {
+		// 客户端已上报哈希时仍要校验载荷可解码，否则会存下无法还原的脏数据。
+		// Even with a client-supplied hash, validate the payload is decodable so
+		// undecodable content is never persisted.
+		if _, _, err := util.DecodeSettingContentBytes(params.Content); err != nil {
+			return false, nil, code.ErrorInvalidParams.WithDetails(err.Error())
+		}
+	}
+
 	key := fmt.Sprintf("modify_or_create_%d_%d_%s", uid, vaultID, params.PathHash)
 	type result struct {
 		isNew bool
