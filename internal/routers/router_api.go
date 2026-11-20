@@ -32,6 +32,15 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		// MCP routes
 		registerMCPRoutes(api, appContainer, wss)
 
+		// Event streams bypass ContextTimeout and explicitly restore language/access logging.
+		// 事件流绕过 ContextTimeout，并显式补齐语言与访问日志中间件。
+		events := api.Group("")
+		events.Use(middleware.LangWithTranslator(uni))
+		events.Use(middleware.AccessLogWithLogger(appContainer.Logger()))
+		events.Use(middleware.UserAuthTokenWithConfigStrict(cfg.Security.AuthTokenKey, appContainer.TokenService, cfg.Security.StrictEmptyProtocol))
+		events.Use(middleware.RequireWebGUI())
+		events.GET("/webgui/events", api_router.NewEventHandler(appContainer, wss).Stream)
+
 		api.Use(middleware.ContextTimeout(time.Duration(cfg.App.DefaultContextTimeout) * time.Second))
 		api.Use(middleware.LangWithTranslator(uni))
 		api.Use(middleware.AccessLogWithLogger(appContainer.Logger()))
@@ -42,7 +51,7 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		userHandler := api_router.NewUserHandler(appContainer)
 		vaultHandler := api_router.NewVaultHandler(appContainer)
 		noteHandler := api_router.NewNoteHandler(appContainer, wss)
-		folderHandler := api_router.NewFolderHandler(appContainer)
+		folderHandler := api_router.NewFolderHandler(appContainer, wss)
 		fileHandler := api_router.NewFileHandler(appContainer, wss)
 		noteHistoryHandler := api_router.NewNoteHistoryHandler(appContainer, wss)
 		versionHandler := api_router.NewVersionHandler(appContainer)
@@ -98,7 +107,7 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		// Auth routing group (authentication required)
 		// 需要认证的路由组
 		auth := api.Group("/")
-		auth.Use(middleware.UserAuthTokenWithConfig(cfg.Security.AuthTokenKey, appContainer.TokenService))
+		auth.Use(middleware.UserAuthTokenWithConfigStrict(cfg.Security.AuthTokenKey, appContainer.TokenService, cfg.Security.StrictEmptyProtocol))
 		{
 			// Create share
 			// 创建分享
@@ -110,16 +119,36 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 			auth.POST("/share/short_link", shareHandler.CreateShortLink)
 			auth.GET("/shares", shareHandler.List)
 
-			// Admin config interface
-			// 管理员配置接口
-			auth.GET("/admin/upgrade", adminControlHandler.Upgrade)
-			auth.GET("/admin/check", adminControlHandler.CheckAdmin)
-			auth.GET("/admin/ws_clients", adminControlHandler.GetWSClients)
-			auth.DELETE("/admin/ws_client/:traceId", adminControlHandler.KickWSClient)
-
 			// Version source latency probe (auth required: triggers real outbound requests)
 			// 版本源延迟探测（需认证：会触发真实的外部网络请求）
 			auth.GET("/version/probe", versionHandler.ProbeSources)
+
+			// Admin status check: any authenticated token may call; reports
+			// whether the caller is the effective admin so clients (Obsidian
+			// plugin's upgrade dialog) can decide whether to show admin-only
+			// features. Vault restrictions do not apply (user-level route).
+			// 管理员状态查询：任何已认证令牌均可调用，报告调用者是否为生效
+			// 管理员，供客户端（Obsidian 插件的升级对话框）决定是否展示
+			// 管理员专属功能。不适用库限制（用户级路由）。
+			auth.GET("/admin/check", adminControlHandler.CheckAdmin)
+
+			// Online client list: read-only and, like /api/admin/check, reports
+			// data only after the handler's effective-admin check. It stays in
+			// the plain auth group so the Obsidian plugin's "online clients"
+			// menu works with the user's own API token, as before 3.8.0.
+			// 在线客户端列表：只读，且 handler 内部要求生效管理员。保留在普通
+			// 鉴权组，使官方插件用用户自己的 API 令牌也能打开“在线客户端”，
+			// 与 3.8.0 之前一致。
+			auth.GET("/admin/ws_clients", adminControlHandler.GetWSClients)
+
+			// Server self-upgrade: stays in the plain auth group for client
+			// compatibility (WebGUI login tokens and admin-owned manual tokens
+			// with config_w both work). The handler requires the effective
+			// admin; the route function is classified as config write.
+			// 服务端自升级：为兼容既有客户端保留在普通鉴权组（WebGUI 登录令牌
+			// 与管理员名下含 config_w 的手动令牌均可使用）。handler 内部要求
+			// 生效管理员；路由功能点归类为配置写。
+			auth.GET("/admin/upgrade", adminControlHandler.Upgrade)
 
 			auth.GET("/user/info", userHandler.UserInfo)
 			auth.POST("/oauth/stytch/authorize/start", stytchOAuthHandler.AuthorizeStart)
@@ -194,8 +223,8 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.POST("/vault/rebuild-index", vaultHandler.RebuildIndex)
 				webguiGroup.POST("/vault/force-delete-item", vaultHandler.ForceDeleteDataItem)
 
-				// Admin config interface
-				// 管理员配置接口
+				// Admin config interface (effective admin required)
+				// 管理员配置接口（需生效管理员）
 				webguiGroup.GET("/admin/config", adminControlHandler.GetConfig)
 				webguiGroup.POST("/admin/config", adminControlHandler.UpdateConfig)
 				webguiGroup.GET("/admin/config/user_database", adminControlHandler.GetUserDatabaseConfig)
@@ -212,6 +241,15 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 				webguiGroup.GET("/admin/users/list", adminControlHandler.GetUsers)
 				webguiGroup.POST("/admin/users/create", adminControlHandler.CreateUser)
 				webguiGroup.POST("/admin/users/update", adminControlHandler.UpdateUser)
+
+				// Admin WS control that mutates state stays WebGUI-only: manual
+				// API tokens (p:rest) must not kick connections. The read-only
+				// client list moved to the plain auth group (effective-admin
+				// check in the handler), see the comment there.
+				// 会改变状态的管理写操作仍仅限 WebGUI：手动 API 令牌（p:rest）
+				// 不得踢连接。只读的在线客户端列表已移回普通鉴权组（handler
+				// 内部校验生效管理员），见上方注释。
+				webguiGroup.DELETE("/admin/ws_client/:traceId", adminControlHandler.KickWSClient)
 
 				// Storage management routes
 				// 存储配置接口

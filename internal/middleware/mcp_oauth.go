@@ -14,6 +14,7 @@ import (
 	internaloauth "github.com/haierkeys/fast-note-sync-service/internal/oauth"
 	"github.com/haierkeys/fast-note-sync-service/internal/service"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 )
 
 type MCPOAuthVerifier interface {
@@ -42,9 +43,25 @@ type MCPMixedAuthConfig struct {
 	DefaultClient        string
 	DefaultClientName    string
 	DefaultClientVersion string
+	// StrictEmptyProtocol rejects scopes with an empty protocol dimension
+	// instead of treating them as wildcards (security.strict-empty-protocol).
+	// StrictEmptyProtocol 拒绝协议维度为空的 scope，不再当通配处理
+	// （security.strict-empty-protocol）。
+	StrictEmptyProtocol bool
+	// OAuthVaults is the vault allowlist injected for OAuth-authenticated
+	// requests (oauth.vaults). Empty means unrestricted.
+	// OAuthVaults 是 OAuth 鉴权请求注入的库白名单（oauth.vaults）。空 = 不限制。
+	OAuthVaults string
 }
 
 func MCPOAuthWithConfig(oauthCfg config.OAuthConfig, secretKey string, tokenService service.TokenService, userRepo domain.UserRepository) gin.HandlerFunc {
+	return MCPOAuthWithConfigStrict(oauthCfg, secretKey, tokenService, userRepo, false)
+}
+
+// MCPOAuthWithConfigStrict is MCPOAuthWithConfig with the strict
+// empty-protocol flag forwarded to scope verification.
+// MCPOAuthWithConfigStrict 是带严格空协议开关的 MCPOAuthWithConfig。
+func MCPOAuthWithConfigStrict(oauthCfg config.OAuthConfig, secretKey string, tokenService service.TokenService, userRepo domain.UserRepository, strictEmptyProtocol bool) gin.HandlerFunc {
 	oauthCfg.Normalize()
 	return MCPMixedAuthWithConfig(secretKey, tokenService, MCPMixedAuthConfig{
 		OAuthEnabled:         oauthCfg.Enabled,
@@ -54,6 +71,8 @@ func MCPOAuthWithConfig(oauthCfg config.OAuthConfig, secretKey string, tokenServ
 		DefaultClient:        oauthCfg.DefaultClient,
 		DefaultClientName:    oauthCfg.DefaultClientName,
 		DefaultClientVersion: oauthCfg.DefaultClientVersion,
+		StrictEmptyProtocol:  strictEmptyProtocol,
+		OAuthVaults:          util.JoinVaultAllowlist(oauthCfg.Vaults),
 	})
 }
 
@@ -64,9 +83,9 @@ func MCPOAuthWithConfig(oauthCfg config.OAuthConfig, secretKey string, tokenServ
 // 而不是 response.ToResponse(appErr) —— 后者因 pkg/code 的 Code.StatusCode()
 // 恒返回 http.StatusOK，会产出 HTTP 200 + {"code":307,"尚未登录"}，
 // MCP 客户端据此把响应读成「零 tool」并拦停整个 job（kvpac-ymehx）。
-func mcpPlainTokenAuth(secretKey string, tokenService service.TokenService, resource string) gin.HandlerFunc {
+func mcpPlainTokenAuth(secretKey string, tokenService service.TokenService, resource string, strictEmptyProtocol bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		user, scope, vaults, dbToken, appErr := AuthenticateUserToken(c, secretKey, tokenService)
+		user, scope, vaults, dbToken, appErr := AuthenticateUserTokenStrict(c, secretKey, tokenService, strictEmptyProtocol)
 		if appErr != nil {
 			writeOAuthChallenge(c, http.StatusUnauthorized, resource, "invalid_token")
 			return
@@ -89,12 +108,12 @@ func MCPMixedAuthWithConfig(secretKey string, tokenService service.TokenService,
 			// Code.StatusCode() 恒返回 http.StatusOK，故产出 HTTP 200 + {"code":307,"尚未登录"}。
 			// MCP 客户端会把 200 当作成功去解析 JSON-RPC，失败后判「零 tool」，
 			// 冷启动首连即拦停整个 job（见 kvpac-ymehx）。
-			mcpPlainTokenAuth(secretKey, tokenService, cfg.Resource)(c)
+			mcpPlainTokenAuth(secretKey, tokenService, cfg.Resource, cfg.StrictEmptyProtocol)(c)
 			return
 		}
 
 		if cfg.AllowStaticFNSToken && ExtractUserAuthToken(c) != "" {
-			if user, scope, vaults, _, err := AuthenticateUserToken(c, secretKey, tokenService); err == nil {
+			if user, scope, vaults, _, err := AuthenticateUserTokenStrict(c, secretKey, tokenService, cfg.StrictEmptyProtocol); err == nil {
 				c.Set("user_token", user)
 				c.Set("scope", scope)
 				c.Set("vaults", vaults)
@@ -135,7 +154,7 @@ func MCPMixedAuthWithConfig(secretKey string, tokenService service.TokenService,
 		}
 
 		ensureMCPClientHeaders(c, cfg, claims)
-		if !pkgapp.VerifyPermissions(scope, "mcp", c.GetHeader("X-Client"), "") {
+		if !pkgapp.VerifyPermissionsWithStrictEmptyProtocol(scope, "mcp", c.GetHeader("X-Client"), "", cfg.StrictEmptyProtocol) {
 			log.Printf("mcp oauth rejected: reason=fns_permission_failed path=%s uid=%d client=%q fns_scope=%q oauth_scopes=%q", c.Request.URL.Path, uid, c.GetHeader("X-Client"), scope, strings.Join(claims.OAuthScopes, " "))
 			writeOAuthChallenge(c, http.StatusForbidden, cfg.Resource, "insufficient_scope")
 			return
@@ -143,6 +162,20 @@ func MCPMixedAuthWithConfig(secretKey string, tokenService service.TokenService,
 
 		c.Set("user_token", &pkgapp.UserEntity{UID: uid})
 		c.Set("scope", scope)
+		// Inject the configured OAuth vault allowlist; empty means all vaults
+		// of the mapped user (existing connectors keep working).
+		// 注入配置的 OAuth 库白名单；空表示映射用户的全部库
+		// （现有连接器不受影响）。
+		c.Set("vaults", cfg.OAuthVaults)
+		// Keep token attributes consistent with the static-token branch (B8):
+		// OAuth tokens are not database rows, so issue type 0 marks
+		// "not a login/manual DB token" and the client type comes from the
+		// verified headers above.
+		// 与静态令牌分支保持一致的令牌属性注入（B8）：OAuth 令牌不是数据库
+		// 行，issue type 用 0 表示"非登录/手动库内令牌"，客户端类型来自上方
+		// 已校验的请求头。
+		c.Set("token_issue_type", 0)
+		c.Set("token_client_type", c.GetHeader("X-Client"))
 		c.Next()
 	}
 }

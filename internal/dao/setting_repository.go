@@ -48,8 +48,8 @@ func init() {
 // setting 获取配置查询对象
 func (r *settingRepository) setting(uid int64) *query.Query {
 	key := r.GetKey(uid)
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "Setting")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "Setting")
 	}, key+"#setting", key)
 }
 
@@ -145,6 +145,59 @@ func (r *settingRepository) ListByPathHash(ctx context.Context, pathHash string,
 		results = append(results, s)
 	}
 	return results, nil
+}
+
+// ListByPathHashesMeta batch-queries setting metadata keyed by path hash (all statuses
+// included). For duplicate rows of one hash the one with the latest updated_timestamp wins.
+// Only metadata columns are selected — content files are not read (fillSettingContent is
+// skipped). Chunked (500 per IN query) to stay below SQLite's parameter limit; used to
+// diff out-of-window entries in incremental sync.
+// ListByPathHashesMeta 以路径哈希为键批量获取配置元数据（含所有状态），同一哈希多行时
+// 保留 updated_timestamp 最新的一条。只查元数据列、不读正文文件（跳过 fillSettingContent）。
+// 每批 500 条分块查询以避开 SQLite 参数上限；用于增量同步窗口外条目的比对。
+func (r *settingRepository) ListByPathHashesMeta(ctx context.Context, pathHashes []string, vaultID, uid int64) (map[string]*domain.Setting, error) {
+	result := make(map[string]*domain.Setting, len(pathHashes))
+	if len(pathHashes) == 0 {
+		return result, nil
+	}
+
+	u := r.setting(uid).Setting
+	const chunkSize = 500
+	for start := 0; start < len(pathHashes); start += chunkSize {
+		end := start + chunkSize
+		if end > len(pathHashes) {
+			end = len(pathHashes)
+		}
+		ms, err := u.WithContext(ctx).Where(
+			u.VaultID.Eq(vaultID),
+			u.PathHash.In(pathHashes[start:end]...),
+		).Order(u.UpdatedTimestamp.Desc()).Find()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			// 同一哈希的历史重复行保留 UpdatedTimestamp 最新的一条。
+			// Keep the latest metadata row for each hash.
+			if _, ok := result[m.PathHash]; !ok {
+				result[m.PathHash] = &domain.Setting{
+					ID:               m.ID,
+					VaultID:          m.VaultID,
+					Action:           domain.SettingAction(m.Action),
+					Path:             m.Path,
+					PathHash:         m.PathHash,
+					ContentHash:      m.ContentHash,
+					Size:             m.Size,
+					Rename:           m.Rename,
+					Ctime:            m.Ctime,
+					Mtime:            m.Mtime,
+					UpdatedTimestamp: m.UpdatedTimestamp,
+					CreatedAt:        time.Time(m.CreatedAt),
+					UpdatedAt:        time.Time(m.UpdatedAt),
+				}
+			}
+		}
+	}
+	return result, nil
 }
 
 // Create creates a setting

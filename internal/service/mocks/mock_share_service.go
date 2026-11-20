@@ -100,16 +100,24 @@ func (m *MockShareService) GetShareVaultName(ctx context.Context, uid int64, id 
 	return args.String(0), args.Error(1)
 }
 
-func (m *MockShareService) GetShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string) (*domain.UserShare, error) {
-	args := m.Called(ctx, uid, vaultName, pathHash)
+func (m *MockShareService) GetShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string, paths ...string) (*domain.UserShare, error) {
+	callArgs := []interface{}{ctx, uid, vaultName, pathHash}
+	for _, path := range paths {
+		callArgs = append(callArgs, path)
+	}
+	args := m.Called(callArgs...)
 	if v := args.Get(0); v != nil {
 		return v.(*domain.UserShare), args.Error(1)
 	}
 	return nil, args.Error(1)
 }
 
-func (m *MockShareService) StopShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string) error {
-	args := m.Called(ctx, uid, vaultName, pathHash)
+func (m *MockShareService) StopShareByPath(ctx context.Context, uid int64, vaultName string, pathHash string, paths ...string) error {
+	callArgs := []interface{}{ctx, uid, vaultName, pathHash}
+	for _, path := range paths {
+		callArgs = append(callArgs, path)
+	}
+	args := m.Called(callArgs...)
 	return args.Error(0)
 }
 

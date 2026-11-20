@@ -57,12 +57,20 @@ func TestTokenService_WebGUILoginTokenBindUA(t *testing.T) {
 	}
 }
 
-func TestTokenService_Create_ManualLegacyScopeIncludesMCP(t *testing.T) {
-	for _, tc := range []struct{ name, scope, protocol, want string }{
-		{"web-form", "rest,ws", "", "p:rest,ws,mcp c:ObsidianPlugin f:*"},
-		{"already-present", "rest,ws,mcp", "", "p:rest,ws,mcp c:ObsidianPlugin f:*"},
-		{"explicit-restricted", "rest,ws", "rest", "p:rest c:* f:*"},
-		{"wildcard", "*", "", "p:* c:ObsidianPlugin f:*"},
+// 旧 scope 分支不再隐式追加 mcp：仅申请 rest,ws 的令牌不得通过 MCP 校验；
+// 显式包含 mcp、显式 "*" 与三维分支的显式协议限制均按请求原样签发。
+// 空协议维度默认落成 rest，避免省略 scope 时签出通配协议。
+func TestTokenService_Create_ManualLegacyScopeIssuesAsRequested(t *testing.T) {
+	for _, tc := range []struct {
+		name, scope, protocol, want string
+		wantMCP                     bool
+	}{
+		{"web-form", "rest,ws", "", "p:rest,ws c:ObsidianPlugin f:*", false},
+		{"already-present", "rest,ws,mcp", "", "p:rest,ws,mcp c:ObsidianPlugin f:*", true},
+		{"explicit-restricted", "rest,ws", "rest", "p:rest c:* f:*", false},
+		{"wildcard", "*", "", "p:* c:ObsidianPlugin f:*", true},
+		{"empty-scope-defaults-to-rest", "", "", "p:rest c:ObsidianPlugin f:*", false},
+		{"empty-protocol-in-3d-defaults-to-rest", "", "rest", "p:rest c:* f:*", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := &tokenWriteRepository{}
@@ -70,7 +78,7 @@ func TestTokenService_Create_ManualLegacyScopeIncludesMCP(t *testing.T) {
 			res, err := svc.Create(context.Background(), 1, &dto.TokenIssueRequest{Scope: tc.scope, Protocol: tc.protocol, ClientType: "ObsidianPlugin", ExpiredDays: 7})
 			require.NoError(t, err)
 			require.Equal(t, tc.want, res.Scope)
-			require.Equal(t, tc.protocol == "", app.VerifyPermissions(res.Scope, "mcp", "ObsidianPlugin", "note_r"))
+			require.Equal(t, tc.wantMCP, app.VerifyPermissions(res.Scope, "mcp", "ObsidianPlugin", "note_r"))
 		})
 	}
 }

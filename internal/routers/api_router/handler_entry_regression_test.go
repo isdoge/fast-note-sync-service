@@ -84,7 +84,7 @@ func TestRESTWrites_PathHashAfterCleaning(t *testing.T) {
 				s.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(s).Maybe()
 				a := app.NewTestApp(&app.Services{NoteService: n, FileService: f, FolderService: d, SettingService: s})
 				wss := pkgapp.NewWebsocketServer(pkgapp.WSConfig{}, a)
-				hN, hF, hD, hS := NewNoteHandler(a, wss), NewFileHandler(a, wss), NewFolderHandler(a), NewSettingHandler(a, wss)
+				hN, hF, hD, hS := NewNoteHandler(a, wss), NewFileHandler(a, wss), NewFolderHandler(a, wss), NewSettingHandler(a, wss)
 				inputHash := "caller-hash"
 				want := inputHash
 				if path == "/a.md" {

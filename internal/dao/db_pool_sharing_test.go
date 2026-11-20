@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -195,4 +196,66 @@ func TestGetOrCreateDB_BuildDoesNotBlockCachedKey(t *testing.T) {
 	}
 	close(release)
 	<-done
+}
+
+// TestQueryWithOnceInitWaitsForRunningMigration proves concurrent first callers
+// cannot query before the initialization function (e.g. AutoMigrate) returns.
+// TestQueryWithOnceInitWaitsForRunningMigration 验证并发首次调用不会在初始化
+// 函数（如 AutoMigrate）返回前就开始查询。
+func TestQueryWithOnceInitWaitsForRunningMigration(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "once.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	d := New(db, context.Background(), WithLogger(zap.NewNop()))
+
+	var initialized atomic.Int32
+	start := make(chan struct{})
+	errs := make(chan string, 16)
+	var wg sync.WaitGroup
+	for i := 0; i < cap(errs); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			d.QueryWithOnceInit(func(*gorm.DB) error {
+				time.Sleep(20 * time.Millisecond)
+				initialized.Add(1)
+				return nil
+			}, "once#test", "user_1")
+			if initialized.Load() != 1 {
+				errs <- "query returned before initialization completed"
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for msg := range errs {
+		t.Error(msg)
+	}
+	require.Equal(t, int32(1), initialized.Load())
+}
+
+// TestQueryWithOnceInitRetriesAfterInitFailure proves a transient initialization
+// failure (e.g. a busy_timeout while creating tables) does not mark the key as
+// initialized, so the next call retries instead of failing forever.
+// TestQueryWithOnceInitRetriesAfterInitFailure 验证首次建表瞬时失败不会把
+// onceKey 标记为已完成，下一次调用会重试，而不是进程内永久跳过建表。
+func TestQueryWithOnceInitRetriesAfterInitFailure(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "retry.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	d := New(db, context.Background(), WithLogger(zap.NewNop()))
+
+	var calls atomic.Int32
+	init := func(*gorm.DB) error {
+		if calls.Add(1) == 1 {
+			return errors.New("transient DDL failure")
+		}
+		return nil
+	}
+	d.QueryWithOnceInit(init, "once#retry")
+	require.Equal(t, int32(1), calls.Load(), "first call must run initialization")
+	d.QueryWithOnceInit(init, "once#retry")
+	require.Equal(t, int32(2), calls.Load(), "failed initialization must be retried")
+	d.QueryWithOnceInit(init, "once#retry")
+	require.Equal(t, int32(2), calls.Load(), "successful initialization must not run again")
 }

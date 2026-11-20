@@ -1,6 +1,7 @@
 package websocket_router
 
 import (
+	"errors"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
@@ -118,17 +119,10 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 
 	folderSvc := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion())
 
-	var cFolders map[string]dto.FolderSyncCheckRequest = make(map[string]dto.FolderSyncCheckRequest)
-	var cFoldersKeys map[string]struct{} = make(map[string]struct{}, 0)
-	if len(params.Folders) > 0 {
-		for _, f := range params.Folders {
-			// 客户端可能传秒级时间戳，归一化为毫秒再参与墓碑闸门比较（#461）
-			f.Mtime = timex.NormalizeMilli(f.Mtime)
-			cFolders[f.PathHash] = f
-		}
-		for _, folder := range params.Folders {
-			cFoldersKeys[folder.PathHash] = struct{}{}
-		}
+	cFolders := newSyncInventory[dto.FolderSyncCheckRequest]()
+	for _, item := range params.Folders {
+		item.Mtime = timex.NormalizeMilli(item.Mtime)
+		cFolders.add(item.Path, item.PathHash, item)
 	}
 
 	var messageQueue []dto.WSQueuedMessage
@@ -142,11 +136,25 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 
 		for _, delFolder := range params.DelFolders {
 
-			// Check if folder exists before deleting
+			// Check if folder exists before deleting. Pass the full path so a hash
+			// collision cannot make Get ambiguous and skip a real deletion.
+			// 删除前先确认目录存在；带上完整路径，避免哈希碰撞让 Get 产生歧义而
+			// 漏删存活目录。
 			checkFolder, err := folderSvc.Get(ctx, uid, &dto.FolderGetRequest{
 				Vault:    params.Vault,
+				Path:     delFolder.Path,
 				PathHash: delFolder.PathHash,
 			})
+			if err != nil && !errors.Is(err, code.ErrorFolderNotFound) {
+				// 查询出错（哈希歧义、数据库错误等）时不能盲目广播删除。
+				// A failed lookup (ambiguous hash, database error, ...) must not
+				// turn into a blind delete broadcast.
+				h.App.Logger().Warn("websocket_router.folder.FolderSync.FolderService.Get failed, skipping deletion",
+					zap.String(logpkg.FieldTraceID, c.TraceID),
+					zap.String(logpkg.FieldPath, delFolder.Path),
+					zap.Error(err))
+				continue
+			}
 
 			if err == nil && checkFolder != nil && checkFolder.Action != "delete" {
 				if !hasWritePermission {
@@ -171,7 +179,7 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 						zap.Error(err))
 					continue
 				}
-				cDelFoldersKeys[delFolder.PathHash] = struct{}{}
+				cDelFoldersKeys[delFolder.Path] = struct{}{}
 				// Broadcast deletion to other clients
 				c.BroadcastResponse(code.Success.WithData(
 					dto.FolderSyncDeleteMessage{
@@ -183,11 +191,17 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 					},
 				).WithVault(params.Vault).WithContext(params.Context), true, FolderSyncDelete)
 			} else {
-				h.App.Logger().Debug("websocket_router.folder.FolderSync.FolderService.Get check failed (not found or already deleted), broadcasting delete anyway",
+				// 不存在或已删除：仍排除客户端主动删除的路径。
+				// 只读令牌不广播删除（它本来就没有删除权限）。
+				// Not found or already deleted: still exclude the path the client
+				// reported. A read-only token must not broadcast a delete at all.
+				cDelFoldersKeys[delFolder.Path] = struct{}{}
+				if !hasWritePermission {
+					continue
+				}
+				h.App.Logger().Debug("websocket_router.folder.FolderSync.FolderService.Get: folder not found or already deleted, broadcasting delete",
 					zap.String(logpkg.FieldTraceID, c.TraceID),
-					zap.String("pathHash", delFolder.PathHash))
-
-				cDelFoldersKeys[delFolder.PathHash] = struct{}{}
+					zap.String(logpkg.FieldPath, delFolder.Path))
 				// Broadcast deletion with available info
 				c.BroadcastResponse(code.Success.WithData(
 					dto.FolderSyncDeleteMessage{
@@ -220,8 +234,8 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 			}
 			if folder != nil && folder.Action != "delete" {
 				messageQueue = append(messageQueue, dto.WSQueuedMessage{
-						Context: params.Context,
-					Action: FolderSyncModify,
+					Context: params.Context,
+					Action:  FolderSyncModify,
 					Data: dto.FolderSyncModifyMessage{
 						Path:             folder.Path,
 						PathHash:         folder.PathHash,
@@ -231,7 +245,7 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 					},
 				})
 				needModifyCount++
-				cDelFoldersKeys[folder.PathHash] = struct{}{}
+				cDelFoldersKeys[folder.Path] = struct{}{}
 			}
 		}
 	}
@@ -250,15 +264,15 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 	}
 
 	for _, folder := range list {
-		if _, ok := cDelFoldersKeys[folder.PathHash]; ok {
+		if _, ok := cDelFoldersKeys[folder.Path]; ok {
 			continue
 		}
 
 		if folder.Action == "delete" {
-			delete(cFoldersKeys, folder.PathHash)
+			cFolders.take(folder.Path, folder.PathHash)
 			messageQueue = append(messageQueue, dto.WSQueuedMessage{
-						Context: params.Context,
-				Action: FolderSyncDelete,
+				Context: params.Context,
+				Action:  FolderSyncDelete,
 				Data: dto.FolderSyncDeleteMessage{
 					Path:             folder.Path,
 					PathHash:         folder.PathHash,
@@ -269,13 +283,12 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 			})
 			needDeleteCount++
 		} else {
-			delete(cFoldersKeys, folder.PathHash)
-			_, exists := cFolders[folder.PathHash]
+			_, exists := cFolders.take(folder.Path, folder.PathHash)
 			if !exists {
 
 				messageQueue = append(messageQueue, dto.WSQueuedMessage{
-						Context: params.Context,
-					Action: FolderSyncModify,
+					Context: params.Context,
+					Action:  FolderSyncModify,
 					Data: dto.FolderSyncModifyMessage{
 						Path:             folder.Path,
 						PathHash:         folder.PathHash,
@@ -289,9 +302,8 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 		}
 	}
 
-	if len(cFoldersKeys) > 0 {
-		for pathHash := range cFoldersKeys {
-			folder := cFolders[pathHash]
+	if remaining := cFolders.remaining(); len(remaining) > 0 {
+		for _, folder := range remaining {
 			if !validWSPath(folder.Path) {
 				h.App.Logger().Warn("websocket_router.folder.FolderSync: invalid folder path, skip creation",
 					zap.String(logpkg.FieldTraceID, c.TraceID),
@@ -307,7 +319,7 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 			// On lookup error skip too (conservative): a missed folder is repaired by the
 			// next sync round, while a wrong allow-through resurrects the tombstone and
 			// broadcasts it to every device (#152).
-			stale, err := folderSvc.IsStaleRevive(ctx, uid, params.Vault, folder.PathHash, folder.Mtime)
+			stale, err := folderSvc.IsStaleRevive(ctx, uid, params.Vault, folder.PathHash, folder.Mtime, folder.Path)
 			if err != nil {
 				h.App.Logger().Warn("websocket_router.folder.FolderSync.IsStaleRevive failed, skip folder",
 					zap.String(logpkg.FieldTraceID, c.TraceID),
@@ -405,7 +417,6 @@ func (h *FolderWSHandler) FolderSyncPageAck(c *pkgapp.WebsocketClient, msg *pkga
 	handlePageAck(c, entry, params.PageIndex, "folder", h.App.Logger(), c.TraceID)
 }
 
-
 // FolderModify handles folder modification/creation
 func (h *FolderWSHandler) FolderModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage) {
 	params := &dto.FolderCreateRequest{}
@@ -454,16 +465,17 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写路径（#342 S-8）：不去前导 "/"，仅按段拒绝越界与 NUL
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path").WithData(errPathData(slotPath)))
 		return
 	}
 
 	uid := c.User.UID
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).Delete(c.Context(), uid, params)
 	if err != nil {
-		h.respondError(c, code.ErrorFolderDeleteFailed, err, "websocket_router.folder.FolderDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorFolderDeleteFailed, err, slotPath, msg.Type, "websocket_router.folder.FolderDelete.Delete")
 		return
 	}
 
@@ -493,9 +505,10 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写新旧两个路径（#342 S-8）
 	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -503,7 +516,7 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	folderSvc := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion())
 	oldFolder, newFolder, err := folderSvc.Rename(c.Context(), uid, params)
 	if err != nil {
-		h.respondError(c, code.ErrorFolderRenameFailed, err, "websocket_router.folder.FolderRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorFolderRenameFailed, err, slotPath, msg.Type, "websocket_router.folder.FolderRename.Rename")
 		return
 	}
 

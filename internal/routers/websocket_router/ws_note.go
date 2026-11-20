@@ -63,20 +63,24 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		h.respondErrorWithData(c, code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()), errs, errs.MapsToString(), "websocket_router.note.NoteModify.BindAndValid", msg)
 		return
 	}
+	// 插件按原始路径（反斜杠未归一化）占并发名额；出错响应必须回这个路径。
+	// The plugin reserves its concurrency slot by the raw path (before backslash
+	// normalization); error responses must echo that path.
+	slotPath := clientSlotPath(c, msg, params.Path)
 	if params.PathHash == "" {
-		c.ToResponse(code.ErrorInvalidParams.WithDetails("pathHash is required"))
+		c.ToResponse(code.ErrorInvalidParams.WithDetails("pathHash is required").WithData(errPathData(slotPath)))
 		return
 	}
 	if params.ContentHash == "" {
-		c.ToResponse(code.ErrorInvalidParams.WithDetails("contentHash is required"))
+		c.ToResponse(code.ErrorInvalidParams.WithDetails("contentHash is required").WithData(errPathData(slotPath)))
 		return
 	}
 	if params.Mtime == 0 {
-		c.ToResponse(code.ErrorInvalidParams.WithDetails("mtime is required"))
+		c.ToResponse(code.ErrorInvalidParams.WithDetails("mtime is required").WithData(errPathData(slotPath)))
 		return
 	}
 	if params.Ctime == 0 {
-		c.ToResponse(code.ErrorInvalidParams.WithDetails("ctime is required"))
+		c.ToResponse(code.ErrorInvalidParams.WithDetails("ctime is required").WithData(errPathData(slotPath)))
 		return
 	}
 	// 部分第三方客户端传秒级时间戳，归一化为毫秒，避免新旧比较永远偏旧（#461）
@@ -87,7 +91,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	// （客户端按自己的路径记基线与哈希），因此不去前导 "/"、不补 ".md"，
 	// 仅按段拒绝 ".." 越界与 NUL。
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -105,7 +109,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	updateMode, checkedNote, nodeCheck, err := noteSvc.UpdateCheckWithNote(ctx, c.User.UID, checkParams)
 
 	if err != nil {
-		h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.UpdateCheck")
+		h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.note.NoteModify.UpdateCheck")
 		return
 	}
 
@@ -141,10 +145,10 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			}
 
 			// =========================================================================
-			// Hard Conflict Protection: 
-			// If strategy is manualMerge, the request has no resolution mark, and serverHash 
+			// Hard Conflict Protection:
+			// If strategy is manualMerge, the request has no resolution mark, and serverHash
 			// differs from baseHash, block the override immediately and return 530.
-			// 
+			//
 			// 硬冲突保护：
 			// 如果合并策略为手动合并，请求中未携带解决标记，且云端哈希与客户端基准哈希不匹配，
 			// 直接拦截该覆写并返回 530 错误及冲突明细。
@@ -254,7 +258,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 					if !params.BaseHashMissing {
 						noteHistory, err := h.App.NoteHistoryService.GetByNoteIDAndHash(ctx, c.User.UID, nodeCheck.ID, baseHash)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.GetByNoteIDAndHash")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.note.NoteModify.GetByNoteIDAndHash")
 							return
 						}
 
@@ -342,7 +346,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 						// 使用带冲突检测的文本检测
 						mergeResult, err = diff.MergeTexts(baseContent, clientContent, serverContent, pc1First)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.MergeTexts")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.note.NoteModify.MergeTexts")
 							return
 						}
 
@@ -366,7 +370,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 						// 强制合并 保留PC1 PC2全部文本
 						mergeResult.Content, err = diff.MergeTextsIgnoreConflictIgnoreDelete(baseContent, clientContent, serverContent, pc1First)
 						if err != nil {
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.MergeTextsIgnoreConflictIgnoreDelete")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.note.NoteModify.MergeTextsIgnoreConflictIgnoreDelete")
 							return
 						}
 
@@ -388,7 +392,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 								zap.Int64(logger.FieldUID, c.User.UID),
 								zap.String(logger.FieldPath, params.Path),
 								zap.Error(err))
-							h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.CreateConflictFile")
+							h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.note.NoteModify.CreateConflictFile")
 							return
 						}
 
@@ -441,7 +445,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				}
 				return
 			}
-			h.respondError(c, code.ErrorNoteModifyOrCreateFailed, err, "websocket_router.note.NoteModify.ModifyOrCreate")
+			h.respondErrorWithPath(c, code.ErrorNoteModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.note.NoteModify.ModifyOrCreate")
 			return
 		}
 
@@ -615,9 +619,10 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写路径（#342 S-8）：不去前导 "/"、不补 ".md"，仅按段拒绝越界与 NUL
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -634,7 +639,7 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	note, err := noteSvc.Delete(ctx, c.User.UID, params)
 
 	if err != nil {
-		h.respondError(c, code.ErrorNoteDeleteFailed, err, "websocket_router.note.handleNoteDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorNoteDeleteFailed, err, slotPath, msg.Type, "websocket_router.note.handleNoteDelete.Delete")
 		return
 	}
 
@@ -687,10 +692,11 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写新旧两个路径（#342 S-8）：不去前导 "/"、不补 ".md"，
 	// 仅按段拒绝越界与 NUL
 	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -699,7 +705,7 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	uid := c.User.UID
 	oldNote, newNote, err := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Rename(c.Context(), uid, params)
 	if err != nil {
-		h.respondError(c, code.ErrorRenameNoteTargetExist, err, "websocket_router.note.NoteRename.Rename")
+		h.respondErrorWithPath(c, code.ErrorRenameNoteTargetExist, err, slotPath, msg.Type, "websocket_router.note.NoteRename.Rename")
 		return
 	}
 
@@ -738,7 +744,15 @@ func (h *NoteWSHandler) NoteRePush(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	uid := c.User.UID
 	note, err := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion()).Get(c.Context(), uid, params)
 	if err != nil {
-		h.App.Logger().Debug("websocket_router.note.NoteRePush.Get: record not found or error, proceeding to send delete",
+		// 只有"确实不存在"才下发删除；哈希歧义、数据库错误等必须回错误，否则客户端
+		// 会删掉服务端明明存活的笔记。
+		// Only a genuine "not found" may turn into a delete; ambiguous hashes and
+		// database errors must return an error instead of deleting a live note locally.
+		if !errors.Is(err, code.ErrorNoteNotFound) {
+			h.respondErrorWithPath(c, code.ErrorNoteGetFailed, err, params.Path, msg.Type, "websocket_router.note.NoteRePush.Get")
+			return
+		}
+		h.App.Logger().Debug("websocket_router.note.NoteRePush.Get: note not found, proceeding to send delete",
 			zap.String(logger.FieldTraceID, c.TraceID),
 			zap.Error(err))
 	}
@@ -883,16 +897,11 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		return
 	}
 
-	var cNotes map[string]dto.NoteSyncCheckRequest = make(map[string]dto.NoteSyncCheckRequest, 0)
-	var cNotesKeys map[string]struct{} = make(map[string]struct{}, 0)
-
-	if len(params.Notes) > 0 {
-		for _, note := range params.Notes {
-			note.Ctime = timex.NormalizeMilli(note.Ctime)
-			note.Mtime = timex.NormalizeMilli(note.Mtime)
-			cNotes[note.PathHash] = note
-			cNotesKeys[note.PathHash] = struct{}{}
-		}
+	cNotes := newSyncInventory[dto.NoteSyncCheckRequest]()
+	for _, item := range params.Notes {
+		item.Ctime = timex.NormalizeMilli(item.Ctime)
+		item.Mtime = timex.NormalizeMilli(item.Mtime)
+		cNotes.add(item.Path, item.PathHash, item)
 	}
 
 	// Create message queue for collecting all messages to be sent
@@ -912,27 +921,31 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 	if len(params.DelNotes) > 0 {
 		hasWritePermission := pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "note_w")
 
-		// 批量预查一次性取回全部 pathHash 的存在性，避免逐条 noteSvc.Get 造成的
+		// 批量预查一次性取回全部路径的存在性，避免逐条 noteSvc.Get 造成的
 		// N+1 查询（且每条 Get 还会带上完全用不到的正文文件读取）
-		// Batch pre-check existence for all pathHashes in one query, avoiding the N+1
+		// Batch pre-check existence for all paths in one query, avoiding the N+1
 		// per-item noteSvc.Get calls (each of which also loads content that's never used here)
-		delPathHashes := make([]string, 0, len(params.DelNotes))
+		delPaths := make([]string, 0, len(params.DelNotes))
 		for _, delNote := range params.DelNotes {
-			delPathHashes = append(delPathHashes, delNote.PathHash)
+			delPaths = append(delPaths, delNote.Path)
 		}
-		existsMap, batchErr := noteSvc.ExistsBatch(ctx, c.User.UID, params.Vault, delPathHashes)
+		existsMap, batchErr := noteSvc.ExistsPathsBatch(ctx, c.User.UID, params.Vault, delPaths)
 		if batchErr != nil {
-			h.App.Logger().Warn("websocket_router.note.NoteSync.noteSvc.ExistsBatch",
-				zap.String(logger.FieldTraceID, c.TraceID),
-				zap.Int64(logger.FieldUID, c.User.UID),
-				zap.Error(batchErr))
-			existsMap = map[string]bool{}
+			// 批量存在性查询失败时无法判断哪些删除是真实的：若当作"服务端没有"继续，
+			// 客户端本轮上报的删除会被全部静默跳过，随后照常下发 NoteSyncEnd 推进游标，
+			// 下一轮服务端存活笔记会把客户端已删的笔记复活。这里直接让本轮同步失败。
+			// If the batch existence check fails we cannot tell which client deletions
+			// are real. Continuing with an empty result would silently skip every
+			// deletion and still advance the cursor via NoteSyncEnd, resurrecting
+			// locally deleted notes on the next round. Fail this sync round instead.
+			h.respondError(c, code.ErrorNoteListFailed, batchErr, "websocket_router.note.NoteSync.noteSvc.ExistsPathsBatch")
+			return
 		}
 
 		for _, delNote := range params.DelNotes {
 			// If note exists, execute delete
 			// 如果笔记存在，执行删除
-			if existsMap[delNote.PathHash] {
+			if existsMap[delNote.Path] {
 				if !hasWritePermission {
 					h.App.Logger().Warn("websocket_router.note.NoteSync: permission denied for deletion",
 						zap.String(logger.FieldTraceID, c.TraceID),
@@ -956,9 +969,9 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 					continue
 				}
 
-				// Record PathHash deleted by client to avoid duplicate sending
-				// 记录客户端已主动删除的 PathHash，避免重复下发
-				cDelNotesKeys[delNote.PathHash] = struct{}{}
+				// Record paths deleted by client to avoid duplicate sending
+				// 记录客户端已主动删除的路径，避免重复下发
+				cDelNotesKeys[delNote.Path] = struct{}{}
 
 				// 与单条删除入口一致：幂等删除只保留排除记录，不重复广播。
 				if note.Unchanged {
@@ -987,7 +1000,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 
 			} else {
 				// 不存在或已删除：仍排除客户端主动删除的路径，但不向其他端广播。
-				cDelNotesKeys[delNote.PathHash] = struct{}{}
+				cDelNotesKeys[delNote.Path] = struct{}{}
 			}
 		}
 	}
@@ -1027,14 +1040,14 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 				})
 				needModifyCount++
 				// 加入排除索引
-				cDelNotesKeys[note.PathHash] = struct{}{}
+				cDelNotesKeys[note.Path] = struct{}{}
 			}
 		}
 	}
 
 	for _, note := range list {
 		// 如果该笔记是客户端刚才通过参数告知删除的，则跳过下发
-		if _, ok := cDelNotesKeys[note.PathHash]; ok {
+		if _, ok := cDelNotesKeys[note.Path]; ok {
 			continue
 		}
 
@@ -1043,9 +1056,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		if note.Action == "delete" {
 			// Server already deleted, notify client to delete (regardless of whether client has it)
 			// 服务端已经删除, 通知客户端删除（不再检查客户端是否存在）
-			if _, ok := cNotes[note.PathHash]; ok {
-				delete(cNotesKeys, note.PathHash)
-			}
+			cNotes.take(note.Path, note.PathHash)
 			// 将消息添加到队列
 			messageQueue = append(messageQueue, dto.WSQueuedMessage{
 				Context: params.Context,
@@ -1063,9 +1074,7 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 		} else {
 			// Check if client has it
 			//检查客户端是否有
-			if cNote, ok := cNotes[note.PathHash]; ok {
-
-				delete(cNotesKeys, note.PathHash)
+			if cNote, ok := cNotes.take(note.Path, note.PathHash); ok {
 
 				if note.ContentHash == cNote.ContentHash && note.Mtime == cNote.Mtime {
 					// Content and modification time match, skip
@@ -1186,9 +1195,49 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 	// during query processing from being permanently missed on the next incremental sync.
 	// 使用查询前记录的 syncStartTime 作为 lastTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
 	lastTime = syncStartTime
-	if len(cNotesKeys) > 0 {
-		for pathHash := range cNotesKeys {
-			note := cNotes[pathHash]
+	if remaining := cNotes.remaining(); len(remaining) > 0 {
+		// 增量同步（lastTime > 0）时，窗口外条目先按路径批量查服务端当前行：
+		// 最新一行是存活行且内容哈希、修改时间都与客户端上报一致时静默跳过，
+		// 不再要求客户端无谓重传。其余情形（服务端没有、墓碑、哈希或修改时间不同）
+		// 保持原有"要求上传"的判定不变。
+		// In incremental sync (lastTime > 0), batch-fetch the server's current rows for
+		// out-of-window entries first: when the latest row is alive and both content hash
+		// and mtime match the client report, skip silently instead of requesting a
+		// needless re-upload. All other cases (missing, tombstone, hash or mtime
+		// mismatch) keep the existing "request upload" verdict unchanged.
+		var serverNotes map[string]*dto.NoteDTO
+		if params.LastTime > 0 {
+			paths := make([]string, 0, len(remaining))
+			for _, note := range remaining {
+				if note.Path != "" {
+					paths = append(paths, note.Path)
+				}
+			}
+			metaMap, metaErr := noteSvc.GetPathsMetaBatch(ctx, c.User.UID, params.Vault, paths)
+			if metaErr != nil {
+				// 查询失败退回原有行为：当作服务端没有，照旧要求上传
+				// On query failure fall back to the old behavior: treat as missing and request upload
+				h.App.Logger().Warn("websocket_router.note.NoteSync.GetPathsMetaBatch",
+					zap.String(logger.FieldTraceID, c.TraceID),
+					zap.Int64(logger.FieldUID, c.User.UID),
+					zap.Error(metaErr))
+			} else {
+				serverNotes = metaMap
+			}
+		}
+
+		for _, note := range remaining {
+			// 客户端带了路径时按路径核对（与窗口内 cNotes.take 的路径优先语义一致，
+			// 路径哈希碰撞的两条不同路径不会互相顶替）；老客户端没带路径时不做比对。
+			// When the client supplied a path, match by path (same path-first
+			// semantics as cNotes.take in-window; colliding paths never substitute for
+			// each other); legacy clients without a path are not compared.
+			if note.Path != "" {
+				if sNote, ok := serverNotes[note.Path]; ok && sNote != nil &&
+					sNote.Action != "delete" && sNote.ContentHash == note.ContentHash && sNote.Mtime == note.Mtime {
+					continue
+				}
+			}
 
 			if c.OfflineSyncStrategy() == "ignoreTimeMerge" || c.OfflineSyncStrategy() == "newTimeMerge" || c.OfflineSyncStrategy() == "manualMerge" {
 				c.DiffMergePathsMu.Lock()

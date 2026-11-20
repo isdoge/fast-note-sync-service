@@ -103,7 +103,7 @@ func deletedNoteFixture() *domain.Note {
 // 上传必须被拒绝且不写库（修复前该上传会把 delete 记录无条件翻回 create）。
 func TestNoteService_ModifyOrCreate_StaleReviveRejected(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(deletedNoteFixture(), nil)
 
 	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
@@ -128,7 +128,7 @@ func TestNoteService_ModifyOrCreate_StaleReviveRejected(t *testing.T) {
 // （用户在删除后真实编辑/重建）= 新意图，必须照常复活。
 func TestNoteService_ModifyOrCreate_FreshMtimeRevivesDeletedNote(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(deletedNoteFixture(), nil)
 
 	updated := deletedNoteFixture()
 	updated.Action = domain.NoteActionCreate
@@ -159,7 +159,7 @@ func TestNoteService_ModifyOrCreate_FreshMtimeRevivesDeletedNote(t *testing.T) {
 // mtime 保留旧值但 ctime（rename 会刷新）晚于删除时刻 → 属于真实恢复，放行。
 func TestNoteService_ModifyOrCreate_FreshCtimeRevivesDeletedNote(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(deletedNoteFixture(), nil)
 
 	updated := deletedNoteFixture()
 	updated.Action = domain.NoteActionCreate
@@ -205,7 +205,7 @@ func deletedFileFixture() *domain.File {
 
 func TestFileService_UpdateOrCreate_StaleReviveRejected(t *testing.T) {
 	fileRepo := new(domainmocks.MockFileRepository)
-	fileRepo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).Return(deletedFileFixture(), nil)
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "fh1", mock.Anything, int64(1), int64(1)).Return(deletedFileFixture(), nil)
 
 	svc := NewFileService(nil, fileRepo, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
@@ -229,7 +229,7 @@ func TestFileService_UpdateOrCreate_StaleReviveRejected(t *testing.T) {
 
 func TestFileService_UpdateOrCreate_FreshEditRevivesDeletedFile(t *testing.T) {
 	fileRepo := new(domainmocks.MockFileRepository)
-	fileRepo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).Return(deletedFileFixture(), nil)
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "fh1", mock.Anything, int64(1), int64(1)).Return(deletedFileFixture(), nil)
 
 	updated := deletedFileFixture()
 	updated.Action = domain.FileActionCreate
@@ -280,7 +280,7 @@ func TestFolderService_IsStaleRevive(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := new(domainmocks.MockFolderRepository)
-			repo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).Return(tc.folder, tc.err)
+			repo.On("GetByPathHashAndPath", mock.Anything, "fh1", mock.Anything, int64(1), int64(1)).Return(tc.folder, tc.err)
 
 			svc := NewFolderService(repo, nil, nil, stubVaultService{}, nil, nil, nil, nil)
 
@@ -299,7 +299,7 @@ func TestFolderService_IsStaleRevive(t *testing.T) {
 
 func TestNoteService_ModifyOrCreate_MtimeOnlyBranchSkipsTombstone(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(deletedNoteFixture(), nil)
 
 	svc := NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
@@ -322,7 +322,7 @@ func TestNoteService_ModifyOrCreate_MtimeOnlyBranchSkipsTombstone(t *testing.T) 
 
 func TestFileService_UpdateOrCreate_MtimeOnlyBranchSkipsTombstone(t *testing.T) {
 	fileRepo := new(domainmocks.MockFileRepository)
-	fileRepo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).Return(deletedFileFixture(), nil)
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "fh1", mock.Anything, int64(1), int64(1)).Return(deletedFileFixture(), nil)
 
 	svc := NewFileService(nil, fileRepo, nil, stubVaultService{}, stubFolderService{}, nil, nil, nil, nil)
 
@@ -347,7 +347,7 @@ func TestFileService_UpdateOrCreate_MtimeOnlyBranchSkipsTombstone(t *testing.T) 
 // 新鲜 mtime 且内容相同：走完整复活路径（action=create），而不是 mtime-only 的 modify。
 func TestNoteService_ModifyOrCreate_FreshSameContentRevivesAsCreate(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(deletedNoteFixture(), nil)
 
 	updated := deletedNoteFixture()
 	updated.Action = domain.NoteActionCreate
@@ -381,7 +381,7 @@ func TestNoteService_ModifyOrCreate_FreshSameContentRevivesAsCreate(t *testing.T
 
 func TestNoteService_ModifyOrCreate_StaleTimestampsDifferentContentRevives(t *testing.T) {
 	noteRepo := new(domainmocks.MockNoteRepository)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(deletedNoteFixture(), nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(deletedNoteFixture(), nil)
 
 	updated := deletedNoteFixture()
 	updated.Action = domain.NoteActionCreate
@@ -410,7 +410,7 @@ func TestNoteService_ModifyOrCreate_StaleTimestampsDifferentContentRevives(t *te
 
 func TestFileService_UpdateOrCreate_StaleTimestampsDifferentContentRevives(t *testing.T) {
 	fileRepo := new(domainmocks.MockFileRepository)
-	fileRepo.On("GetByPathHash", mock.Anything, "fh1", int64(1), int64(1)).Return(deletedFileFixture(), nil)
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "fh1", mock.Anything, int64(1), int64(1)).Return(deletedFileFixture(), nil)
 
 	updated := deletedFileFixture()
 	updated.Action = domain.FileActionCreate

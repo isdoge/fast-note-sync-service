@@ -143,6 +143,10 @@ func BindAndValid(c *gin.Context, obj interface{}) (bool, ValidErrors) {
 		return false, errs // Return validation error // 返回验证错误
 	}
 
+	if verr := normalizeBoundPaths(obj); verr != nil {
+		return false, ValidErrors{verr}
+	}
+
 	allowedVaults, _ := c.Get("vaults")
 	vaults, _ := allowedVaults.(string)
 	if verr := verifyBoundVault(vaults, obj); verr != nil {
@@ -166,24 +170,34 @@ func verifyBoundVault(allowedVaults string, obj any) *ValidError {
 	if allowedVaults == "" {
 		return nil
 	}
+	vault, ok := boundStringField(obj, "Vault")
+	if !ok {
+		return nil
+	}
+	if util.VerifyVaultAccess(allowedVaults, vault) {
+		return nil
+	}
+	return &ValidError{Key: "vault", Message: "Vault access restricted: " + vault}
+}
+
+// boundStringField returns a string field from a possibly nested pointer to a struct.
+// boundStringField 从可多级解引用的结构体中读取字符串字段。
+func boundStringField(obj any, name string) (string, bool) {
 	v := reflect.ValueOf(obj)
 	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
-			return nil
+			return "", false
 		}
 		v = v.Elem()
 	}
 	if v.Kind() != reflect.Struct {
-		return nil
+		return "", false
 	}
-	field := v.FieldByName("Vault")
+	field := v.FieldByName(name)
 	if !field.IsValid() || field.Kind() != reflect.String {
-		return nil
+		return "", false
 	}
-	if util.VerifyVaultAccess(allowedVaults, field.String()) {
-		return nil
-	}
-	return &ValidError{Key: "vault", Message: "Vault access restricted: " + field.String()}
+	return field.String(), true
 }
 
 // RequestParam extracts the specified parameter from the request without consuming or breaking the request body stream.

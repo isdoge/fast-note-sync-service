@@ -225,6 +225,10 @@ func contextWithMCPRequestInfo(ctx context.Context, r *http.Request, cfg *app.Ap
 		ctx = context.WithValue(ctx, "client_version", clientVersion)
 	}
 
+	if cfg != nil && cfg.Security.StrictEmptyProtocol {
+		ctx = context.WithValue(ctx, "strict_empty_protocol", true)
+	}
+
 	return ctx
 }
 

@@ -3,6 +3,7 @@ package mcp_router
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
@@ -11,13 +12,27 @@ import (
 	mcpsrv "github.com/mark3labs/mcp-go/server"
 )
 
-func getUIDFromContext(ctx context.Context) int64 {
+// requireMCPUID resolves the authenticated uid from the request context.
+// Unlike the legacy helper it returns 0 instead of silently defaulting to
+// uid=1 (the first user): a path that reaches a tool without authentication
+// context must fail loudly instead of acting on the first user's data.
+// requireMCPUID 从请求上下文解析已认证的 uid。
+// 与旧实现不同，取不到时返回 0 而不是静默回退到 uid=1（首个用户）：
+// 未经认证上下文却进入工具处理的路径必须显式失败，而不是操作第一个用户的数据。
+func requireMCPUID(ctx context.Context) (int64, error) {
 	if val := ctx.Value("uid"); val != nil {
-		if uid, ok := val.(int64); ok {
-			return uid
+		if uid, ok := val.(int64); ok && uid > 0 {
+			return uid, nil
 		}
 	}
-	return 1
+	return 0, fmt.Errorf("permission denied: missing authenticated user context")
+}
+
+// getUIDFromContext keeps the historical name for read-only lookup.
+// getUIDFromContext 保留原有名称用于只读查询（无认证上下文时返回 0）。
+func getUIDFromContext(ctx context.Context) int64 {
+	uid, _ := requireMCPUID(ctx)
+	return uid
 }
 
 func getClientInfoFromContext(ctx context.Context) (string, string, string) {
@@ -66,10 +81,25 @@ func getArgs(req mcp.CallToolRequest) map[string]interface{} {
 func checkPermission(ctx context.Context, function string) error {
 	scope, _ := ctx.Value("scope").(string)
 	cType, _, _ := getClientInfoFromContext(ctx)
-	if !pkgapp.VerifyPermissions(scope, "mcp", cType, function) {
+	strict, _ := ctx.Value("strict_empty_protocol").(bool)
+	if !pkgapp.VerifyPermissionsWithStrictEmptyProtocol(scope, "mcp", cType, function, strict) {
 		return fmt.Errorf("permission denied: %s", function)
 	}
 	return nil
+}
+
+// checkPermissionAny passes when at least one of the functions is permitted.
+// Used by read paths that several restricted read-only token shapes must keep
+// working (e.g. vault_list accepts vault_r, note_r or file_r).
+// checkPermissionAny 任一功能点有权限即通过。用于多种受限只读令牌都必须
+// 继续可用的读路径（例如 vault_list 接受 vault_r、note_r 或 file_r）。
+func checkPermissionAny(ctx context.Context, functions ...string) error {
+	for _, function := range functions {
+		if err := checkPermission(ctx, function); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("permission denied: %s", strings.Join(functions, "|"))
 }
 
 // checkVaultAccess verifies whether the target vault is permitted by the token's vault allowlist.
@@ -90,10 +120,10 @@ func checkVaultAccess(ctx context.Context, vault string) error {
 // cleanToolPath normalizes a vault-relative path for MCP write tools:
 // it strips leading "/" and rejects empty paths, absolute paths, ".."-segment
 // and NUL paths, segment-wise with no URL decoding (#342 S-8). Backslashes are
-// not converted.
+// converted to forward slashes (#451).
 // cleanToolPath 为 MCP 写入工具规范化库相对路径：去掉前导 "/"，按路径段拒绝
 // 空路径、绝对路径、整段 ".." 与 NUL（不做 URL 解码；#342 S-8）。
-// 反斜杠不做转换。
+// 反斜杠统一转换为正斜杠。
 func cleanToolPath(path string) (string, error) {
 	cleaned, ok := util.CleanVaultPath(path)
 	if !ok {

@@ -8,9 +8,12 @@ import (
 var oauthScopeFunctions = map[string]string{
 	"notes:read":  "note_r",
 	"notes:write": "note_w",
+	"notes:purge": "note_purge",
 	"files:read":  "file_r",
 	"files:write": "file_w",
-	"vaults:read": "note_r",
+	"files:purge": "file_purge",
+	"vaults:read": "vault_r",
+	"vaults:write": "vault_w",
 }
 
 func MapOAuthScopesToFNS(client string, scopes []string) (string, error) {

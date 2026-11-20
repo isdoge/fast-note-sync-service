@@ -193,9 +193,12 @@ func (s *noteHistoryService) List(ctx context.Context, uid int64, params *dto.No
 		pathHash = util.EncodeHash32(params.Path)
 	}
 
-	// Get note ID
-	// 获取笔记 ID
-	note, err := s.noteRepo.GetByPathHashIncludeRecycle(ctx, pathHash, vaultID, uid, params.IsRecycle)
+	// Get note ID. The request already carries the path, so use it to isolate
+	// hash collisions; the repository falls back to the hash-only lookup when
+	// the path is empty (legacy clients).
+	// 获取笔记 ID。入参已带路径时按路径隔离哈希碰撞；路径为空（旧客户端）时
+	// 仓储内部退回纯哈希查询。
+	note, err := s.noteRepo.GetByPathHashAndPathIncludeRecycle(ctx, pathHash, params.Path, vaultID, uid, params.IsRecycle)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, 0, code.ErrorNoteNotFound

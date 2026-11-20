@@ -46,12 +46,12 @@ func TestNoteService_Delete_AlreadyDeleted_IsIdempotent(t *testing.T) {
 		UpdatedTimestamp: 1000,
 	}
 	// 修复前代码路径：查询过滤 delete → 找不到
-	noteRepo.On("GetByPathHashIncludeRecycle", mock.Anything, "h1", int64(1), int64(1), false).
+	noteRepo.On("GetByPathHashAndPathIncludeRecycle", mock.Anything, "h1", mock.Anything, int64(1), int64(1), false).
 		Return(nil, gorm.ErrRecordNotFound).Maybe()
-	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).
 		Return(nil, gorm.ErrRecordNotFound)
 	// 修复后代码路径：不过滤 action → 找到已删除记录
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).
 		Return(deletedNote, nil).Maybe()
 
 	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, vaultSvc, nil, nil, nil, nil, nil)
@@ -75,11 +75,11 @@ func TestNoteService_Delete_RecordNotFound_IsIdempotent(t *testing.T) {
 	vaultSvc := new(servicemocks.MockVaultService)
 	vaultSvc.On("MustGetID", mock.Anything, int64(1), "vault").Return(int64(1), nil)
 
-	noteRepo.On("GetByPathHashIncludeRecycle", mock.Anything, "h1", int64(1), int64(1), false).
+	noteRepo.On("GetByPathHashAndPathIncludeRecycle", mock.Anything, "h1", mock.Anything, int64(1), int64(1), false).
 		Return(nil, gorm.ErrRecordNotFound).Maybe()
-	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).
 		Return(nil, gorm.ErrRecordNotFound)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).
 		Return(nil, gorm.ErrRecordNotFound).Maybe()
 
 	svc := service.NewNoteService(nil, noteRepo, nil, nil, nil, nil, nil, vaultSvc, nil, nil, nil, nil, nil)
@@ -108,9 +108,9 @@ func TestNoteService_Delete_ActiveNote_MarksDeleted(t *testing.T) {
 		Path:     "a.md",
 		PathHash: "h1",
 	}
-	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(activeNote, nil)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(activeNote, nil).Maybe()
-	noteRepo.On("GetByPathHashIncludeRecycle", mock.Anything, "h1", int64(1), int64(1), false).
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(activeNote, nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(activeNote, nil).Maybe()
+	noteRepo.On("GetByPathHashAndPathIncludeRecycle", mock.Anything, "h1", mock.Anything, int64(1), int64(1), false).
 		Return(activeNote, nil).Maybe()
 	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
 	shareRepo.On("UpdateStatusByRes", mock.Anything, int64(1), "note", int64(42), domain.UserShareStatusRevoked).Return(nil)
@@ -137,8 +137,8 @@ func TestNoteService_Delete_DuplicateRows_PrefersLiveRow(t *testing.T) {
 
 	tombstone := &domain.Note{ID: 41, VaultID: 1, Action: domain.NoteActionDelete, Path: "a.md", PathHash: "h1"}
 	live := &domain.Note{ID: 42, VaultID: 1, Action: domain.NoteActionModify, Path: "a.md", PathHash: "h1"}
-	noteRepo.On("GetAllByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(tombstone, nil).Maybe()
-	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(live, nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(tombstone, nil).Maybe()
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(live, nil)
 	noteRepo.On("UpdateDelete", mock.Anything, mock.MatchedBy(func(n *domain.Note) bool { return n.ID == 42 }), int64(1)).Return(nil)
 	shareRepo.On("UpdateStatusByRes", mock.Anything, int64(1), "note", int64(42), domain.UserShareStatusRevoked).Return(nil)
 
@@ -160,7 +160,7 @@ func TestFileService_Delete_RecordNotFound_IsIdempotent(t *testing.T) {
 	vaultSvc := new(servicemocks.MockVaultService)
 	vaultSvc.On("MustGetID", mock.Anything, int64(1), "vault").Return(int64(1), nil)
 
-	fileRepo.On("GetByPathHash", mock.Anything, "h2", int64(1), int64(1)).
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "h2", mock.Anything, int64(1), int64(1)).
 		Return(nil, gorm.ErrRecordNotFound)
 
 	svc := service.NewFileService(nil, fileRepo, nil, vaultSvc, nil, nil, nil, nil, nil)
@@ -188,7 +188,7 @@ func TestFileService_Delete_AlreadyDeleted_IsIdempotent(t *testing.T) {
 		Path:     "b.png",
 		PathHash: "h2",
 	}
-	fileRepo.On("GetByPathHash", mock.Anything, "h2", int64(1), int64(1)).Return(deletedFile, nil)
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "h2", mock.Anything, int64(1), int64(1)).Return(deletedFile, nil)
 	// 修复前路径会重复写库（Update 被调用）；定义为 Maybe 使失败表现为断言失败而非 mock panic
 	fileRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.File"), int64(1)).
 		Return(deletedFile, nil).Maybe()
@@ -215,7 +215,7 @@ func TestFileService_Delete_ActiveFile_NotUnchanged(t *testing.T) {
 	activeFile := &domain.File{ID: 7, VaultID: 1, Action: domain.FileActionCreate, Path: "b.png", PathHash: "h2"}
 	deleted := *activeFile
 	deleted.Action = domain.FileActionDelete
-	fileRepo.On("GetByPathHash", mock.Anything, "h2", int64(1), int64(1)).Return(activeFile, nil)
+	fileRepo.On("GetByPathHashAndPath", mock.Anything, "h2", mock.Anything, int64(1), int64(1)).Return(activeFile, nil)
 	fileRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.File"), int64(1)).Return(&deleted, nil)
 	fileRepo.On("CountSizeSum", mock.Anything, int64(1), int64(1)).Return(&domain.CountSizeResult{}, nil).Maybe()
 

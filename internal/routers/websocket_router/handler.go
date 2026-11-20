@@ -87,18 +87,10 @@ func (h *WSHandler) logWarn(c *pkgapp.WebsocketClient, method string, fields ...
 	h.App.Logger().Warn(method, allFields...)
 }
 
-// validWSPath validates a client-reported vault-relative path WITHOUT
-// rewriting it (#342 S-8): the sync protocol requires the server to store the
-// exact path the client reported (clients key their baseline and hashes by
-// their own path), so the WebSocket entry only rejects — never strips the
-// leading "/" nor appends ".md". The check itself is segment-wise: empty,
-// NUL, or any segment (split on "/" and "\") equal to ".." is rejected;
-// ordinary names like "a..b.md", "等等...md", "100%.md" pass.
-// validWSPath 只校验、不改写客户端上报的库相对路径（#342 S-8）：同步协议
-// 要求服务端按客户端上报的原样路径落库（客户端按自己的路径记基线与哈希），
-// 因此 WebSocket 入口只做拒绝——不去前导 "/"、不补 ".md"。校验本身按段进行：
-// 空路径、含 NUL、任一段（"/" 与 "\" 都算分隔符）等于 ".." 拒绝；
-// "a..b.md"、"等等...md"、"100%.md" 等正常笔记名合法。
+// validWSPath validates paths after the shared JSON/Protobuf binder normalizes
+// backslashes and their hashes (#451). Requests without backslashes retain the
+// existing protocol behavior: leading slashes and extensions are unchanged.
+// validWSPath 在公共绑定处规范化路径和哈希后校验，不额外改写路径。
 func validWSPath(path string) bool {
 	if path == "" {
 		return false
@@ -127,6 +119,59 @@ func extractMsgMeta(data []byte) (msgCtx, vault, path string) {
 	}
 	_ = json.Unmarshal(data, &meta) // Ignore error; unrecognized fields are simply empty // 忽略错误，未识别字段为空即可
 	return meta.Context, meta.Vault, meta.Path
+}
+
+// errPathData builds the error-response data payload carrying the client-reported
+// path as-is. The official plugin's generic error branch releases the concurrency
+// slot reserved for the action only when data.path is a string, so every error
+// return of a slot-reserving action must carry it.
+// errPathData 构造携带客户端上报原样路径的出错响应 data 载荷。官方插件的通用出错分支
+// 只有在 data.path 为字符串时才释放该动作占用的并发名额，因此占名额动作的出错返回都必须带上。
+func errPathData(path string) map[string]string {
+	return map[string]string{"path": path}
+}
+
+// clientSlotPath returns the path the client used to reserve its concurrency slot.
+// normalizeBoundPaths rewrites backslashes in the decoded params before handlers
+// run, so an error response carrying params.Path would name a different key than
+// the one the plugin holds (e.g. "a\b.md" became "a/b.md"). Read the raw request
+// field instead; JSON and Protobuf uplink are both supported.
+// clientSlotPath 返回客户端占并发名额所用的原始路径。绑定阶段会把反斜杠归一化，
+// 直接用 params.Path 回包会让插件对不上自己的槽位键（如 "a\b.md" 变成 "a/b.md"），
+// 因此从原始请求载荷里取 path；JSON 与 Protobuf 上行都支持。
+func clientSlotPath(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, normalized string) string {
+	if msg == nil {
+		return normalized
+	}
+	if meta, ok := requestMeta(msg); ok {
+		if meta.Path != "" {
+			return meta.Path
+		}
+		return normalized
+	}
+	var pathInfo struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(msg.Data, &pathInfo); err == nil && pathInfo.Path != "" {
+		return pathInfo.Path
+	}
+	return normalized
+}
+
+// respondErrorWithPath mirrors respondError's msg branch but attaches the client-reported
+// path in data, so the plugin can release the concurrency slot on error. The action name
+// (msg.Type) is kept so the frame stays an action-scoped reply like the old behavior;
+// error code, details and message semantics are unchanged, data only gains the path key.
+// respondErrorWithPath 与 respondError 的 msg 分支一致，只是在 data 里附带客户端上报路径，
+// 让插件出错时能释放并发名额。保留动作名（msg.Type），出错帧与旧行为一样是带动作名的应答；
+// 错误码、details 与文案语义不变，data 仅新增 path 键。
+func (h *WSHandler) respondErrorWithPath(c *pkgapp.WebsocketClient, codeErr *code.Code, err error, path, action, method string) {
+	h.logError(c, method, err)
+	if cErr, ok := err.(*code.Code); ok {
+		c.ToResponse(cErr.WithData(errPathData(path)), action)
+		return
+	}
+	c.ToResponse(codeErr.WithDetails(err.Error()).WithData(errPathData(path)), action)
 }
 
 // respondError unified error response method

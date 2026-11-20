@@ -17,6 +17,7 @@ import (
 // that sequentially enforces auth, vault access, and RBAC checks.
 func NewMessageInterceptor(appContainer *app.App) func(*pkgapp.WebsocketClient, *pkgapp.WebSocketMessage) bool {
 	logger := appContainer.Logger()
+	strictEmptyProtocol := appContainer.Config().Security.StrictEmptyProtocol
 	return func(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage) bool {
 		if !checkAuth(c, msg, logger) {
 			return false
@@ -24,7 +25,7 @@ func NewMessageInterceptor(appContainer *app.App) func(*pkgapp.WebsocketClient, 
 		if !checkVaultAccess(c, msg, logger) {
 			return false
 		}
-		if !checkRBAC(c, msg, logger) {
+		if !checkRBAC(c, msg, logger, strictEmptyProtocol) {
 			return false
 		}
 		return true
@@ -46,6 +47,26 @@ func checkAuth(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, logger i
 	return true
 }
 
+// vaultOptionalMessageTypes lists receive actions whose payloads are
+// user-level and carry no vault field. For these, a vault-restricted token is
+// still allowed to proceed (the message simply has nothing to check). Every
+// other message type MUST carry a vault field when the token is restricted:
+// omitting it no longer bypasses the restriction (B11).
+// vaultOptionalMessageTypes 列出负载属于用户级、不带 vault 字件的接收动作。
+// 对这些动作，受限令牌仍可继续（消息本身没有可校验的库）。其它消息类型在
+// 令牌受限时必须携带 vault 字段，缺字段不再绕过限制（B11）。
+var vaultOptionalMessageTypes = map[WebSocketReceiveAction]struct{}{
+	// Connection lifecycle messages handled before business interceptors; kept
+	// here for completeness so the guard stays explicit if routing changes.
+	// 连接生命周期消息在业务拦截器之前处理；此处显式列出以便路由变化时
+	// 守卫仍然明确。
+	ClientReceiveInfo:    {},
+	ClientReceiveAuth:    {},
+	VaultFileMsgType:     {}, // binary frames: session-bound, vault checked at session creation
+	SettingReceiveCheck:  {}, // per-item check payload is user-level (path only)
+	SettingReceiveRePush: {}, // per-item repush payload is user-level (path only)
+}
+
 // checkVaultAccess 针对活跃 WebSocket 连接校验笔记库访问权限限制。
 // checkVaultAccess validates that the requested vault is within the client's allowed scope.
 func checkVaultAccess(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, logger interface {
@@ -54,21 +75,73 @@ func checkVaultAccess(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, l
 	if c.Vaults == "" {
 		return true
 	}
-	var vaultInfo struct {
-		Vault string `json:"vault"`
+	vault := resolveRequestVault(msg)
+	if vault == "" {
+		if _, optional := vaultOptionalMessageTypes[msg.Type]; optional {
+			return true
+		}
+		// A restricted token must not reach vault-scoped handlers by omitting
+		// the vault field; fail closed instead of passing through (B11).
+		// 受限令牌不得靠省略 vault 字段进入库级处理；直接拒绝而不是放行（B11）。
+		logger.Warn("WS OnMessage Vault Missing",
+			zap.String("Type", msg.Type),
+			zap.String("uid", c.User.ID))
+		// 能提取到路径时附带 data.path（改名再带 oldPath），让插件释放该动作占用的
+		// 并发名额；JSON 与 Protobuf 上行都能提取。
+		// Attach data.path (plus oldPath on rename) when extractable so the plugin
+		// can release the slot; both JSON and Protobuf uplink are supported.
+		denied := code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: missing vault")
+		denied = attachErrorSlotData(denied, msg)
+		c.ToResponse(denied, msg.Type+"Ack")
+		return false
 	}
-	if err := json.Unmarshal(msg.Data, &vaultInfo); err != nil || vaultInfo.Vault == "" {
-		return true
-	}
-	if !util.VerifyVaultAccess(c.Vaults, vaultInfo.Vault) {
+	if !util.VerifyVaultAccess(c.Vaults, vault) {
 		logger.Warn("WS OnMessage Vault Restricted",
 			zap.String("Type", msg.Type),
 			zap.String("uid", c.User.ID),
-			zap.String("vault", vaultInfo.Vault))
-		c.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: "+vaultInfo.Vault), msg.Type+"Ack")
+			zap.String("vault", vault))
+		denied := code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: " + vault)
+		denied = attachErrorSlotData(denied, msg)
+		c.ToResponse(denied, msg.Type+"Ack")
 		return false
 	}
 	return true
+}
+
+// resolveRequestVault extracts the vault from an action-level payload regardless
+// of the uplink wire format. Protobuf payloads are decoded field-wise; JSON text
+// frames fall back to the "vault" key.
+// resolveRequestVault 无论上行编码是 JSON 还是 Protobuf，都提取动作级载荷中的 vault。
+// Protobuf 载荷按字段解码，JSON 文本帧则读取 "vault" 键。
+func resolveRequestVault(msg *pkgapp.WebSocketMessage) string {
+	if meta, ok := requestMeta(msg); ok {
+		return meta.Vault
+	}
+	var vaultInfo struct {
+		Vault string `json:"vault"`
+	}
+	_ = json.Unmarshal(msg.Data, &vaultInfo)
+	return vaultInfo.Vault
+}
+
+// attachErrorSlotData adds the client-reported path (and oldPath for rename
+// actions) to a denial response so the plugin can release the concurrency slot
+// it reserved for the action and, for rename, roll the local rename back.
+// attachErrorSlotData 给拒绝响应附带客户端上报的 path（改名动作再带 oldPath），
+// 让插件释放该动作占用的并发名额，改名失败时还能回滚本地改名。
+func attachErrorSlotData(denied *code.Code, msg *pkgapp.WebSocketMessage) *code.Code {
+	path, oldPath := resolveErrorSlotPaths(msg)
+	if path == "" && oldPath == "" {
+		return denied
+	}
+	data := make(map[string]string, 2)
+	if path != "" {
+		data["path"] = path
+	}
+	if oldPath != "" {
+		data["oldPath"] = oldPath
+	}
+	return denied.WithData(data)
 }
 
 // checkRBAC 将操作映射到 RBAC 权限功能点并校验客户端权限，权限不足时触发回滚。
@@ -77,12 +150,12 @@ func checkVaultAccess(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, l
 func checkRBAC(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, logger interface {
 	Warn(string, ...zapcore.Field)
 	Info(string, ...zapcore.Field)
-}) bool {
+}, strictEmptyProtocol bool) bool {
 	function := resolveRBACFunction(msg.Type)
 	if function == "" {
 		return true // 无需权限检查的消息类型，直接放行 / message type requires no RBAC check
 	}
-	if pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), function) {
+	if pkgapp.VerifyPermissionsWithStrictEmptyProtocol(c.Scope, "ws", c.ClientType(), function, strictEmptyProtocol) {
 		return true
 	}
 	logger.Warn("WS OnMessage Permission Denied",
@@ -117,11 +190,20 @@ func resolveRBACFunction(msgType string) string {
 // handlePermissionDenied sends an error response and, for write operations,
 // triggers a compensating action (rename-back or re-push) to keep the client consistent.
 // Always returns false to halt message processing.
+//
+// data 携带客户端上报的原样路径（JSON 上行可提取时）：插件在发出占名额动作前已按路径
+// 占用并发名额，其通用出错分支需要 data.path 才能释放；回推 / 改名回滚补偿逻辑不变。
+// The data carries the client-reported path as-is (extractable on JSON uplink only):
+// the plugin reserved a concurrency slot by path before sending the action and its
+// generic error branch needs data.path to release it; the re-push / rename-back
+// compensation logic is unchanged.
 func handlePermissionDenied(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, function string, logger interface {
 	Info(string, ...zapcore.Field)
 }) bool {
 	resPath := resolveResourcePath(msg)
-	c.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Permission denied: "+resPath), msg.Type+"Ack")
+	denied := code.ErrorAuthTokenScopeRestricted.WithDetails("Permission denied: " + resPath)
+	denied = attachErrorSlotData(denied, msg)
+	c.ToResponse(denied, msg.Type+"Ack")
 
 	if !strings.HasSuffix(function, "_w") {
 		return false
@@ -140,6 +222,12 @@ func handlePermissionDenied(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMess
 // resolveResourcePath extracts a human-readable resource identifier from message data,
 // falling back to the message type when neither path nor name are present.
 func resolveResourcePath(msg *pkgapp.WebSocketMessage) string {
+	if meta, ok := requestMeta(msg); ok {
+		if meta.Path != "" {
+			return meta.Path
+		}
+		return msg.Type
+	}
 	var pathInfo struct {
 		Path string `json:"path"`
 		Name string `json:"name"`
@@ -154,22 +242,45 @@ func resolveResourcePath(msg *pkgapp.WebSocketMessage) string {
 	return msg.Type
 }
 
+// resolveErrorSlotPaths extracts the path the plugin used to reserve its
+// concurrency slot and, for rename actions, the old path needed for rollback.
+// JSON uplink carries both in the payload; Protobuf uplink is decoded field-wise
+// by action (see decodeProtobufRequestMeta).
+// resolveErrorSlotPaths 提取插件占并发名额所用的路径；改名动作再取出回滚所需的 oldPath。
+// JSON 上行直接读载荷字段；Protobuf 上行按动作字段编号解码（见 decodeProtobufRequestMeta）。
+func resolveErrorSlotPaths(msg *pkgapp.WebSocketMessage) (path, oldPath string) {
+	if meta, ok := requestMeta(msg); ok {
+		return meta.Path, meta.OldPath
+	}
+	var pathInfo struct {
+		Path    string `json:"path"`
+		OldPath string `json:"oldPath"`
+	}
+	_ = json.Unmarshal(msg.Data, &pathInfo)
+	return pathInfo.Path, pathInfo.OldPath
+}
+
 // rollbackRename 对重命名操作发送反向重命名消息，使客户端回退到原始路径。
 // rollbackRename sends a compensating rename message so the client reverts to the original path.
 // Returns true if the rollback message was successfully dispatched.
 func rollbackRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocketMessage, function string, logger interface {
 	Info(string, ...zapcore.Field)
 }) bool {
-	var renameData map[string]interface{}
-	if err := json.Unmarshal(msg.Data, &renameData); err != nil {
-		return false
+	var vault, newPath, newPathHash, oldPath, oldPathHash string
+	if meta, ok := requestMeta(msg); ok {
+		vault, newPath, newPathHash = meta.Vault, meta.Path, meta.PathHash
+		oldPath, oldPathHash = meta.OldPath, meta.OldPathHash
+	} else {
+		var renameData map[string]interface{}
+		if err := json.Unmarshal(msg.Data, &renameData); err != nil {
+			return false
+		}
+		vault, _ = renameData["vault"].(string)
+		newPath, _ = renameData["path"].(string)
+		newPathHash, _ = renameData["pathHash"].(string)
+		oldPath, _ = renameData["oldPath"].(string)
+		oldPathHash, _ = renameData["oldPathHash"].(string)
 	}
-
-	vault, _ := renameData["vault"].(string)
-	newPath, _ := renameData["path"].(string)
-	newPathHash, _ := renameData["pathHash"].(string)
-	oldPath, _ := renameData["oldPath"].(string)
-	oldPathHash, _ := renameData["oldPathHash"].(string)
 
 	if newPath == "" || oldPath == "" {
 		return false

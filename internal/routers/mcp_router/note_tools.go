@@ -34,7 +34,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -87,7 +90,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -97,6 +103,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 		pathHash := util.EncodeHash32(path)
 
 		note, err := noteSvc.WithClient(getClientInfoFromContext(ctx)).Get(ctx, uid, &dto.NoteGetRequest{
@@ -127,7 +137,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -180,7 +193,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -227,7 +243,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -290,7 +309,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -331,11 +353,11 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		mcp.WithString("path", mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added). If empty, potentially clear all (based on service logic)")),
 		mcp.WithOutputSchema[mcpNoteRecycleClearOutput](),
 	)
-	srv.AddTool(writeMCPTool(toolRecycleClear, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := checkPermission(ctx, "note_w"); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+	srv.AddTool(writeMCPTool(toolRecycleClear, cfg, true, "notes:write", "notes:purge"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -345,6 +367,19 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		// Clearing the whole recycle bin is a bulk purge and requires the
+		// dedicated note_purge capability; a single-path clear stays note_w.
+		// 清空整个回收站是批量销毁操作，需要专属的 note_purge 能力；
+		// 指定路径的清理维持 note_w。
+		if path == "" {
+			if err := checkPermission(ctx, "note_purge"); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+		} else {
+			if err := checkPermission(ctx, "note_w"); err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+		}
 		if path != "" {
 			var cerr error
 			path, cerr = cleanToolPath(path)
@@ -382,7 +417,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -446,7 +484,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -494,7 +535,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -546,7 +590,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_w"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -610,7 +657,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -620,6 +670,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 
 		linkSvc := appContainer.NoteLinkService
 		links, err := linkSvc.GetBacklinks(ctx, uid, &dto.NoteLinkQueryRequest{
@@ -655,7 +709,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault, _ := args["vault"].(string)
 		if vault == "" || strings.EqualFold(vault, "default") {
@@ -665,6 +722,10 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
+		path, pathErr := cleanToolPath(path)
+		if pathErr != nil {
+			return mcp.NewToolResultError(pathErr.Error()), nil
+		}
 
 		linkSvc := appContainer.NoteLinkService
 		links, err := linkSvc.GetOutlinks(ctx, uid, &dto.NoteLinkQueryRequest{

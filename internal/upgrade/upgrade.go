@@ -74,6 +74,7 @@ func NewMigrationManager(db *gorm.DB, logger *zap.Logger, version string, cfg, u
 			&NoteTagIndexRebuildMigrate{},
 			&NoteSizeBackfillMigrate{},
 			&TimestampSecondsToMillisMigrate{},
+			&BackslashPathMigrate{},
 		},
 	}
 }
@@ -111,6 +112,23 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to get applied versions: %w", err)
 	}
 
+	// Data repair has its own marker and retries partial failures across restarts,
+	// including restarts with an unchanged release version.
+	for _, migration := range m.migrations {
+		if _, ok := migration.(*BackslashPathMigrate); !ok || appliedVersions[migration.Version()] {
+			continue
+		}
+		mc := &MigrationContext{Logger: m.logger, Dao: d, DatabasePath: m.config.Path, DatabaseType: m.config.Type}
+		if err := migration.Up(m.db, ctx, mc); err != nil {
+			m.logger.Error("path repair incomplete; retry on next startup", zap.Error(err))
+			continue
+		}
+		if err := m.db.Create(&SchemaVersion{Version: migration.Version(), Description: migration.Description(), AppliedAt: time.Now()}).Error; err != nil {
+			return err
+		}
+		appliedVersions[migration.Version()] = true
+	}
+
 	lastVersion := m.getReferenceVersion()
 	// 确保 reference version 有 "v" 前缀用于比较 (semver 库需要)
 	if !strings.HasPrefix(lastVersion, "v") {
@@ -141,6 +159,9 @@ func (m *MigrationManager) Run(ctx context.Context) error {
 	// 执行所有未执行的升级
 	executed := 0
 	for _, migration := range m.migrations {
+		if _, ok := migration.(*BackslashPathMigrate); ok {
+			continue
+		}
 		scriptVersion := migration.Version()
 
 		// [NEW] Prioritize matching against lastVersion

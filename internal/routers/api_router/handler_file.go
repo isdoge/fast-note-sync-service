@@ -413,6 +413,22 @@ func (h *FileHandler) RecycleClear(c *gin.Context) {
 		return
 	}
 
+	// Clearing the whole recycle bin (empty path and path hash) permanently
+	// destroys every deleted attachment and requires the dedicated file_purge
+	// capability. A single-path clear keeps file_w. The route-level check
+	// accepts either capability because the body is not available there.
+	// 整库清空回收站（路径与路径哈希均为空）会永久销毁全部已删除附件，需要
+	// 专属 file_purge 能力；指定路径的清理仍为 file_w。路由层因拿不到请求体
+	// 而接受任一能力。
+	requiredFunction := "file_w"
+	if params.Path == "" && params.PathHash == "" {
+		requiredFunction = "file_purge"
+	}
+	if !middleware.RestFunctionAllowed(c, requiredFunction) {
+		response.ToResponse(code.ErrorAuthTokenScopeRestricted.WithDetails("Permission denied: " + requiredFunction))
+		return
+	}
+
 	// Validate and clean the path when targeting a single file (#342 S-8)
 	// 指定单个文件时校验并清洗路径（#342 S-8）
 	if params.Path != "" {

@@ -19,8 +19,16 @@ GitVersionDesc  = $(shell git log -1 --format=%s)
 BuildTime       = $(shell date +%FT%T%z)
 
 # LDFLAGS: 注入版本信息到二进制
-# 获取提交信息，并处理掉换行符（用 @@@ 占位）以便安全地注入到 ldflags
-COMMIT_MSG_CLEAN = $(shell echo "$(COMMIT_MSG)" | tr '\n' '^' | sed 's/\^/@@@/g' | sed 's/"/\\"/g' | sed "s/'/’/g")
+# COMMIT_MSG 清洗：正文只通过环境变量（$$COMMIT_MSG）交给 shell，绝不把内容展开进命令字面量，
+# 否则正文里的反引号 / $(...) 会被 /bin/sh 当作命令执行。
+#   - 去掉 \r，换行统一替换为 @@@（不用 tr '\n' '^'，避免污染正文中已有的 ^）；
+#   - ASCII 双引号 → “，ASCII 单引号 → ’：既不闭合外层单引号，也不闭合 Go -ldflags 的双引号
+#     （Go 的 quoted.Split 在引号内不做转义，任何 ASCII " 都会提前闭合字段）；
+#   - 正文中的 $ 先换成占位符，再由 $(subst) 还原成字面 $，避免 $GITHUB_OUTPUT 之类的文本被吃掉。
+# 注意：$(shell) 读到的是环境变量（CI 以此方式传入）；GNU make 3.81 的 $(shell) 看不到命令行变量，
+# 因此请用 `COMMIT_MSG=... make ...` 而非 `make COMMIT_MSG=...`。
+export COMMIT_MSG
+COMMIT_MSG_CLEAN = $(subst @@FN_DOLLAR@@,$$,$(shell printf '%s' "$$COMMIT_MSG" | python3 -c 'import sys;d=sys.stdin.read().rstrip(chr(13)+chr(10));d=d.replace(chr(13),"").replace(chr(10),"@@@").replace(chr(34),"“").replace(chr(39),"’").replace(chr(36),"@@FN_DOLLAR@@");sys.stdout.write(d)'))
 Changelog       ?= $(COMMIT_MSG_CLEAN)
 LDFLAGS = -ldflags '-s -w -X ${REPO}/internal/app.Version=$(Version) -X "${REPO}/internal/app.GitTag=$(GitVersion)" -X ${REPO}/internal/app.BuildTime=$(BuildTime) -X "${REPO}/internal/app.Changelog=$(Changelog)"'
 

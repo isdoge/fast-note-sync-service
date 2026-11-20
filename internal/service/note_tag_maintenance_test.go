@@ -27,7 +27,7 @@ func TestNoteService_Delete_RemovesNoteTags(t *testing.T) {
 	vaultSvc.On("MustGetID", mock.Anything, int64(1), "vault").Return(int64(1), nil)
 
 	active := &domain.Note{ID: 42, VaultID: 1, Action: domain.NoteActionCreate, Path: "a.md", PathHash: "h1"}
-	noteRepo.On("GetByPathHash", mock.Anything, "h1", int64(1), int64(1)).Return(active, nil)
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "h1", mock.Anything, int64(1), int64(1)).Return(active, nil)
 	noteRepo.On("UpdateDelete", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(nil)
 	shareRepo.On("UpdateStatusByRes", mock.Anything, int64(1), "note", int64(42), domain.UserShareStatusRevoked).Return(nil)
 	tagRepo.On("DeleteByNoteID", mock.Anything, int64(42), int64(1)).Return(nil)
@@ -53,8 +53,8 @@ func TestNoteService_Rename_MovesNoteTagsToNewID(t *testing.T) {
 	newNote := &domain.Note{ID: 2048, VaultID: 1, Action: domain.NoteActionCreate, Path: "新笔记.md", PathHash: "newpathhash", Content: oldNote.Content}
 
 	vaultSvc.On("MustGetID", mock.Anything, int64(1), "obsidian-vault").Return(int64(1), nil)
-	noteRepo.On("GetAllByPathHash", mock.Anything, "newpathhash", int64(1), int64(1)).Return(nil, nil)
-	noteRepo.On("GetByPathHash", mock.Anything, "oldpathhash", int64(1), int64(1)).Return(oldNote, nil)
+	noteRepo.On("GetAllByPathHashAndPath", mock.Anything, "newpathhash", mock.Anything, int64(1), int64(1)).Return(nil, nil)
+	noteRepo.On("GetByPathHashAndPath", mock.Anything, "oldpathhash", mock.Anything, int64(1), int64(1)).Return(oldNote, nil)
 	noteRepo.On("Update", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(oldNote, nil)
 	folderSvc.On("EnsurePathFID", mock.Anything, int64(1), int64(1), "").Return(int64(10), nil)
 	noteRepo.On("Create", mock.Anything, mock.AnythingOfType("*domain.Note"), int64(1)).Return(newNote, nil)

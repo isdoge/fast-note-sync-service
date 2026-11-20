@@ -9,6 +9,28 @@ import (
 )
 
 // TestNoteTagRepository_ListByVault_EscapesPrefixAndSkipsDeleted 覆盖 #509 修复：
+// TestNoteTagRepository_ConcurrentInitialization verifies first-use migrations
+// cannot race CREATE TABLE in a fresh shared relational user database.
+// TestNoteTagRepository_ConcurrentInitialization 验证新共享关系库首次迁移不会
+// 并发执行 CREATE TABLE。
+func TestNoteTagRepository_ConcurrentInitialization(t *testing.T) {
+	daoInst, _, _, cleanup := setupFTSTestEnv(t, false)
+	defer cleanup()
+	repo := NewNoteTagRepository(daoInst)
+	start := make(chan struct{})
+	errs := make(chan error, 16)
+	for i := 0; i < cap(errs); i++ {
+		go func() {
+			<-start
+			errs <- repo.ReplaceForNote(context.Background(), 1, []string{"tag"}, 1, 7, TagSourceInline)
+		}()
+	}
+	close(start)
+	for i := 0; i < cap(errs); i++ {
+		require.NoError(t, <-errs)
+	}
+}
+
 // 前缀中的 % _ \ 按字面匹配；已删除笔记残留的标签行不计入。
 func TestNoteTagRepository_ListByVault_EscapesPrefixAndSkipsDeleted(t *testing.T) {
 	daoInst, _, _, cleanup := setupFTSTestEnv(t, false)

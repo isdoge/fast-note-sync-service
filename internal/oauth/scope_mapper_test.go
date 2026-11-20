@@ -17,13 +17,27 @@ func TestMapOAuthScopesToFNS_scopesGenerateMCP3DRBACScope(t *testing.T) {
 	}
 }
 
-func TestMapOAuthScopesToFNS_vaultReadGrantsNoteRead(t *testing.T) {
+// vaults:read 只映射 vault_r，不再顺带授予笔记读权限（B5 修正）。
+func TestMapOAuthScopesToFNS_vaultReadMapsToVaultRead(t *testing.T) {
 	got, err := MapOAuthScopesToFNS("claude", []string{"vaults:read"})
 	if err != nil {
 		t.Fatalf("MapOAuthScopesToFNS() error = %v", err)
 	}
 
-	want := "p:mcp c:claude f:note_r"
+	want := "p:mcp c:claude f:vault_r"
+	if got != want {
+		t.Fatalf("MapOAuthScopesToFNS() = %q, want %q", got, want)
+	}
+}
+
+// 新增的库写与清空回收站 scope 映射。
+func TestMapOAuthScopesToFNS_vaultWriteAndPurgeScopes(t *testing.T) {
+	got, err := MapOAuthScopesToFNS("cursor", []string{"vaults:write", "notes:purge", "files:purge"})
+	if err != nil {
+		t.Fatalf("MapOAuthScopesToFNS() error = %v", err)
+	}
+
+	want := "p:mcp c:cursor f:vault_w,note_purge,file_purge"
 	if got != want {
 		t.Fatalf("MapOAuthScopesToFNS() = %q, want %q", got, want)
 	}

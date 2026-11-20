@@ -63,6 +63,12 @@ type FileService interface {
 	// ListByLastTime 获取在 lastTime 之后更新的文件
 	ListByLastTime(ctx context.Context, uid int64, params *dto.FileSyncRequest) ([]*dto.FileDTO, error)
 
+	// GetPathsMetaBatch 按完整路径批量获取附件元数据（含所有状态），
+	// 供增量同步窗口外条目比对使用。
+	// GetPathsMetaBatch batch-fetches file metadata by full path (all statuses)
+	// for diffing out-of-window entries in incremental sync.
+	GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FileDTO, error)
+
 	// CountSizeSum counts total number and total size of files in a vault
 	// CountSizeSum 统计 vault 中文件总数与总大小
 	CountSizeSum(ctx context.Context, vaultID int64, uid int64) error
@@ -180,7 +186,7 @@ func (s *fileService) Get(ctx context.Context, uid int64, params *dto.FileGetReq
 		return nil, err
 	}
 
-	file, err := s.fileRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	file, err := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +204,7 @@ func (s *fileService) UpdateCheck(ctx context.Context, uid int64, params *dto.Fi
 		return "", nil, err
 	}
 
-	file, _ := s.fileRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	file, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if file != nil {
 		fileDTO := s.domainToDTO(file)
 
@@ -246,7 +252,7 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 		return false, nil, err
 	}
 
-	key := fmt.Sprintf("update_or_create_%d_%d_%s", uid, vaultID, params.PathHash)
+	key := fmt.Sprintf("update_or_create_%d_%d_%s", uid, vaultID, params.Path)
 	type result struct {
 		isNew bool
 		dto   *dto.FileDTO
@@ -264,7 +270,7 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 
 	updateOrCreate := func() (any, error) {
 		var isNew bool
-		file, _ := s.fileRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+		file, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 
 		if file != nil {
 			isNew = false
@@ -413,7 +419,7 @@ func (s *fileService) Delete(ctx context.Context, uid int64, params *dto.FileDel
 	// 否则客户端收到 "record not found" 后无限重试。
 	// Delete must be idempotent: return success for missing/already-deleted files,
 	// otherwise clients retry forever on "record not found".
-	file, err := s.fileRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	file, err := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 幂等：记录不存在 → 用请求参数构造成功 DTO（客户端按 path 匹配 pending）
@@ -468,7 +474,7 @@ func (s *fileService) Restore(ctx context.Context, uid int64, params *dto.FileRe
 	}
 
 	// Get file from recycle bin
-	file, err := s.fileRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	file, err := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		return nil, code.ErrorNoteNotFound
 	}
@@ -551,14 +557,37 @@ func (s *fileService) ListByLastTime(ctx context.Context, uid int64, params *dto
 	var results []*dto.FileDTO
 	cacheList := make(map[string]bool)
 	for _, file := range files {
-		if cacheList[file.PathHash] {
+		if cacheList[file.Path] {
 			continue
 		}
 		results = append(results, s.domainToDTO(file))
-		cacheList[file.PathHash] = true
+		cacheList[file.Path] = true
 	}
 
 	return results, nil
+}
+
+// GetPathsMetaBatch 按完整路径批量获取附件元数据（含所有状态）。
+func (s *fileService) GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FileDTO, error) {
+	result := make(map[string]*dto.FileDTO, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
+	if err != nil {
+		return nil, err
+	}
+
+	metaMap, err := s.fileRepo.ListByPathsMeta(ctx, paths, vaultID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	for path, f := range metaMap {
+		result[path] = s.domainToDTO(f)
+	}
+	return result, nil
 }
 
 // CountSizeSum counts total number and total size of files in a vault
@@ -651,7 +680,7 @@ func (s *fileService) GetContent(ctx context.Context, uid int64, params *dto.Fil
 	// 4. Attempt to get from File table (attachment/binary file)
 	// 4. 尝试从 File 表获取 (附件/二进制文件)
 	if s.fileRepo != nil {
-		file, err := s.fileRepo.GetByPathHash(ctx, pathHash, vaultID, uid)
+		file, err := s.fileRepo.GetByPathHashAndPath(ctx, pathHash, params.Path, vaultID, uid)
 		if err == nil && file != nil {
 			// Check IsRecycle support
 			// 检查回收站标识支持
@@ -714,7 +743,10 @@ func (s *fileService) GetContentInfo(ctx context.Context, uid int64, params *dto
 	// 3. Attempt to get from File table
 	// 3. 尝试从 File 表获取
 	if s.fileRepo != nil {
-		file, err := s.fileRepo.GetByPathHash(ctx, pathHash, vaultID, uid)
+		file, err := s.fileRepo.GetByPathHashAndPath(ctx, pathHash, params.Path, vaultID, uid)
+		if errors.Is(err, domain.ErrAmbiguousPathHash) {
+			return "", "", 0, "", "", err
+		}
 
 		// Fallback: if exact hash not found and path has no "/", try filename suffix match
 		// 回退：若精确 hash 未命中，且 path 不含 "/"（纯文件名），则按文件名后缀模糊查找
@@ -842,7 +874,7 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 		oldPathHash = util.EncodeHash32(oldPath)
 	}
 
-	key := fmt.Sprintf("rename_%d_%d_%s_%s", uid, vaultID, oldPathHash, newPathHash)
+	key := fmt.Sprintf("rename_%d_%d_%q_%q", uid, vaultID, oldPath, newPath)
 	type result struct {
 		oldFile *dto.FileDTO
 		newFile *dto.FileDTO
@@ -851,7 +883,7 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 	val, err, _ := s.sf.Do(key, func() (any, error) {
 		// 1. Check if target path has valid file
 		// 1. 判断目标路径是否存在有效文件
-		existFile, _ := s.fileRepo.GetByPathHash(ctx, newPathHash, vaultID, uid)
+		existFile, _ := s.fileRepo.GetByPathHashAndPath(ctx, newPathHash, newPath, vaultID, uid)
 		if existFile != nil && existFile.Action != domain.FileActionDelete {
 			return nil, code.ErrorFileExist
 		}
@@ -859,7 +891,7 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 		// 2. Get old file
 		// 2. Get old file
 		// 2. 获取旧文件
-		f, err := s.fileRepo.GetByPathHash(ctx, oldPathHash, vaultID, uid)
+		f, err := s.fileRepo.GetByPathHashAndPath(ctx, oldPathHash, oldPath, vaultID, uid)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, code.ErrorFileNotFound
@@ -879,7 +911,7 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 		// fall back to listing all rows and prefer the live one; all-tombstone keeps the old
 		// behavior (re-marking is harmless).
 		if f.Action == domain.FileActionDelete {
-			rows, lerr := s.fileRepo.ListByPathHash(ctx, oldPathHash, vaultID, uid)
+			rows, lerr := s.fileRepo.ListByPathHashAndPath(ctx, oldPathHash, oldPath, vaultID, uid)
 			if lerr != nil {
 				return nil, code.ErrorDBQuery.WithDetails(lerr.Error())
 			}
@@ -1022,7 +1054,7 @@ func (s *fileService) RecycleClear(ctx context.Context, uid int64, params *dto.F
 	// 捕获待删除的项目以便进行详细日志记录
 	var filesToDelete []*domain.File
 	if params.PathHash != "" {
-		file, _ := s.fileRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+		file, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 		if file != nil {
 			filesToDelete = append(filesToDelete, file)
 			if params.Path == "" {

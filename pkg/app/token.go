@@ -106,11 +106,23 @@ func (t *tokenManager) Generate(uid int64, nickname, _ string, tokenID int64, no
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(t.config.SecretKey + "_" + util.GetMachineID()))
+	return token.SignedString(t.userSigningKey())
+}
+
+// userSigningKey derives the user-token JWT signing key from the effective
+// signing seed (stable seed or machine ID).
+// userSigningKey 根据当前生效的签名种子（稳定种子或机器标识）派生用户令牌 JWT 签名密钥。
+func (t *tokenManager) userSigningKey() []byte {
+	return []byte(t.config.SecretKey + "_" + util.GetTokenSigningSeed())
 }
 
 // Parse parses JWT Token and returns user info
 // Parse 解析 JWT Token 并返回用户信息
+// Tokens signed with the legacy machine-ID-derived key are still accepted as a
+// fallback, so upgrading to a stable signing seed does not invalidate existing
+// tokens on the same machine.
+// 仍接受使用旧版机器标识派生密钥签发的令牌作为回退，因此切换到稳定签名种子
+// 后，本机上已签发的令牌不会失效。
 func (t *tokenManager) Parse(token string) (*UserEntity, error) {
 	claims := &UserEntity{}
 
@@ -118,8 +130,20 @@ func (t *tokenManager) Parse(token string) (*UserEntity, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(t.config.SecretKey + "_" + util.GetMachineID()), nil
+		return t.userSigningKey(), nil
 	})
+	if err != nil && util.GetTokenSigningSeed() != util.GetMachineID() {
+		// Retry with the legacy machine-ID-derived key for tokens issued before
+		// a stable signing seed was configured.
+		// 对启用稳定签名种子之前签发的令牌，回退用机器标识派生密钥重试。
+		claims = &UserEntity{}
+		parsedToken, err = jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(t.config.SecretKey + "_" + util.GetMachineID()), nil
+		})
+	}
 
 	if err != nil {
 		return nil, err
@@ -146,7 +170,7 @@ func (t *tokenManager) ShareGenerate(shareID int64, uid int64, resources map[str
 
 	// Generate HMAC-SHA256 tag and truncate to first 16 bytes (128 bit tag)
 	// 生成 HMAC-SHA256 摘要并取前 16 字节作为签名 (128 bit 标签)
-	key := sha256.Sum256([]byte(t.config.ShareTokenKey + "_" + util.GetMachineID()))
+	key := t.shareSigningKey()
 	mac := hmac.New(sha256.New, key[:])
 	mac.Write(payload)
 	tag := mac.Sum(nil)[:16]
@@ -157,85 +181,119 @@ func (t *tokenManager) ShareGenerate(shareID int64, uid int64, resources map[str
 	return base64.RawURLEncoding.EncodeToString(combined), nil
 }
 
+// shareSigningKey derives the share-token HMAC key from the effective signing
+// seed (stable seed or machine ID).
+// shareSigningKey 根据当前生效的签名种子（稳定种子或机器标识）派生分享令牌 HMAC 密钥。
+func (t *tokenManager) shareSigningKey() [sha256.Size]byte {
+	return sha256.Sum256([]byte(t.config.ShareTokenKey + "_" + util.GetTokenSigningSeed()))
+}
+
 // ShareParse parses share Token with compatibility fallback
 // ShareParse 解析分享 Token，支持兼容旧版
+// Tokens signed with the legacy machine-ID-derived key are still accepted, so
+// switching to a stable signing seed does not invalidate existing share links.
+// 仍接受使用旧版机器标识派生密钥签发的令牌，因此切换到稳定签名种子后，
+// 已有的分享链接不会失效。
 func (t *tokenManager) ShareParse(tokenString string) (*ShareEntity, error) {
 	data, err := base64.RawURLEncoding.DecodeString(tokenString)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token format")
 	}
 
+	// Try the current seed first, then the legacy machine-ID-derived key.
+	// 先用当前种子校验，失败再用旧版机器标识派生密钥。
+	keys := []([sha256.Size]byte){t.shareSigningKey()}
+	if legacyKey := sha256.Sum256([]byte(t.config.ShareTokenKey + "_" + util.GetMachineID())); legacyKey != keys[0] {
+		keys = append(keys, legacyKey)
+	}
+
 	// 1. If length matches 40 bytes, try parsing with HMAC-SHA256 (new version)
 	// 1. 如果长度为 40 字节，尝试用新版 HMAC-SHA256 校验和解析
 	if len(data) == 40 {
 		payload, tag := data[:24], data[24:]
-		key := sha256.Sum256([]byte(t.config.ShareTokenKey + "_" + util.GetMachineID()))
-		mac := hmac.New(sha256.New, key[:])
-		mac.Write(payload)
-		expected := mac.Sum(nil)[:16]
+		for _, key := range keys {
+			mac := hmac.New(sha256.New, key[:])
+			mac.Write(payload)
+			expected := mac.Sum(nil)[:16]
 
-		if hmac.Equal(tag, expected) {
-			shareID := int64(binary.BigEndian.Uint64(payload[0:8]))
-			uid := int64(binary.BigEndian.Uint64(payload[8:16]))
-			expiresAt := int64(binary.BigEndian.Uint64(payload[16:24]))
+			if hmac.Equal(tag, expected) {
+				shareID := int64(binary.BigEndian.Uint64(payload[0:8]))
+				uid := int64(binary.BigEndian.Uint64(payload[8:16]))
+				expiresAt := int64(binary.BigEndian.Uint64(payload[16:24]))
 
-			if time.Now().Unix() > expiresAt {
-				return nil, fmt.Errorf("token expired")
+				if time.Now().Unix() > expiresAt {
+					return nil, fmt.Errorf("token expired")
+				}
+				return &ShareEntity{
+					SID:       shareID,
+					UID:       uid,
+					ExpiresAt: time.Unix(expiresAt, 0),
+				}, nil
 			}
-			return &ShareEntity{
-				SID:       shareID,
-				UID:       uid,
-				ExpiresAt: time.Unix(expiresAt, 0),
-			}, nil
 		}
 	}
 
 	// 2. If length matches 16 bytes, fallback to parsing with AES-ECB (old version)
 	// 2. 如果长度为 16 字节，回退用旧版 AES-ECB 算法解密与校验
 	if len(data) == 16 {
-		key := sha256.Sum256([]byte(t.config.ShareTokenKey + "_" + util.GetMachineID()))
-		block, err := aes.NewCipher(key[:])
-		if err == nil {
-			decrypted := make([]byte, 16)
-			block.Decrypt(decrypted, data)
-
-			// Verify old checksum
-			// 校验旧校验和
-			h := sha256.New()
-			h.Write(key[:])
-			h.Write(decrypted[0:13])
-			sum := h.Sum(nil)
-
-			if bytes.Equal(decrypted[13:16], sum[:3]) {
-				// Parse SID (6 bytes)
-				// 解析 SID (6 字节)
-				sidBytes := make([]byte, 8)
-				copy(sidBytes[2:8], decrypted[0:6])
-				shareID := int64(binary.BigEndian.Uint64(sidBytes))
-
-				// Parse UID (3 bytes)
-				// 解析 UID (3 字节)
-				uidBytes := make([]byte, 8)
-				copy(uidBytes[5:8], decrypted[6:9])
-				uid := int64(binary.BigEndian.Uint64(uidBytes))
-
-				// Parse ExpiresAt (4 bytes)
-				// 解析 ExpiresAt (4 字节)
-				expUnix := int64(binary.BigEndian.Uint32(decrypted[9:13]))
-
-				if time.Now().Unix() > expUnix {
-					return nil, fmt.Errorf("token expired")
-				}
-				return &ShareEntity{
-					SID:       shareID,
-					UID:       uid,
-					ExpiresAt: time.Unix(expUnix, 0),
-				}, nil
+		for _, key := range keys {
+			entity, ok := t.parseLegacyAESShareToken(data, key)
+			if ok {
+				return entity, nil
 			}
 		}
 	}
 
 	return nil, fmt.Errorf("invalid token signature or fallback failed")
+}
+
+// parseLegacyAESShareToken decrypts and verifies a 16-byte AES-ECB share token
+// with the given key, mirroring the pre-3.8 algorithm.
+// parseLegacyAESShareToken 使用给定密钥按 3.8 之前的算法解密并校验 16 字节
+// AES-ECB 分享令牌。
+func (t *tokenManager) parseLegacyAESShareToken(data []byte, key [sha256.Size]byte) (*ShareEntity, bool) {
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, false
+	}
+	decrypted := make([]byte, 16)
+	block.Decrypt(decrypted, data)
+
+	// Verify old checksum
+	// 校验旧校验和
+	h := sha256.New()
+	h.Write(key[:])
+	h.Write(decrypted[0:13])
+	sum := h.Sum(nil)
+
+	if !bytes.Equal(decrypted[13:16], sum[:3]) {
+		return nil, false
+	}
+
+	// Parse SID (6 bytes)
+	// 解析 SID (6 字节)
+	sidBytes := make([]byte, 8)
+	copy(sidBytes[2:8], decrypted[0:6])
+	shareID := int64(binary.BigEndian.Uint64(sidBytes))
+
+	// Parse UID (3 bytes)
+	// 解析 UID (3 字节)
+	uidBytes := make([]byte, 8)
+	copy(uidBytes[5:8], decrypted[6:9])
+	uid := int64(binary.BigEndian.Uint64(uidBytes))
+
+	// Parse ExpiresAt (4 bytes)
+	// 解析 ExpiresAt (4 字节)
+	expUnix := int64(binary.BigEndian.Uint32(decrypted[9:13]))
+
+	if time.Now().Unix() > expUnix {
+		return nil, false
+	}
+	return &ShareEntity{
+		SID:       shareID,
+		UID:       uid,
+		ExpiresAt: time.Unix(expUnix, 0),
+	}, true
 }
 
 // Validate validates if Token is valid
@@ -253,6 +311,11 @@ func (t *tokenManager) GetSecretKey() string {
 
 // ParseTokenWithKey parses Token with specified key
 // ParseTokenWithKey 使用指定密钥解析 Token
+// Tokens signed with the legacy machine-ID-derived key are still accepted as a
+// fallback, so upgrading to a stable signing seed does not invalidate existing
+// tokens on the same machine.
+// 仍接受使用旧版机器标识派生密钥签发的令牌作为回退，因此切换到稳定签名种子
+// 后，本机上已签发的令牌不会失效。
 func ParseTokenWithKey(tokenString string, secretKey string) (*UserEntity, error) {
 	claims := &UserEntity{}
 
@@ -260,8 +323,20 @@ func ParseTokenWithKey(tokenString string, secretKey string) (*UserEntity, error
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return []byte(secretKey + "_" + util.GetMachineID()), nil
+		return []byte(secretKey + "_" + util.GetTokenSigningSeed()), nil
 	})
+	if err != nil && util.GetTokenSigningSeed() != util.GetMachineID() {
+		// Retry with the legacy machine-ID-derived key for tokens issued before
+		// a stable signing seed was configured.
+		// 对启用稳定签名种子之前签发的令牌，回退用机器标识派生密钥重试。
+		claims = &UserEntity{}
+		token, err = jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(secretKey + "_" + util.GetMachineID()), nil
+		})
+	}
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {

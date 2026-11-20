@@ -52,11 +52,13 @@ func init() {
 
 // note 获取笔记查询对象
 func (r *noteRepository) note(uid int64) *query.Query {
-	return r.dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "Note")
+	return r.dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		if err := model.AutoMigrate(g, "Note"); err != nil {
+			return err
+		}
 		// Initialize universal full-text search table
 		// 初始化通用全文搜索表
-		_ = model.CreateNoteFTSTable(g)
+		return model.CreateNoteFTSTable(g)
 	}, r.GetKey(uid)+"#note_v3", r.GetKey(uid))
 }
 
@@ -270,6 +272,12 @@ func (r *noteRepository) GetByID(ctx context.Context, id, uid int64) (*domain.No
 // GetByPathHash 根据路径哈希获取笔记（排除已删除）
 func (r *noteRepository) GetByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*domain.Note, error) {
 	u := r.note(uid).Note
+	// Match the status filter of the query below: tombstones must not make a
+	// hash-only lookup ambiguous when the live row is unique.
+	// 与下方查询的状态过滤一致：墓碑行不应让唯一存活行的纯哈希查询变成歧义。
+	if err := requireUnambiguousPath(u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash), u.Action.Neq("delete")).UnderlyingDB()); err != nil {
+		return nil, err
+	}
 	m, err := u.WithContext(ctx).Where(
 		u.VaultID.Eq(vaultID),
 		u.PathHash.Eq(pathHash),
@@ -285,6 +293,18 @@ func (r *noteRepository) GetByPathHash(ctx context.Context, pathHash string, vau
 // GetByPathHashIncludeRecycle 根据路径哈希获取笔记（可选包含回收站）
 func (r *noteRepository) GetByPathHashIncludeRecycle(ctx context.Context, pathHash string, vaultID, uid int64, isRecycle bool) (*domain.Note, error) {
 	u := r.note(uid).Note
+	// Keep the ambiguity guard identical to the status filters applied below so
+	// deleted tombstones cannot mask a unique live (or unique recycled) row.
+	// 歧义守卫与下方状态过滤保持一致：墓碑行不能掩盖唯一的存活行（或唯一的回收站行）。
+	guard := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash))
+	if isRecycle {
+		guard = guard.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+	} else {
+		guard = guard.Where(u.Action.Neq("delete"))
+	}
+	if err := requireUnambiguousPath(guard.UnderlyingDB()); err != nil {
+		return nil, err
+	}
 	q := u.WithContext(ctx).Where(
 		u.VaultID.Eq(vaultID),
 		u.PathHash.Eq(pathHash),
@@ -307,6 +327,9 @@ func (r *noteRepository) GetByPathHashIncludeRecycle(ctx context.Context, pathHa
 // GetAllByPathHash 根据路径哈希获取笔记（包含所有状态）
 func (r *noteRepository) GetAllByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*domain.Note, error) {
 	u := r.note(uid).Note
+	if err := requireUnambiguousPath(u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash)).UnderlyingDB()); err != nil {
+		return nil, err
+	}
 	m, err := u.WithContext(ctx).Where(
 		u.VaultID.Eq(vaultID),
 		u.PathHash.Eq(pathHash),
@@ -902,6 +925,9 @@ func (r *noteRepository) ListByPathHashesMeta(ctx context.Context, pathHashes []
 		n := r.toDomainMeta(m)
 		// 同一 pathHash 可能存在历史遗留的重复记录，保留 UpdatedTimestamp 最新的一条
 		// A pathHash may have legacy duplicate rows; keep the one with the latest UpdatedTimestamp
+		if existing, ok := result[n.PathHash]; ok && existing.Path != n.Path {
+			return nil, domain.ErrAmbiguousPathHash
+		}
 		if existing, ok := result[n.PathHash]; !ok || n.UpdatedTimestamp > existing.UpdatedTimestamp {
 			result[n.PathHash] = n
 		}
@@ -1131,8 +1157,16 @@ func (r *noteRepository) RecycleClear(ctx context.Context, path, pathHash string
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.note(uid).Note
 		q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.NoteActionDelete)), u.Rename.Eq(0))
+		if path != "" {
+			q = q.Where(u.Path.Eq(path))
+		}
 		if pathHash != "" {
 			q = q.Where(u.PathHash.Eq(pathHash))
+		}
+		if path == "" && pathHash != "" {
+			if err := requireUnambiguousPath(q.UnderlyingDB()); err != nil {
+				return err
+			}
 		}
 		_, err := q.UpdateSimple(
 			u.Rename.Value(2),
@@ -1527,3 +1561,122 @@ func (r *noteRepository) DeleteByVaultID(ctx context.Context, vaultID, uid int64
 // Ensure noteRepository implements domain.NoteRepository interface
 // 确保 noteRepository 实现了 domain.NoteRepository 接口
 var _ domain.NoteRepository = (*noteRepository)(nil)
+
+// GetByPathHashAndPath restricts the hash lookup to the requested path.
+// GetByPathHashAndPath 将哈希查询限定到请求路径，保留原有状态与墓碑语义。
+func (r *noteRepository) GetByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*domain.Note, error) {
+	if path == "" {
+		return r.GetByPathHash(ctx, pathHash, vaultID, uid)
+	}
+	u := r.note(uid).Note
+	m, err := u.WithContext(ctx).Where(
+		u.VaultID.Eq(vaultID),
+		u.PathHash.Eq(pathHash),
+		u.Path.Eq(path),
+		u.Action.Neq("delete"),
+	).First()
+	if err != nil {
+		return nil, err
+	}
+	return r.toDomain(m, uid)
+}
+
+// GetByPathHashAndPathIncludeRecycle restricts the hash lookup to the requested path.
+// GetByPathHashAndPathIncludeRecycle 将哈希查询限定到请求路径，保留原有状态与墓碑语义。
+func (r *noteRepository) GetByPathHashAndPathIncludeRecycle(ctx context.Context, pathHash, path string, vaultID, uid int64, isRecycle bool) (*domain.Note, error) {
+	if path == "" {
+		return r.GetByPathHashIncludeRecycle(ctx, pathHash, vaultID, uid, isRecycle)
+	}
+	u := r.note(uid).Note
+	q := u.WithContext(ctx).Where(
+		u.VaultID.Eq(vaultID),
+		u.PathHash.Eq(pathHash),
+		u.Path.Eq(path),
+	)
+
+	if isRecycle {
+		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+	} else {
+		q = q.Where(u.Action.Neq("delete"))
+	}
+
+	m, err := q.First()
+	if err != nil {
+		return nil, err
+	}
+	return r.toDomain(m, uid)
+}
+
+// GetAllByPathHashAndPath restricts the hash lookup to the requested path.
+// GetAllByPathHashAndPath 将哈希查询限定到请求路径，保留原有状态与墓碑语义。
+func (r *noteRepository) GetAllByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*domain.Note, error) {
+	if path == "" {
+		return r.GetAllByPathHash(ctx, pathHash, vaultID, uid)
+	}
+	u := r.note(uid).Note
+	m, err := u.WithContext(ctx).Where(
+		u.VaultID.Eq(vaultID),
+		u.PathHash.Eq(pathHash),
+		u.Path.Eq(path),
+	).First()
+	if err != nil {
+		return nil, err
+	}
+	return r.toDomain(m, uid)
+}
+
+// ListByPathHashAndPath restricts the hash lookup to the requested path.
+// ListByPathHashAndPath 将哈希查询限定到请求路径，保留原有状态与墓碑语义。
+func (r *noteRepository) ListByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*domain.Note, error) {
+	u := r.note(uid).Note
+	ms, err := u.WithContext(ctx).Where(
+		u.VaultID.Eq(vaultID),
+		u.PathHash.Eq(pathHash),
+		u.Path.Eq(path),
+	).Find()
+	if err != nil {
+		return nil, err
+	}
+	var res []*domain.Note
+	for _, m := range ms {
+		note, err := r.toDomain(m, uid)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, note)
+	}
+	return res, nil
+}
+
+// ListByPathsMeta 批量查询完整路径的元数据，以 path 为键，不合并碰撞路径。
+// 每批 500 条分块查询以避开 SQLite / PostgreSQL 的单条 SQL 参数上限；
+// 同一路径多行时保留 updated_timestamp 最新的一条。
+func (r *noteRepository) ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*domain.Note, error) {
+	result := make(map[string]*domain.Note, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	u := r.note(uid).Note
+	const chunkSize = 500
+	for start := 0; start < len(paths); start += chunkSize {
+		end := start + chunkSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		ms, err := u.WithContext(ctx).Where(
+			u.VaultID.Eq(vaultID),
+			u.Path.In(paths[start:end]...),
+		).Find()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			n := r.toDomainMeta(m)
+			if existing, ok := result[n.Path]; !ok || n.UpdatedTimestamp > existing.UpdatedTimestamp {
+				result[n.Path] = n
+			}
+		}
+	}
+	return result, nil
+}

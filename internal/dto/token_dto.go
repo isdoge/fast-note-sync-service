@@ -30,7 +30,12 @@ type TokenUpdateRequest struct {
 	ExpiredDays int    `json:"expiredDays"` // Expired days // 过期天数
 	BoundIP     string `json:"boundIp"`     // Optional: Bound IP // 可选：绑定 IP
 	UserAgent   string `json:"userAgent"`   // Optional: User Agent // 可选：User Agent
-	Vaults      string `json:"vaults"`      // Optional: Restrict Vaults (comma-separated) // 可选：限制笔记库（逗号分隔）
+	// Vaults is a pointer so callers can distinguish "field absent" (keep the
+	// current restriction) from "field present but empty" (lift the
+	// restriction). Omitting it no longer silently clears vault limits.
+	// Vaults 用指针区分“字段缺失”（保持现有限制）与“字段存在但为空”（解除
+	// 限制）。省略该字段不再静默清空库限制。
+	Vaults *string `json:"vaults"` // Optional: Restrict Vaults (comma-separated) // 可选：限制笔记库（逗号分隔）
 }
 
 // TokenActiveClient defines the information for an active token client

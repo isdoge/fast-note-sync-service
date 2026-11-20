@@ -11,6 +11,16 @@
 - **Endpoint**: `GET /api/user/sync`
 - **协议升级**: 标准 WebSocket (RFC 6455)。
 
+连接查询参数除客户端信息外还支持协议协商：
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `protocol` | string | 设为 `protobuf` 才允许协商 Protobuf；其他值保持 JSON。 |
+| `pv` | int | 客户端支持的握手协议版本。`pv>=2` 时鉴权响应额外返回 `syncUpChunkNum`、`syncDownChunkNum`、`pipelineWindowUp`、`pipelineWindowDown`、`protobufAck`；缺失或非法值按旧版（v1）处理。 |
+| `pb` | `1` / 其他 | 客户端本地 Protobuf 开关，`1` 表示开启，仅在 `pv>=2` 时参与鉴权协商。`protocol=protobuf` 且 `pb=1` 时 `protobufAck=true`，鉴权响应仍为 JSON，之后的协议帧可切为 Protobuf。 |
+
+旧客户端也可通过 `ClientInfo.protobuf` 配合 `protocol=protobuf` 完成协商。Protobuf 入站帧以 `pb` 前缀开头；服务端仍接受 `Action|{...}` 形式的 JSON 文本帧，用于解码失败降级和在线关闭 Protobuf。
+
 ### 1.2 消息封装格式
 
 WebSocket 文本帧统一使用 `Action|JSON` 字符串格式。
@@ -78,7 +88,7 @@ Content-Type: application/json
 | `name`                | string | 是   | 客户端名称 (设备名)                      |
 | `version`             | string | 是   | 客户端当前版本                           |
 | `type`                | string | 是   | 客户端类型 (如 `obsidianPlugin`)         |
-| `offlineSyncStrategy` | string | 否   | 策略: `newTimeMerge` / `ignoreTimeMerge` |
+| `offlineSyncStrategy` | string | 否   | 策略: `newTimeMerge` / `ignoreTimeMerge` / `manualMerge`；空值使用默认策略，未知值回落到默认策略并记录日志 |
 
 - **响应 (Data)**:
 
@@ -135,8 +145,8 @@ Content-Type: application/json
 | `content`     | string | 笔记文本全文                      |
 | `contentHash` | string | 内容哈希                          |
 | `baseHash`    | string | 修改前的基础哈希 (用于冲突合并)   |
-| `ctime`       | int64  | 创建时间 (秒)                     |
-| `mtime`       | int64  | 修改时间 (秒)                     |
+| `ctime`       | int64  | 创建时间 (毫秒)                   |
+| `mtime`       | int64  | 修改时间 (毫秒)                   |
 | `createOnly`  | bool   | 设置为 true 时，若笔记已存在则报错 |
 
 ---
@@ -203,4 +213,4 @@ Content-Type: application/json
 
 ---
 
-*注：文档中所有 `int64` 时间戳除 `lastTime`(毫秒) 外均默认为 **秒**。*
+*注：3.7.0 起所有 `int64` 时间戳统一按 **毫秒** 处理（存储、下行消息与 `lastTime` 一致）。服务端写入入口会把客户端传入的 (0, 1e11) 区间秒值归一化为毫秒（#461）；客户端仍应直接发送毫秒值。*

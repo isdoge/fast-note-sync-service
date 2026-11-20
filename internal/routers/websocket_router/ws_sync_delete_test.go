@@ -132,6 +132,9 @@ func TestSyncDelete_IdempotentDoesNotBroadcast(t *testing.T) {
 				testApp.Config().App.SyncDownChunkNum = 1
 				c, originMessages := newSyncDeletePeer(t, testApp)
 				other, otherMessages := newSyncDeletePeer(t, testApp)
+				// 对端必须先声明该库才会接收带库名的实时广播（未声明连接在首次
+				// 同步前不接收，见 acceptsBroadcast）。
+				declareVaultForTest(t, other, "vault")
 				c.UserClients = pkgapp.ConnStorage{nil: other}
 				exists := state == "live" || state == "unchanged-after-check"
 				unchanged := state == "unchanged-after-check"
@@ -151,8 +154,8 @@ func TestSyncDelete_IdempotentDoesNotBroadcast(t *testing.T) {
 					}
 					noteSvc.On("ListByLastTime", mock.Anything, int64(1), mock.Anything).
 						Return(list, nil)
-					noteSvc.On("ExistsBatch", mock.Anything, int64(1), "vault", []string{"gone-hash"}).
-						Return(map[string]bool{"gone-hash": exists}, nil)
+					noteSvc.On("ExistsPathsBatch", mock.Anything, int64(1), "vault", []string{"gone"}).
+						Return(map[string]bool{"gone": exists}, nil)
 					if exists {
 						noteSvc.On("Delete", mock.Anything, int64(1), mock.Anything).
 							Return(&dto.NoteDTO{Path: "gone", PathHash: "gone-hash", Action: "delete", Unchanged: unchanged}, nil)
@@ -293,4 +296,15 @@ func TestSyncEnd_PagedQueueRegisteredBeforeEnd(t *testing.T) {
 			require.True(t, registeredAtEnd.Load(), "结束消息写出时分页队列尚未登记")
 		})
 	}
+}
+
+// declareVaultForTest 通过一次成功的请求绑定在测试客户端上声明笔记库，使其能接收
+// 该库的实时广播（与生产连接的声明路径一致）。
+func declareVaultForTest(t *testing.T, c *pkgapp.WebsocketClient, vault string) {
+	t.Helper()
+	var req struct {
+		Vault string `json:"vault"`
+	}
+	ok, errs := c.BindAndValidWithAction("NoteSync", []byte(`{"vault":"`+vault+`"}`), &req)
+	require.True(t, ok, "声明笔记库失败：%v", errs)
 }

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -66,4 +67,92 @@ func TestWebsocketBindAndValid_RejectsProtobufVaultOutsideTokenScope(t *testing.
 			t.Fatalf("vault %q allowed %q: ok=%v (errs %v), want %v", test.vault, test.allowed, ok, errs, test.ok)
 		}
 	}
+}
+
+type rejectingValidator struct{}
+
+func (rejectingValidator) ValidateStruct(any) error { return errors.New("invalid request") }
+
+type validatorBindApp struct{ AppContainer }
+
+func (validatorBindApp) Validator() ValidatorInterface { return rejectingValidator{} }
+
+// 只有成功完成绑定、库权限检查及参数校验的请求才声明笔记库；JSON 和 Protobuf 共用此约定。
+func TestWebsocketBindAndValid_RecordsDeclaredVaultAfterSuccess(t *testing.T) {
+	server := &WebsocketServer{ProtobufDecoder: func(action string, data []byte, obj any) (bool, error) {
+		if string(data) == "invalid" {
+			return false, errors.New("invalid protobuf")
+		}
+		obj.(*vaultBindReq).Vault = string(data)
+		return true, nil
+	}}
+	newClient := func(vaults string, protobuf bool) *WebsocketClient {
+		return &WebsocketClient{Server: server, Vaults: vaults, app: vaultBindApp{}, useProtobuf: protobuf}
+	}
+	for _, test := range []struct {
+		name, data, allowedVault, acceptedVault string
+		protobuf, success                       bool
+	}{
+		{name: "JSON allowed", data: `{"vault":"vault-a","path":"a.md"}`, acceptedVault: "vault-a", success: true},
+		{name: "JSON restricted", data: `{"vault":"vault-b","path":"a.md"}`, allowedVault: "vault-a"},
+		{name: "JSON empty", data: `{"vault":"","path":"a.md"}`, acceptedVault: "other-vault", success: true},
+		{name: "JSON invalid", data: `{"vault":`},
+		{name: "Protobuf allowed", data: "vault-a", protobuf: true, acceptedVault: "vault-a", success: true},
+		{name: "Protobuf restricted", data: "vault-b", allowedVault: "vault-a", protobuf: true},
+		{name: "Protobuf invalid", data: "invalid", protobuf: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := newClient(test.allowedVault, test.protobuf)
+			var req vaultBindReq
+			ok, _ := c.BindAndValidWithAction("NoteModify", []byte(test.data), &req)
+			if ok != test.success {
+				t.Fatalf("BindAndValidWithAction ok=%v, want %v", ok, test.success)
+			}
+			c.broadcastVaultsMu.RLock()
+			declaredCount := len(c.declaredVaults)
+			_, vaultDeclared := c.declaredVaults[test.acceptedVault]
+			c.broadcastVaultsMu.RUnlock()
+			if test.success && req.Vault != "" {
+				if declaredCount != 1 || !vaultDeclared {
+					t.Fatalf("成功绑定的库未进入集合：count=%d, declared=%v", declaredCount, vaultDeclared)
+				}
+			} else if declaredCount != 0 {
+				t.Fatalf("失败或空库名请求产生了 %d 条库声明", declaredCount)
+			}
+		})
+	}
+
+	t.Run("request without Vault field", func(t *testing.T) {
+		c := newClient("", false)
+		if ok, _ := c.BindAndValidWithAction("ClientInfo", []byte(`{"path":"a.md"}`), &struct {
+			Path string `json:"path"`
+		}{}); !ok {
+			t.Fatal("无 Vault 字段的请求应绑定成功")
+		}
+		if len(c.declaredVaults) != 0 {
+			t.Fatalf("无 Vault 字段的请求不得声明笔记库：%v", c.declaredVaults)
+		}
+		// 尚未声明任何库的连接不接收带库名的广播（随后的首次同步会把内容拉齐），
+		// 但用户级（不带库名）广播照常接收。
+		if c.acceptsBroadcast("vault-a") {
+			t.Fatal("未声明库的连接不应接收带库名的广播")
+		}
+		if !c.acceptsBroadcast("") {
+			t.Fatal("未声明库的连接仍应接收用户级广播")
+		}
+	})
+
+	t.Run("parameter validation failure", func(t *testing.T) {
+		c := &WebsocketClient{Server: server, app: validatorBindApp{}}
+		var req vaultBindReq
+		if ok, _ := c.BindAndValidWithAction("NoteModify", []byte(`{"vault":"vault-a"}`), &req); ok {
+			t.Fatal("参数校验失败的请求不得绑定成功")
+		}
+		if len(c.declaredVaults) != 0 {
+			t.Fatalf("参数校验失败不得声明笔记库：%v", c.declaredVaults)
+		}
+		if c.acceptsBroadcast("vault-b") {
+			t.Fatal("未声明库的连接不应接收带库名的广播")
+		}
+	})
 }

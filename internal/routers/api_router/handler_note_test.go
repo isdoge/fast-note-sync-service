@@ -221,3 +221,57 @@ func TestNoteHandler_CreateOrUpdate_KeepsMillisecondTimestamps(t *testing.T) {
 		assert.Equal(t, int64(1651719914000), writeParams.Ctime)
 	}
 }
+
+// withRestAuthScope injects the entry-time authentication values that handler-level
+// function checks read (middleware sets them on the real request path).
+// withRestAuthScope 注入 handler 级功能点检查读取的入口鉴权上下文
+// （真实请求由中间件写入）。
+func withRestAuthScope(c *gin.Context, scope, client string) {
+	c.Set("scope", scope)
+	c.Set("auth_rest_client", client)
+	c.Set("auth_strict_empty_protocol", false)
+}
+
+// 整库清空回收站需要专属 note_purge；单条清理维持 note_w。路由层接受任一能力，
+// 由 handler 按请求体区分，与 MCP note_recycle_clear 一致。
+func TestNoteHandler_RecycleClear_WholeBinRequiresPurge(t *testing.T) {
+	cases := []struct {
+		name       string
+		scope      string
+		body       string
+		wantDenied bool
+	}{
+		{"note_w cannot clear whole bin", "p:rest c:* f:note_w", `{"vault":"main","path":""}`, true},
+		{"note_purge clears whole bin", "p:rest c:* f:note_purge", `{"vault":"main","path":""}`, false},
+		{"note_w clears single path", "p:rest c:* f:note_w", `{"vault":"main","path":"a.md"}`, false},
+		{"note_purge cannot clear single path", "p:rest c:* f:note_purge", `{"vault":"main","path":"a.md"}`, true},
+		{"path hash counts as single path", "p:rest c:* f:note_w", `{"vault":"main","path":"","pathHash":"h1"}`, false},
+		{"login token clears whole bin", "p:rest c:* f:*", `{"vault":"main","path":""}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockNoteSvc := new(svcmocks.MockNoteService)
+			if !tc.wantDenied {
+				mockNoteSvc.On("RecycleClear", mock.Anything, int64(1), mock.AnythingOfType("*dto.NoteRecycleClearRequest")).
+					Return(nil).Once()
+			}
+			handler := newTestNoteHandler(mockNoteSvc, nil)
+			c, w := newNoteTestContext("DELETE", "/api/note/recycle-clear", tc.body, 1)
+			withRestAuthScope(c, tc.scope, "*")
+
+			handler.RecycleClear(c)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			if tc.wantDenied {
+				assertResponseCode(t, w, code.ErrorAuthTokenScopeRestricted.Code())
+			} else {
+				assertResponseCode(t, w, code.Success.Code())
+			}
+			if tc.wantDenied {
+				mockNoteSvc.AssertNotCalled(t, "RecycleClear", mock.Anything, mock.Anything, mock.Anything)
+			} else {
+				mockNoteSvc.AssertExpectations(t)
+			}
+		})
+	}
+}

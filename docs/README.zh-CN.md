@@ -60,11 +60,9 @@
 | 飞牛 fnOS `.fpk` 安装包 | 不再构建 | Docker 或二进制部署 |
 | Git 同步的 `ssh://`、`git://`、`user@host:path` 仓库地址 | 这几种地址此前就无法完成同步，现在保存和验证时直接提示 | `http` / `https` 地址 |
 
-另外，**MySQL / MariaDB 后端在当前版本不建议使用**（仍有未解决的建表问题），请使用 SQLite 或 PostgreSQL。
-
 ### 从上游版本升级
 
-- **先备份**数据目录与配置。首次启动 v3.7.0 会执行三个一次性数据迁移（标签索引回填、笔记大小回填、秒级时间戳转毫秒）。
+- **先备份**数据目录与配置。首次启动 v3.7.0 会执行三个一次性数据迁移（标签索引回填、笔记大小回填、秒级时间戳转毫秒）。v3.8.0 首次启动还会执行一次路径规范化迁移，把历史数据里带反斜杠的路径改成正斜杠；目标路径已被占用时，带反斜杠的那一条会改名为 `*.conflict.<时间戳>.*` 保留，不覆盖、不删除。既有 MySQL / MariaDB 部署升级到 v3.8.0 后，首次启动会将路径与库名列改为区分大小写的二进制类型（`varbinary(1024)` / `varbinary(255)`），并在改列前自动预检字节长度；若历史数据存在超过 1024 UTF-8 字节的超长路径（或超过 255 字节的库名），预检会提示具体表名与记录 ID 并中止迁移，缩短后再启动即可。
 - **Docker 部署**：把镜像地址换成 `ghcr.io/isdoge/fast-note-sync-service:latest`，数据卷和配置不用动。
 - **二进制部署**：从本仓库的 Releases 下载对应平台的包替换原程序，或重新执行下文的一键脚本。
 - **行为变化**（节选，完整内容见更新日志的「变更」与「安全」部分）：
@@ -127,7 +125,7 @@
   * 自动清理过期备份，支持自定义保留天数。
 
 * **🗄️ 多数据库支持**：
-  * 支持 SQLite 与 PostgreSQL，满足从个人到团队的不同部署需求。MySQL / MariaDB 在当前版本不建议使用。
+  * 支持 SQLite、PostgreSQL 与 MySQL / MariaDB（已在 MySQL 8.4、MariaDB 11.4 验证），满足从个人到团队的不同部署需求；使用 PostgreSQL 或 MySQL / MariaDB 存放笔记等用户数据时，需同时显式配置 `user-database.type` 与连接参数（留空默认仍写本地 SQLite 文件；MySQL / MariaDB 账号需具备 `CREATE DATABASE` 权限）。
 
 ## ☕ 赞助与支持
 
@@ -147,12 +145,12 @@
 ## 🗺️ 路线图 (Roadmap)
 
 - [x] 增加 WebSocket `Protobuf` 传输格式的支持, 强化同步传输效率.
-- [ ] 对现有授权机制进行隔离以及优化,  提升整体安全性.
-- [ ] 增加 WebGui 笔记实时更新
+- [x] 对现有授权机制进行隔离以及优化,  提升整体安全性.
+- [x] 增加 WebGui 笔记实时更新
 - [ ] 增加客户端 点对点 消息传送(非笔记&附件,类似localsend功能,不支持客户端保存, 可保存到服务端)
-- [ ] 各类帮助文档完善
+- [x] 各类帮助文档完善
 - [ ] 更多的内网穿透(中继网关)的支持
-- [ ] 快速部署计划
+- [x] 快速部署计划
   * 只需要提供服务器地址(公网), 账号密码 即可完成 FNS 服务端的部署
 - [ ] 优化现有的离线笔记合并方案, 增加冲突处理机制
 
@@ -235,6 +233,14 @@ docker compose up -d
 ./fast-note-sync-service run -c config/config.yaml
 ```
 
+### 方式四：远程部署脚本
+
+在本地执行 `scripts/remote_deploy.sh`，提供服务器地址与 SSH 账号即可部署到远端 Linux 服务器，支持“二进制 + systemd”与 Docker Compose 两种方式，详见[远程部署文档](/docs/runbook/remote-deploy.zh-CN.md)。
+
+```bash
+./scripts/remote_deploy.sh 203.0.113.10 -u root
+```
+
 ## 📖 使用指南
 
 1.  **访问管理面板**：
@@ -252,6 +258,13 @@ docker compose up -d
 默认配置文件为 `config.yaml`，程序会自动在 **根目录** 或 **config/** 目录下查找。
 
 查看完整配置示例：[config/config.yaml](https://github.com/isdoge/fast-note-sync-service/blob/master/config/config.yaml)
+
+更多文档：
+- [配置项参考](/docs/runbook/configuration.zh-CN.md)
+- [反向代理与内网访问](/docs/runbook/reverse-proxy.zh-CN.md)
+- [升级指南](/docs/runbook/upgrade.zh-CN.md)
+- [排错与错误码](/docs/runbook/troubleshooting.zh-CN.md)
+- [远程部署](/docs/runbook/remote-deploy.zh-CN.md)
 
 ## 🌐 Nginx 反代配置示例
 

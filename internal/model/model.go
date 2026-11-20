@@ -8,6 +8,56 @@ func AutoMigrate(db *gorm.DB, key string) error {
 	if db == nil {
 		return nil
 	}
+	var value any
+	switch key {
+	case "AuthToken":
+		value = AuthToken{}
+	case "AuthTokenLog":
+		value = AuthTokenLog{}
+	case "BackupConfig":
+		value = BackupConfig{}
+	case "BackupHistory":
+		value = BackupHistory{}
+	case "File":
+		value = File{}
+	case "Folder":
+		value = Folder{}
+	case "GitSyncConfig":
+		value = GitSyncConfig{}
+	case "GitSyncHistory":
+		value = GitSyncHistory{}
+	case "Note":
+		value = Note{}
+	case "NoteHistory":
+		value = NoteHistory{}
+	case "NoteLink":
+		value = NoteLink{}
+	case "NoteTag":
+		value = NoteTag{}
+	case "Setting":
+		value = Setting{}
+	case "Storage":
+		value = Storage{}
+	case "SyncLog":
+		value = SyncLog{}
+	case "User":
+		value = User{}
+	case "UserOIDCIdentity":
+		value = UserOIDCIdentity{}
+	case "UserShare":
+		value = UserShare{}
+	case "Vault":
+		value = Vault{}
+	default:
+		return nil
+	}
+	// v3.8.0 narrows path and vault columns to varbinary. Refuse the upgrade
+	// before any ALTER if legacy rows are too long for the new type.
+	// v3.8.0 把 path 与 vault 列收窄为 varbinary。若存量行超出新类型长度，
+	// 在任何 ALTER 之前拒绝升级。
+	if err := PrecheckMySQLVarbinaryColumns(db, key); err != nil {
+		return err
+	}
 	// #275: legacy MySQL deployments created full-column path indexes at
 	// varchar(255). Rebuild them as prefix indexes before widening the columns,
 	// otherwise utf8mb4 varchar(1024) exceeds InnoDB's 3072-byte key limit.
@@ -19,64 +69,5 @@ func AutoMigrate(db *gorm.DB, key string) error {
 			return err
 		}
 	}
-	switch key {
-
-	case "AuthToken":
-		return db.AutoMigrate(AuthToken{})
-
-	case "AuthTokenLog":
-		return db.AutoMigrate(AuthTokenLog{})
-
-	case "BackupConfig":
-		return db.AutoMigrate(BackupConfig{})
-
-	case "BackupHistory":
-		return db.AutoMigrate(BackupHistory{})
-
-	case "File":
-		return db.AutoMigrate(File{})
-
-	case "Folder":
-		return db.AutoMigrate(Folder{})
-
-	case "GitSyncConfig":
-		return db.AutoMigrate(GitSyncConfig{})
-
-	case "GitSyncHistory":
-		return db.AutoMigrate(GitSyncHistory{})
-
-	case "Note":
-		return db.AutoMigrate(Note{})
-
-	case "NoteHistory":
-		return db.AutoMigrate(NoteHistory{})
-
-	case "NoteLink":
-		return db.AutoMigrate(NoteLink{})
-
-	case "NoteTag":
-		return db.AutoMigrate(NoteTag{})
-
-	case "Setting":
-		return db.AutoMigrate(Setting{})
-
-	case "Storage":
-		return db.AutoMigrate(Storage{})
-
-	case "SyncLog":
-		return db.AutoMigrate(SyncLog{})
-
-	case "User":
-		return db.AutoMigrate(User{})
-
-	case "UserOIDCIdentity":
-		return db.AutoMigrate(UserOIDCIdentity{})
-
-	case "UserShare":
-		return db.AutoMigrate(UserShare{})
-
-	case "Vault":
-		return db.AutoMigrate(Vault{})
-	}
-	return nil
+	return autoMigrateModel(db, value)
 }

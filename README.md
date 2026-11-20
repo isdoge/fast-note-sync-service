@@ -60,11 +60,9 @@ The following items have been removed in this independently maintained fork. **I
 | Feiniu fnOS `.fpk` installers | No longer built | Docker or binary deployment |
 | `ssh://`, `git://`, and `user@host:path` repository URLs for Git sync | These URL forms never actually worked for syncing; saving and validation now reject them with a clear message | `http` / `https` URLs |
 
-In addition, **the MySQL / MariaDB backend is not recommended in the current version** (table-creation issues remain unresolved); please use SQLite or PostgreSQL.
-
 ### Upgrading from upstream
 
-- **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion).
+- **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion). On first start, v3.8.0 also runs a path normalization migration to convert backslashes in historical paths to forward slashes; if the target path is already occupied, the entry containing backslashes is renamed to `*.conflict.<timestamp>.*` and preserved without overwriting or deleting data. For existing MySQL / MariaDB deployments, the first start on v3.8.0 converts path and vault-name columns to case-sensitive binary types (`varbinary(1024)` / `varbinary(255)`) and automatically runs a byte-length precheck beforehand; if any historical path exceeds 1024 UTF-8 bytes (or any vault name exceeds 255 bytes), the precheck reports the specific table name and record ID and aborts migration — shorten the value and start again.
 - **Docker**: Change the image to `ghcr.io/isdoge/fast-note-sync-service:latest`; volumes and configuration can stay as they are.
 - **Binary**: Download the package for your platform from this repository's Releases and replace the binary, or re-run the one-click script below.
 - **Behavior changes** (excerpt; see the "Changes" and "Security" sections of the changelog for the full list):
@@ -127,7 +125,7 @@ In addition, **the MySQL / MariaDB backend is not recommended in the current ver
   * Automatically cleans up expired backups with custom retention days.
 
 * **🗄️ Multi-Database Support**:
-  * Supports SQLite and PostgreSQL, meeting deployment needs from individuals to teams. MySQL / MariaDB are not recommended in the current version.
+  * Supports SQLite, PostgreSQL, and MySQL / MariaDB (verified on MySQL 8.4 and MariaDB 11.4), meeting deployment needs from individuals to teams. To store user data such as notes and attachments in PostgreSQL or MySQL / MariaDB, you must also explicitly configure `user-database.type` and connection parameters (when left empty, user data is still written to local SQLite files by default; the MySQL / MariaDB account needs `CREATE DATABASE` privileges).
 
 ## ☕ Sponsorship and Support
 
@@ -147,12 +145,12 @@ In addition, **the MySQL / MariaDB backend is not recommended in the current ver
 ## 🗺️ Roadmap
 
 - [x] Add support for WebSocket `Protobuf` transfer format to enhance synchronization efficiency.
-- [ ] Isolate and optimize the existing authorization mechanism to improve overall security.
-- [ ] Add real-time note updates to the Web UI.
+- [x] Isolate and optimize the existing authorization mechanism to improve overall security.
+- [x] Add real-time note updates to the Web UI.
 - [ ] Add peer-to-peer message transfer between clients (non-notes & attachments, similar to LocalSend; client-side storage is not supported, but server-side is).
-- [ ] Improve various help documentations.
+- [x] Improve various help documentations.
 - [ ] Provide support for more intranet penetration (relay gateway) options.
-- [ ] Quick deployment plan:
+- [x] Quick deployment plan:
   * Deploy the FNS server by simply providing the server address (public IP) and account credentials.
 - [ ] Optimize the existing offline note merging scheme and introduce conflict resolution mechanisms.
 
@@ -235,6 +233,14 @@ Download the latest version for your system from [Releases](https://github.com/i
 ./fast-note-sync-service run -c config/config.yaml
 ```
 
+### Method 4: Remote Deployment Script
+
+Run `scripts/remote_deploy.sh` locally and provide the server address and SSH account to deploy to a remote Linux server. Both binary + systemd and Docker Compose deployments are supported; see the [remote deployment guide](/docs/runbook/remote-deploy.en.md).
+
+```bash
+./scripts/remote_deploy.sh 203.0.113.10 -u root
+```
+
 ## 📖 User Guide
 
 1.  **Access Admin Panel**:
@@ -252,6 +258,13 @@ Download the latest version for your system from [Releases](https://github.com/i
 The default configuration file is `config.yaml`. The application automatically searches in the **root directory** or the **config/** directory.
 
 View the complete configuration example: [config/config.yaml](https://github.com/isdoge/fast-note-sync-service/blob/master/config/config.yaml)
+
+More documentation:
+- [Configuration reference](/docs/runbook/configuration.en.md)
+- [Reverse proxy and private network access](/docs/runbook/reverse-proxy.en.md)
+- [Upgrade guide](/docs/runbook/upgrade.en.md)
+- [Troubleshooting and error codes](/docs/runbook/troubleshooting.en.md)
+- [Remote deployment](/docs/runbook/remote-deploy.en.md)
 
 ## 🌐 Nginx Reverse Proxy Example
 

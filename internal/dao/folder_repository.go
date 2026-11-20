@@ -36,8 +36,8 @@ func init() {
 
 // folder returns the query with auto-migration
 func (r *folderRepository) folder(uid int64) *query.Query {
-	return r.Dao.QueryWithOnceInit(func(g *gorm.DB) {
-		model.AutoMigrate(g, "Folder")
+	return r.Dao.QueryWithOnceInit(func(g *gorm.DB) error {
+		return model.AutoMigrate(g, "Folder")
 	}, r.GetKey(uid)+"#folder", r.GetKey(uid))
 }
 
@@ -52,6 +52,9 @@ func (r *folderRepository) GetByID(ctx context.Context, id, uid int64) (*domain.
 
 func (r *folderRepository) GetByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*domain.Folder, error) {
 	f := r.folder(uid).Folder
+	if err := requireUnambiguousPath(f.WithContext(ctx).Where(f.VaultID.Eq(vaultID), f.PathHash.Eq(pathHash)).UnderlyingDB()); err != nil {
+		return nil, err
+	}
 	m, err := f.WithContext(ctx).Where(f.VaultID.Eq(vaultID), f.PathHash.Eq(pathHash)).First()
 	if err != nil {
 		return nil, err
@@ -247,3 +250,32 @@ func (r *folderRepository) DeleteByVaultID(ctx context.Context, vaultID, uid int
 // Ensure folderRepository implements domain.FolderRepository interface
 // 确保 folderRepository 实现了 domain.FolderRepository 接口
 var _ domain.FolderRepository = (*folderRepository)(nil)
+
+// GetByPathHashAndPath restricts the hash lookup to the requested path.
+// GetByPathHashAndPath 将哈希查询限定到请求路径，保留原有状态与墓碑语义。
+func (r *folderRepository) GetByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*domain.Folder, error) {
+	if path == "" {
+		return r.GetByPathHash(ctx, pathHash, vaultID, uid)
+	}
+	f := r.folder(uid).Folder
+	m, err := f.WithContext(ctx).Where(f.VaultID.Eq(vaultID), f.PathHash.Eq(pathHash), f.Path.Eq(path)).First()
+	if err != nil {
+		return nil, err
+	}
+	return r.modelToDomain(m), nil
+}
+
+// GetAllByPathHashAndPath restricts the hash lookup to the requested path.
+// GetAllByPathHashAndPath 将哈希查询限定到请求路径，保留原有状态与墓碑语义。
+func (r *folderRepository) GetAllByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*domain.Folder, error) {
+	f := r.folder(uid).Folder
+	ms, err := f.WithContext(ctx).Where(f.VaultID.Eq(vaultID), f.PathHash.Eq(pathHash), f.Path.Eq(path), f.Action.Neq("delete")).Find()
+	if err != nil {
+		return nil, err
+	}
+	var res []*domain.Folder
+	for _, m := range ms {
+		res = append(res, r.modelToDomain(m))
+	}
+	return res, nil
+}

@@ -1,6 +1,7 @@
 package websocket_router
 
 import (
+	"errors"
 	"time"
 
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
@@ -39,14 +40,23 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写客户端路径，与笔记/附件入口保持一致。
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path").WithData(errPathData(slotPath)))
 		return
 	}
 
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
+	// mtime 缺省（<=0）时先按 0 做更新检查：内容与服务端一致时 UpdateCheck 会
+	// 返回 UpdateMtime（不改库、不广播），这正是幂等返回；只有确需写入时才在下方
+	// 用服务端当前时间兜底，避免把内容未变的配置改写时间戳并广播。
+	// Run UpdateCheck with the client-reported mtime first (0 when missing): if the
+	// content is unchanged, UpdateCheck returns UpdateMtime (no write, no broadcast),
+	// which is the idempotent answer. Only an actual write falls back to the server's
+	// current time below, so unchanged settings keep their timestamps.
+	mtimeProvided := params.Mtime > 0
 
 	ctx := c.Context()
 
@@ -59,15 +69,23 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 	checkParams := convert.StructAssign(params, &dto.SettingUpdateCheckRequest{}).(*dto.SettingUpdateCheckRequest)
 	updateMode, settingCheck, err := settingSvc.UpdateCheck(ctx, c.User.UID, checkParams)
 	if err != nil {
-		h.respondError(c, code.ErrorSettingModifyOrCreateFailed, err, "websocket_router.setting.SettingModify.UpdateCheck")
+		h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.UpdateCheck")
 		return
 	}
 
 	switch updateMode {
 	case "UpdateContent", "Create":
+		if !mtimeProvided {
+			// 确需写入时才兜底：写 0 会让后续窗口内比较 s.Mtime >= cSetting.Mtime
+			// 恒为假，服务端新改的配置被误判成"客户端更新"。
+			// Fall back only when a write actually happens: storing 0 makes the
+			// in-window comparison s.Mtime >= cSetting.Mtime always false, so a
+			// freshly server-updated setting is misjudged as "client newer".
+			params.Mtime = timex.Now().UnixMilli()
+		}
 		_, setting, err := settingSvc.ModifyOrCreate(ctx, c.User.UID, params, true)
 		if err != nil {
-			h.respondError(c, code.ErrorSettingModifyOrCreateFailed, err, "websocket_router.setting.SettingModify.ModifyOrCreate")
+			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
 			return
 		}
 
@@ -174,9 +192,10 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 		return
 	}
 
+	slotPath := clientSlotPath(c, msg, params.Path)
 	// 只校验、不改写客户端路径，与笔记/附件入口保持一致。
 	if !validWSPath(params.Path) {
-		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path"))
+		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path").WithData(errPathData(slotPath)))
 		return
 	}
 
@@ -190,7 +209,7 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	setting, err := settingSvc.Delete(ctx, c.User.UID, params)
 	if err != nil {
-		h.respondError(c, code.ErrorSettingDeleteFailed, err, "websocket_router.setting.SettingDelete.Delete")
+		h.respondErrorWithPath(c, code.ErrorSettingDeleteFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingDelete.Delete")
 		return
 	}
 
@@ -597,8 +616,46 @@ func (h *SettingWSHandler) doSettingSync(c *pkgapp.WebsocketClient, params *dto.
 	// 使用查询前记录的 syncStartTime 作为 lastTime，防止查询处理期间的写入在下次增量同步时被永久遗漏。
 	lastTime = syncStartTime
 	hasWritePermission := pkgapp.VerifyPermissions(c.Scope, "ws", c.ClientType(), "config_w")
+
+	// 增量同步（lastTime > 0）时，窗口外条目先按路径哈希批量查服务端当前行：
+	// 最新一行是存活行且内容哈希、修改时间都与客户端上报一致时静默跳过，
+	// 不发上传指令、不打无权限警告。其余情形（服务端没有、墓碑、哈希或修改时间不同）
+	// 保持原有判定不变。
+	// In incremental sync (lastTime > 0), batch-fetch the server's current rows for
+	// out-of-window entries first: when the latest row is alive and both content hash
+	// and mtime match the client report, skip silently — no upload directive and no
+	// permission-denied warning. All other cases keep the existing verdict.
+	var serverSettings map[string]*dto.SettingDTO
+	if params.LastTime > 0 && len(cSettingsKeys) > 0 {
+		remainingHashes := make([]string, 0, len(cSettingsKeys))
+		for pathHash := range cSettingsKeys {
+			remainingHashes = append(remainingHashes, pathHash)
+		}
+		metaMap, metaErr := settingSvc.GetByPathHashesMetaBatch(ctx, c.User.UID, params.Vault, remainingHashes)
+		if metaErr != nil {
+			// 查询失败退回原有行为：当作服务端没有，照旧要求上传
+			// On query failure fall back to the old behavior: treat as missing and request upload
+			h.App.Logger().Warn("websocket_router.setting.SettingSync.GetByPathHashesMetaBatch",
+				zap.String(logger.FieldTraceID, c.TraceID),
+				zap.Int64(logger.FieldUID, c.User.UID),
+				zap.Error(metaErr))
+		} else {
+			serverSettings = metaMap
+		}
+	}
+
 	for pathHash := range cSettingsKeys {
 		s := cSettings[pathHash]
+		// 配置清单本来就按路径哈希索引（与窗口内 delete(cSettingsKeys, s.PathHash) 的
+		// 匹配键一致）；客户端带了路径时再核对路径相等，避免哈希碰撞误判。
+		// The setting inventory is keyed by path hash (same key as the in-window
+		// delete(cSettingsKeys, s.PathHash)); when the client supplied a path, also
+		// require it to match so hash collisions cannot substitute.
+		if sSetting, ok := serverSettings[pathHash]; ok && sSetting != nil &&
+			sSetting.Action != "delete" && sSetting.ContentHash == s.ContentHash && sSetting.Mtime == s.Mtime &&
+			(s.Path == "" || sSetting.Path == s.Path) {
+			continue
+		}
 		// Add message to queue instead of sending immediately
 		// 将消息添加到队列而非立即发送
 		if hasWritePermission {
@@ -723,7 +780,15 @@ func (h *SettingWSHandler) SettingRePush(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	setting, err := h.App.GetSettingService(c.ClientType(), c.ClientName(), c.ClientVersion()).Get(ctx, c.User.UID, params)
 	if err != nil {
-		h.App.Logger().Debug("websocket_router.setting.SettingRePush.Get: record not found or error, proceeding to send delete",
+		// 只有"确实不存在"才下发删除；数据库错误等必须回错误，否则客户端会删掉
+		// 服务端明明存活的配置。
+		// Only a genuine "not found" may turn into a delete; database errors must
+		// return an error instead of deleting a live setting locally.
+		if !errors.Is(err, code.ErrorSettingNotFound) {
+			h.respondErrorWithPath(c, code.ErrorSettingGetFailed, err, params.Path, msg.Type, "websocket_router.setting.SettingRePush.Get")
+			return
+		}
+		h.App.Logger().Debug("websocket_router.setting.SettingRePush.Get: setting not found, proceeding to send delete",
 			zap.String(logger.FieldTraceID, c.TraceID),
 			zap.Error(err))
 	}

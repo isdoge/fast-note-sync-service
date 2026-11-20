@@ -57,7 +57,10 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault := resolveVaultArg(ctx, appContainer, args)
 		if err := checkVaultAccess(ctx, vault); err != nil {
@@ -123,7 +126,10 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault := resolveVaultArg(ctx, appContainer, args)
 		if err := checkVaultAccess(ctx, vault); err != nil {
@@ -169,7 +175,10 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault := resolveVaultArg(ctx, appContainer, args)
 		if err := checkVaultAccess(ctx, vault); err != nil {
@@ -220,7 +229,10 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault := resolveVaultArg(ctx, appContainer, args)
 		if err := checkVaultAccess(ctx, vault); err != nil {
@@ -265,7 +277,10 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault := resolveVaultArg(ctx, appContainer, args)
 		if err := checkVaultAccess(ctx, vault); err != nil {
@@ -301,13 +316,23 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault := resolveVaultArg(ctx, appContainer, args)
 		if err := checkVaultAccess(ctx, vault); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		prefix, _ := args["prefix"].(string)
+		if strings.Contains(prefix, `\`) {
+			var ok bool
+			prefix, ok = util.NormalizeBackslashPath(prefix)
+			if !ok {
+				return mcp.NewToolResultError("invalid vault-relative prefix"), nil
+			}
+		}
 		prefix = strings.Trim(prefix, "/")
 
 		vaultID, err := appContainer.VaultService.MustGetID(ctx, uid, vault)
@@ -350,7 +375,10 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 		if err := checkPermission(ctx, "note_r"); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		uid := getUIDFromContext(ctx)
+		uid, uidErr := requireMCPUID(ctx)
+		if uidErr != nil {
+			return mcp.NewToolResultError(uidErr.Error()), nil
+		}
 		args := getArgs(req)
 		vault := resolveVaultArg(ctx, appContainer, args)
 		if err := checkVaultAccess(ctx, vault); err != nil {

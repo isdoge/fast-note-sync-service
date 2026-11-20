@@ -40,7 +40,7 @@ func TestFolderSync_TombstoneNotRevivedByClientReport(t *testing.T) {
 	folderSvc.On("ListByUpdatedTimestamp", mock.Anything, int64(1), "vault", int64(0)).
 		Return([]*dto.FolderDTO{}, nil)
 	// 客户端上报 "ghost" 目录，服务端墓碑判定为陈旧复活
-	folderSvc.On("IsStaleRevive", mock.Anything, int64(1), "vault", "ghosthash", mock.AnythingOfType("int64")).
+	folderSvc.On("IsStaleRevive", mock.Anything, int64(1), "vault", "ghosthash", mock.AnythingOfType("int64"), mock.Anything).
 		Return(true, nil)
 
 	testApp := newFolderSyncTestApp(folderSvc, vaultSvc)
@@ -72,7 +72,7 @@ func TestFolderSync_TombstoneCheckErrorSkipsRevive(t *testing.T) {
 	folderSvc.On("ListByUpdatedTimestamp", mock.Anything, int64(1), "vault", int64(0)).
 		Return([]*dto.FolderDTO{}, nil)
 	// 查询错误：修复前 (err == nil && stale) 为 false → 放行复活
-	folderSvc.On("IsStaleRevive", mock.Anything, int64(1), "vault", "ghosthash", mock.AnythingOfType("int64")).
+	folderSvc.On("IsStaleRevive", mock.Anything, int64(1), "vault", "ghosthash", mock.AnythingOfType("int64"), mock.Anything).
 		Return(false, errTombstoneLookup)
 
 	testApp := newFolderSyncTestApp(folderSvc, vaultSvc)
@@ -102,7 +102,7 @@ func TestFolderSync_FreshFolderStillCreated(t *testing.T) {
 
 	folderSvc.On("ListByUpdatedTimestamp", mock.Anything, int64(1), "vault", int64(0)).
 		Return([]*dto.FolderDTO{}, nil)
-	folderSvc.On("IsStaleRevive", mock.Anything, int64(1), "vault", "okhash", mock.AnythingOfType("int64")).
+	folderSvc.On("IsStaleRevive", mock.Anything, int64(1), "vault", "okhash", mock.AnythingOfType("int64"), mock.Anything).
 		Return(false, nil)
 	folderSvc.On("UpdateOrCreate", mock.Anything, int64(1), mock.AnythingOfType("*dto.FolderCreateRequest")).
 		Return(&dto.FolderDTO{Path: "ok", PathHash: "okhash"}, nil)

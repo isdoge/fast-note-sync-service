@@ -41,10 +41,17 @@ type FolderRepository interface {
 	GetByID(ctx context.Context, id, uid int64) (*Folder, error)
 
 	// GetByPathHash 根据路径哈希获取文件夹
+	// 哈希命中多个不同路径时返回 ErrAmbiguousPathHash；有路径时使用下方带路径的方法。
 	GetByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) (*Folder, error)
+
+	// 带完整路径的查询，碰撞路径互不影响。
+	GetByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) (*Folder, error)
 
 	// GetAllByPathHash 根据路径哈希获取所有匹配的文件夹（处理重复记录）
 	GetAllByPathHash(ctx context.Context, pathHash string, vaultID, uid int64) ([]*Folder, error)
+
+	// 带完整路径的查询，碰撞路径互不影响。
+	GetAllByPathHashAndPath(ctx context.Context, pathHash, path string, vaultID, uid int64) ([]*Folder, error)
 
 	// GetByFID 根据父级ID获取文件夹列表
 	GetByFID(ctx context.Context, fid int64, vaultID, uid int64) ([]*Folder, error)

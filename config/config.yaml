@@ -136,8 +136,9 @@ app:
   # 是否开启 WebSocket 并行处理
   # Whether to enable WebSocket parallel processing
   ws-parallel-enabled: true
-  # WebSocket 并行处理的最大协程限制
-  # Maximum goroutine limit for WebSocket parallel processing
+  # WebSocket 并行处理的最大协程限制。代码默认值为 3，此处示例显式写 5 覆盖默认。
+  # Maximum goroutine limit for WebSocket parallel processing. The code default
+  # is 3; this sample explicitly sets 5 to override it.
   ws-parallel-golimit: 5
   # 是否对 WebSocket 消息进行 UTF-8 校验
   # Whether to perform UTF-8 validation on WebSocket messages
@@ -154,13 +155,17 @@ app:
   # WebSocket 应用层写超时(秒)，防止僵尸连接阻塞写入；显式设为 0 表示不设超时
   # WebSocket application-layer write timeout (seconds); guards against zombie connections blocking writes. Explicit 0 disables the deadline
   ws-write-timeout: 10
-  # WebSocket ping 间隔（秒，默认 25）；0 使用默认值，负数无效。
-  # WebSocket ping interval in seconds (default 25); 0 uses default, negative values are invalid.
+  # WebSocket ping 间隔（秒，默认 25）。取值必须大于 0（校验拒绝 0 与负数，
+  # 想用默认值就保持/写 25，不要写 0）。
+  # WebSocket ping interval in seconds (default 25). Must be greater than 0
+  # (validation rejects 0 and negatives; keep or write 25 for the default).
   ws-ping-interval: 25
   # 上行存活超时（秒，默认 60），pong、ping 或应用数据帧均刷新存活时间。
   # 超时后再发一次 ping，宽限一个 ping 周期后仍无上行响应才断开。
   # Cloudflare Tunnel 可先尝试 180；若始终收不到 pong，仍需插件空闲时发送应用层心跳。
-  # Liveness timeout in seconds (default 60), followed by one ping interval of grace.
+  # 取值必须大于 0（校验拒绝 0 与负数）。
+  # Liveness timeout in seconds (default 60), followed by one ping interval of
+  # grace. Must be greater than 0 (validation rejects 0 and negatives).
   ws-ping-wait: 60
 
   # 数据拉取源设置: auto | github（旧值回落到 GitHub）
@@ -185,6 +190,22 @@ security:
   # 认证令牌加密混淆 Key
   # Internal key for auth token encryption and obfuscation
   auth-token-key: fast-note-sync-Auth-Token
+  # 令牌稳定签名密钥。设置后，由此后签发的登录令牌、API 令牌、分享令牌等改用
+  # 该值派生的签名密钥，不再依赖机器标识；迁移机器、重装系统或重建容器后仍然有效。
+  # 注意：本配置启用之前（例如 3.7.0 及更早版本）按机器标识签发的旧令牌，换到
+  # 机器标识不同的环境后仍会失效，需要重新登录或重新签发。
+  # 留空时首次启动会在 storage 目录生成随机密钥文件（token-signing.key，权限 600）；
+  # 自此之后签发、且该文件在迁移时得到保留的令牌，在重装或迁移后同样继续有效。
+  # Stable signing key for all tokens. When set, tokens issued after this value is
+  # enabled derive their signing key from it instead of the machine ID, so they
+  # survive machine migration, OS reinstallation and container rebuilds. Note:
+  # older tokens issued under the machine-ID scheme (3.7.0 and earlier, before this
+  # setting was enabled) still become invalid when moved to a machine with a
+  # different ID; sign in again or reissue them. When left empty, a random key file
+  # (token-signing.key, mode 600) is generated under the storage directory on first
+  # startup; tokens issued after that stay valid across reinstalls or migrations as
+  # long as the file is kept.
+  token-signing-key: ""
   # 认证令牌过期时间。例如: 365d, 7d, 24h
   # Expiry duration for authentication tokens. e.g., 365d, 7d, 24h
   token-expiry: "365d"
@@ -207,6 +228,15 @@ security:
   # Whether to bind the browser User-Agent for WebGUI login tokens. Defaults to true.
   # Set to false if a reverse proxy or remote access gateway rewrites User-Agent and causes error 313; UA checks are then disabled.
   webgui-login-token-bind-ua: true
+  # 是否按严格模式校验协议维度为空的令牌 scope（整串空 scope 或 "p:" 后无值）。
+  # 默认 false 保持旧行为（空协议维度等同通配，全部放行）；开启后这类 scope 一律拒绝。
+  # 仅影响校验端；新签发令牌已不再产生空协议维度。
+  # Whether to strictly reject token scopes whose protocol dimension is empty
+  # (whole-string empty scope or "p:" with no value). Defaults to false to keep
+  # the legacy behavior (empty protocol acts as a wildcard); when enabled such
+  # scopes are denied. Verification-side only; newly issued tokens no longer
+  # produce an empty protocol dimension.
+  strict-empty-protocol: false
 
 # 主数据库配置
 # Main database configuration
@@ -269,8 +299,8 @@ database:
   # Maximum concurrent write operations limit (when enable-write-queue is false)
   max-write-concurrency: 0
 
-# 用户隔离数据库设置, 如果不设置(Type设置为空), 则使用主数据库
-# User isolation database settings, if not set(Type is empty), use the main database
+# 用户隔离数据库设置（留空时用户数据写入 SQLite 文件 storage/database/db_<仓储 key>.sqlite3，与主库类型无关；要写入 MySQL/PostgreSQL 需显式设置 type 与连接参数）
+# User isolation database settings (when left empty, user data is stored in SQLite files under storage/database/db_<repository key>.sqlite3 regardless of the main database type; set type and connection parameters explicitly to store it in MySQL/PostgreSQL)
 user-database:
   # 数据库类型: sqlite | mysql | postgres
   # Database type: sqlite | mysql | postgres
@@ -345,8 +375,11 @@ user:
   # 是否开启用户注册功能
   # Whether to enable user registration
   register-is-enable: true
-  # 管理员 UID。0 表示任何用户都不能作为超级管理员或是未指定。
-  # Administrator UID. 0 means no user is designated or restricted.
+  # 管理员 UID。0 表示未显式配置，此时按“现存用户中 UID 最小者”认定管理员
+  # （无任何用户时无人是管理员）；多用户部署建议显式设置。
+  # Administrator UID. 0 means no explicit admin: the user with the smallest
+  # existing UID is treated as admin (nobody when there are no users);
+  # set it explicitly on multi-user deployments.
   admin-uid: 0
 
 tracer:
@@ -485,6 +518,14 @@ oauth:
   # 映射默认的主笔记库 (Vault) 名称
   # Default vault name to map
   default-vault-name: ""
+  # OAuth 鉴权的 MCP 可访问的笔记库白名单。
+  # 默认空 = 不限制（映射用户的所有库）；配置后 OAuth 连接器只能访问列出的库。
+  # 仅影响 OAuth 鉴权路径，静态令牌按令牌自身的库限制。
+  # Vault allowlist for OAuth-authenticated MCP access.
+  # Empty by default = unrestricted (all vaults of the mapped user); once
+  # configured, OAuth connectors can only access the listed vaults.
+  # Affects the OAuth path only; static tokens keep their own vault limits.
+  vaults: []
   # 默认的 FNS 权限作用域范围
   # Default FNS scope
   default-fns-scope: ""

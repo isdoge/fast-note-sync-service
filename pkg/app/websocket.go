@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	stdjson "encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/gin-gonic/gin"
@@ -280,6 +282,8 @@ type WebsocketClient struct {
 	UserClients         ConnStorage               // User connection pool // 用户连接池，支持多设备在线时广播或单点通信
 	SF                  *singleflight.Group       // Concurrency control // 并发控制：相同 key 的请求只执行一次，其余等待结果
 	BinaryMu            sync.Mutex                // Synchronization lock when reading and writing data // 用于读写数据时的同步锁 (不再保护 map 存储)
+	broadcastVaultsMu   sync.RWMutex              // Guards declaredVaults independently of Server.mu // 独立保护 declaredVaults，不依赖 Server.mu
+	declaredVaults      map[string]struct{}       // Vaults successfully declared by requests on this connection // 本连接通过请求成功声明的笔记库
 	infoMu              sync.RWMutex              // Guards the client-reported connection metadata below (written once by ClientInfo, read concurrently under gws ParallelEnabled) // 保护下方客户端上报的连接元数据（由 ClientInfo 写入一次，gws ParallelEnabled 下会被并发读取）
 	clientName          string                    // Client name (e.g., "Mac", "Windows", "iPhone"); access via ClientName() // 客户端名称 (例如 "Mac", "Windows", "iPhone")；请通过 ClientName() 访问
 	clientType          string                    // Client type "web" | "desktop" | "mobile" | "obsidianPlugin"; access via ClientType() // 客户端类型；请通过 ClientType() 访问
@@ -358,6 +362,45 @@ func (c *WebsocketClient) UseProtobuf() bool {
 	return c.useProtobuf
 }
 
+// acceptsBroadcast checks both the token's vault allowlist and the vaults declared on this connection.
+// Vault-specific broadcasts (a non-empty vault) are delivered only after the connection
+// has declared that vault through a successfully bound request. A connection that has
+// not declared any vault yet may still be scanning its local library (e.g. the CLI
+// hashes the whole directory before its first NoteSync), and delivering another
+// library's live changes in that window would write them into the local directory.
+// Its first sync round pulls the complete state anyway, so skipping is safe.
+// Vault-less broadcasts (user-level notifications) are still delivered to everyone.
+// acceptsBroadcast 同时检查令牌的笔记库白名单和本连接已声明的笔记库。
+// 带具体库名的广播只投给已通过成功绑定声明过该库的连接。还没声明任何库的连接可能仍在
+// 扫描本地目录（例如命令行客户端在首条 NoteSync 之前要对整个目录算哈希），此窗口内
+// 投递别的库的实时变更会被写进本地目录。它随后的首次同步会把内容拉齐，跳过是安全的。
+// 不带库名的广播（用户级通知）仍然投给所有连接。
+func (c *WebsocketClient) acceptsBroadcast(vault string) bool {
+	if c.Vaults != "" && !util.VerifyVaultAccess(c.Vaults, vault) {
+		return false
+	}
+	if vault == "" {
+		return true
+	}
+	c.broadcastVaultsMu.RLock()
+	_, declared := c.declaredVaults[vault]
+	c.broadcastVaultsMu.RUnlock()
+	return declared
+}
+
+// recordBoundVault records a vault only after its request was bound and validated successfully.
+// recordBoundVault 仅在请求绑定及参数校验全部成功后记录其笔记库。
+func (c *WebsocketClient) recordBoundVault(obj any) {
+	if vault, ok := boundStringField(obj, "Vault"); ok && vault != "" {
+		c.broadcastVaultsMu.Lock()
+		if c.declaredVaults == nil {
+			c.declaredVaults = make(map[string]struct{})
+		}
+		c.declaredVaults[vault] = struct{}{}
+		c.broadcastVaultsMu.Unlock()
+	}
+}
+
 // acceptsProtobuf also accepts the legacy ClientInfo upgrade's outbound state.
 // acceptsProtobuf 同时兼容旧客户端通过 ClientInfo 设置的协议状态。
 func (c *WebsocketClient) acceptsProtobuf() bool {
@@ -390,6 +433,15 @@ func (c *WebsocketClient) setClientInfo(name, clientType, version string, platfo
 	// ClientInfo completes negotiation; subsequent inbound frames follow its final state.
 	// ClientInfo 完成协商，后续入站帧遵循它最终设置的协议状态。
 	c.acceptProtobuf = false
+}
+
+// SetClientInfoForTest exposes setClientInfo for unit tests that need to drive
+// handler branches keyed on the client-reported offline sync strategy or protocol
+// state (the private method is only reachable through a real ClientInfo frame).
+// SetClientInfoForTest 为单元测试暴露 setClientInfo：需要按客户端上报的离线策略或协议
+// 状态驱动处理函数分支时使用（私有方法只有真实 ClientInfo 帧才能到达）。
+func (c *WebsocketClient) SetClientInfoForTest(name, clientType, version string, platform map[string]bool, offlineSyncStrategy string, useProtobuf bool) {
+	c.setClientInfo(name, clientType, version, platform, offlineSyncStrategy, useProtobuf)
 }
 
 // knownOfflineSyncStrategy returns the strategy if it is one the sync handlers recognize, and
@@ -536,31 +588,9 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 			return false, errs
 		}
 		if decoded {
-			if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
-				return false, ValidErrors{verr}
-			}
-			validator := c.app.Validator()
-			if validator == nil {
-				return true, nil
-			}
-			if err := validator.ValidateStruct(obj); err != nil {
-				if validationErrors, ok := err.(validatorV10.ValidationErrors); ok {
-					v := c.Ctx.Value("trans")
-					trans := v.(ut.Translator)
-					for _, validationErr := range validationErrors {
-						translatedMsg := validationErr.Translate(trans)
-						errs = append(errs, &ValidError{
-							Key:     validationErr.Field(),
-							Message: translatedMsg,
-						})
-					}
-				}
-				return false, errs
-			}
-			return true, nil
+			return c.validateBoundObject(obj)
 		}
 	}
-
 	// Step 1: JSON deserialization (can be replaced by other formats)
 	// BindAndValid Step 1: JSON 反序列化（可替换成其他格式）
 	if err := json.Unmarshal(data, obj); err != nil {
@@ -572,41 +602,48 @@ func (c *WebsocketClient) BindAndValidWithAction(action string, data []byte, obj
 		})
 		return false, errs
 	}
+	return c.validateBoundObject(obj)
+}
 
+// validateBoundObject normalizes, verifies and validates a decoded request before recording its vault.
+// validateBoundObject 在记录库名前规范化、校验库权限并验证已解码的请求参数。
+func (c *WebsocketClient) validateBoundObject(obj any) (bool, ValidErrors) {
+	var errs ValidErrors
+	if verr := normalizeBoundPaths(obj); verr != nil {
+		return false, ValidErrors{verr}
+	}
 	if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
 		return false, ValidErrors{verr}
 	}
-
 	// Step 2: Parameter validation
 	// Step 2: 参数验证
 	validator := c.app.Validator()
-	if validator == nil {
-		return true, nil
-	}
-	if err := validator.ValidateStruct(obj); err != nil {
-		// If verification fails, check error type
-		// 如果验证失败，检查错误类型
-		if validationErrors, ok := err.(validatorV10.ValidationErrors); ok {
-			// Get translator
-			// 获取翻译器
-			v := c.Ctx.Value("trans")
-			trans := v.(ut.Translator)
-
-			// Iterate through validation errors and translate them
-			// 遍历验证错误并进行翻译
-			for _, validationErr := range validationErrors {
-				translatedMsg := validationErr.Translate(trans) // Translate error message
-				// Translate error message
-				// 翻译错误消息
-				errs = append(errs, &ValidError{
-					Key:     validationErr.Field(),
-					Message: translatedMsg,
-				})
+	if validator != nil {
+		if err := validator.ValidateStruct(obj); err != nil {
+			// If verification fails, check error type
+			// 如果验证失败，检查错误类型
+			if validationErrors, ok := err.(validatorV10.ValidationErrors); ok {
+				// Get translator
+				// 获取翻译器
+				v := c.Ctx.Value("trans")
+				trans := v.(ut.Translator)
+				// Iterate through validation errors and translate them
+				// 遍历验证错误并进行翻译
+				for _, validationErr := range validationErrors {
+					translatedMsg := validationErr.Translate(trans) // Translate error message
+					// Translate error message
+					// 翻译错误消息
+					errs = append(errs, &ValidError{
+						Key:     validationErr.Field(),
+						Message: translatedMsg,
+					})
+				}
 			}
+			return false, errs // Return validation error
+			// 返回验证错误
 		}
-		return false, errs // Return validation error
-		// 返回验证错误
 	}
+	c.recordBoundVault(obj)
 	return true, nil
 }
 
@@ -767,6 +804,10 @@ func (c *WebsocketClient) BroadcastResponse(code *code.Code, options ...any) {
 		actionType = options[1].(string)
 	}
 
+	if c.Server != nil && c.User != nil {
+		c.Server.events.Publish(c.User.ID, code.Vault(), actionType, code.Data())
+	}
+
 	if len(c.UserClients) <= 0 {
 		return
 	}
@@ -790,7 +831,7 @@ func (c *WebsocketClient) BroadcastResponse(code *code.Code, options ...any) {
 		content.Context = code.Context()
 	}
 
-	c.sendBroadcast(&content, actionType, options[0].(bool))
+	c.sendBroadcast(&content, code.Vault(), actionType, options[0].(bool))
 }
 
 func (c *WebsocketClient) send(responseBytes []byte, isBroadcast bool, isExcludeSelf bool) {
@@ -823,7 +864,7 @@ func (c *WebsocketClient) writeMessage(opcode gws.Opcode, payload []byte) error 
 	return err
 }
 
-func (c *WebsocketClient) sendBroadcast(content *Res, actionType string, isExcludeSelf bool) {
+func (c *WebsocketClient) sendBroadcast(content *Res, vault string, actionType string, isExcludeSelf bool) {
 	// 持锁期间只拷贝目标连接列表，随后立即释放锁——WriteMessage 本身可能阻塞（慢设备/网络抖动），
 	// 不应该在持有 c.Server.mu 期间发生，否则会拖慢该用户下所有其他并发操作。
 	// Only copy the target connection list while holding the lock, then release it right
@@ -836,6 +877,9 @@ func (c *WebsocketClient) sendBroadcast(content *Res, actionType string, isExclu
 			continue
 		}
 		if isExcludeSelf && uc.conn == c.conn {
+			continue
+		}
+		if !uc.acceptsBroadcast(vault) {
 			continue
 		}
 		targets = append(targets, uc)
@@ -881,7 +925,7 @@ func (c *WebsocketClient) sendBroadcast(content *Res, actionType string, isExclu
 
 			if err != nil {
 				if uc.failCount.Add(1) == 4 {
-					uc.conn.WriteClose(1000, []byte("broadcast failed"))
+					uc.conn.WriteClose(1000, []byte(broadcastFailureReason))
 				}
 			} else {
 				uc.failCount.Store(0)
@@ -976,6 +1020,7 @@ type WebsocketServer struct {
 	tokenVerifyHandler func(ctx context.Context, uid int64, tokenID int64, nonce string, reqClientType, reqClientName, reqClientVersion, reqUserAgent, reqIP string) (string, string, error)
 	binaryHandlers     map[string]func(*WebsocketClient, []byte) // Binary message handler map: prefix -> handler // 二进制消息处理器映射 prefix -> handler
 	clients            ConnStorage
+	events             *EventHub
 	userClients        map[string]ConnStorage
 	connWg             sync.WaitGroup
 	mu                 sync.RWMutex
@@ -1089,6 +1134,7 @@ func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 		binaryHandlers:      make(map[string]func(*WebsocketClient, []byte)),
 		clients:             make(ConnStorage),
 		userClients:         make(map[string]ConnStorage),
+		events:              NewEventHub(),
 		config:              &c,
 		binaryChunkSessions: make(map[string]map[string]any),
 	}
@@ -1541,10 +1587,13 @@ func (w *WebsocketServer) UpdateTokenScope(uid int64, tokenID int64, newScope st
 // KickToken closes all connections for a specific token
 // KickToken 关闭特定令牌的所有连接
 func (w *WebsocketServer) KickToken(uid int64, tokenID int64) {
+	// Finish event removal before acquiring w.mu; the two locks never nest.
+	// 事件订阅移除完成后再获取 w.mu；两把锁绝不嵌套。
+	uidStr := strconv.FormatInt(uid, 10)
+	w.events.KickToken(uidStr, tokenID)
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	uidStr := strconv.FormatInt(uid, 10)
 	if clients, ok := w.userClients[uidStr]; ok {
 		for _, client := range clients {
 			if client.TokenID == tokenID {
@@ -1561,6 +1610,7 @@ func (w *WebsocketServer) KickToken(uid int64, tokenID int64) {
 // 向所有活跃的 WebSocket 连接发送关闭帧。
 // 必须在关闭 Worker Pool 和 Write Queue Manager 之前调用，以确保被劫持的 WebSocket 连接被正确终止。
 func (w *WebsocketServer) CloseAllConnections() {
+	w.events.Close()
 	w.mu.RLock()
 	clients := make([]*WebsocketClient, 0, len(w.clients))
 	for _, c := range w.clients {
@@ -1631,19 +1681,37 @@ func (w *WebsocketServer) GetSession(uid string, sessionID string) any {
 // GetSessionByPathHash 通过路径哈希获取全局二进制上传会话
 //
 //go:noinline
-func (w *WebsocketServer) GetSessionByPathHash(uid string, pathHash string) any {
+func (w *WebsocketServer) GetSessionByPathHash(uid string, pathHash string, identity ...string) any {
 	w.sessionsMu.RLock()
 	defer w.sessionsMu.RUnlock()
-	if userSessions, ok := w.binaryChunkSessions[uid]; ok {
-		for _, session := range userSessions {
-			if getter, ok := session.(PathHashGetter); ok {
-				if getter.GetPathHash() == pathHash {
-					return session
-				}
+	var found any
+	for _, session := range w.binaryChunkSessions[uid] {
+		if sessionMatchesPath(session, pathHash, identity) {
+			if found != nil {
+				return nil
 			}
+			found = session
 		}
 	}
-	return nil
+	return found
+}
+
+// sessionMatchesPath scopes upload sessions by vault and full path when available.
+// sessionMatchesPath 在路径可用时以库名和完整路径限定上传会话。
+func sessionMatchesPath(session any, pathHash string, identity []string) bool {
+	getter, ok := session.(PathHashGetter)
+	if !ok || getter.GetPathHash() != pathHash {
+		return false
+	}
+	if len(identity) == 0 {
+		return true
+	}
+	scoped, ok := session.(interface{ GetPathIdentity() (string, string) })
+	if !ok || len(identity) != 2 {
+		return false
+	}
+	vault, path := scoped.GetPathIdentity()
+	return vault == identity[0] && (identity[1] == "" || path == identity[1])
 }
 
 // RemoveSession removes global binary upload session
@@ -1661,7 +1729,7 @@ func (w *WebsocketServer) RemoveSession(uid string, sessionID string) {
 
 // CleanSessionsByPathHash cleans up existing sessions for a specific path hash of a user
 // CleanSessionsByPathHash 清理用户特定路径哈希的现有会话
-func (w *WebsocketServer) CleanSessionsByPathHash(uid string, pathHash string) {
+func (w *WebsocketServer) CleanSessionsByPathHash(uid string, pathHash string, identity ...string) {
 	w.sessionsMu.Lock()
 	defer w.sessionsMu.Unlock()
 
@@ -1672,11 +1740,14 @@ func (w *WebsocketServer) CleanSessionsByPathHash(uid string, pathHash string) {
 
 	var sessionIDsToRemove []string
 	for sessionID, session := range userSessions {
-		if getter, ok := session.(PathHashGetter); ok {
-			if getter.GetPathHash() == pathHash {
-				sessionIDsToRemove = append(sessionIDsToRemove, sessionID)
-			}
+		if sessionMatchesPath(session, pathHash, identity) {
+			sessionIDsToRemove = append(sessionIDsToRemove, sessionID)
 		}
+	}
+	// A legacy hash-only cleanup must not choose between multiple uploads.
+	// 旧的纯哈希清理不能在多个上传之间任选目标。
+	if (len(identity) == 0 || len(identity) == 2 && identity[1] == "") && len(sessionIDsToRemove) > 1 {
+		return
 	}
 
 	for _, sessionID := range sessionIDsToRemove {
@@ -1700,12 +1771,39 @@ func (w *WebsocketServer) OnOpen(conn *gws.Conn) {
 
 // isNormalDisconnectError 检查给定错误是否为正常的断开连接或网络中断错误
 // isNormalDisconnectError checks if the given error is a normal disconnect or network interruption error
+// broadcastFailureReason is the close reason used when this server kicks a
+// connection that failed several broadcasts in a row. Such a disconnect is an
+// anomaly and must not be downgraded to Info.
+// broadcastFailureReason 是服务端因连续广播失败主动断开连接时使用的关闭原因。
+// 这类断开属于异常，不能降级成 Info。
+const broadcastFailureReason = "broadcast failed"
+
+// isBroadcastFailureDisconnect reports whether the error is the close generated
+// by repeated broadcast failures (see broadcastFailureReason).
+// isBroadcastFailureDisconnect 判断错误是否为连续广播失败导致的主动断开。
+func isBroadcastFailureDisconnect(err error) bool {
+	var closeErr *gws.CloseError
+	return err != nil && errors.As(err, &closeErr) && string(closeErr.Reason) == broadcastFailureReason
+}
+
 func isNormalDisconnectError(err error) bool {
 	if err == nil {
 		return true
 	}
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
 		return true
+	}
+	// 识别正常关闭和客户端离开的关闭码，包括被包装的关闭错误。
+	// 一旦识别出关闭码就以此为准：非 1000 / 1001 的关闭码即使 reason 里含
+	// "i/o timeout" 等文本也判为异常；因连续广播失败被服务端主动断开的连接
+	//（关闭码 1000 + 特定 reason）同样不算正常断开。
+	// Recognize normal closure and going-away codes, including wrapped close errors.
+	// Once a close code is recognized it is authoritative: codes other than
+	// 1000/1001 stay abnormal even if the reason text looks like a network error,
+	// and a connection we closed after repeated broadcast failures is not normal.
+	var closeErr *gws.CloseError
+	if errors.As(err, &closeErr) {
+		return (closeErr.Code == 1000 || closeErr.Code == 1001) && string(closeErr.Reason) != broadcastFailureReason
 	}
 	errStr := err.Error()
 	// 检查常见的网络关闭、重置或超时错误消息
@@ -1744,6 +1842,11 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 		logLevel := LogInfo
 		if err != nil && !isNormalDisconnectError(err) {
 			logLevel = LogError
+			if isBroadcastFailureDisconnect(err) {
+				// 连续广播失败被主动断开：异常但已知原因，用 Warn 而不是 Error。
+				// Kicked after repeated broadcast failures: abnormal but known, log Warn.
+				logLevel = LogWarn
+			}
 		}
 		log(logLevel, "WS User Leave", zap.String("uid", c.User.ID), zap.String("traceID", c.TraceID), zap.Error(err))
 		w.RemoveUserClient(c)
@@ -1751,6 +1854,9 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 		logLevel := LogInfo
 		if err != nil && !isNormalDisconnectError(err) {
 			logLevel = LogError
+			if isBroadcastFailureDisconnect(err) {
+				logLevel = LogWarn
+			}
 		}
 		log(logLevel, "WS Client Leave (Unauth)", zap.String("traceID", c.TraceID), zap.Error(err))
 	}
@@ -1773,7 +1879,10 @@ func (w *WebsocketServer) OnClose(conn *gws.Conn, err error) {
 			zap.String("traceID", c.TraceID))
 	}
 
-	log(LogInfo, "WS Client Leave", zap.Int("Count", len(w.clients)), zap.String("traceID", c.TraceID))
+	w.mu.RLock()
+	clientCount := len(w.clients)
+	w.mu.RUnlock()
+	log(LogInfo, "WS Client Leave", zap.Int("Count", clientCount), zap.String("traceID", c.TraceID))
 
 }
 
@@ -1871,7 +1980,18 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 					zap.String("prefix", prefix),
 					zap.String("uid", uid),
 					zap.Error(err))
-				c.ToResponse(code.ErrorServerBusy)
+				// 分片帧头部前 36 字节是上传会话 ID：带上它让插件收到 302 后能清理
+				// 该会话的活跃上传状态并释放并发名额（与 463 会话不存在同一路径）。
+				// 帧过短时无法提取，保持无 data 的原响应。
+				// The first 36 bytes of a chunk frame are the upload session ID: carrying it
+				// lets the plugin clear that session's active upload state and release the
+				// slot on 302 (same path as the 463 session-not-found). Short frames cannot
+				// be parsed, so the dataless response is kept as-is.
+				busy := code.ErrorServerBusy
+				if len(payloadCopy) >= 36 {
+					busy = busy.WithData(map[string]string{"sessionID": string(payloadCopy[:36])})
+				}
+				c.ToResponse(busy)
 				return
 			}
 		} else if prefix == "pb" {
@@ -1973,6 +2093,7 @@ func (w *WebsocketServer) OnMessage(conn *gws.Conn, message *gws.Message) {
 
 func (w *WebsocketServer) BroadcastToUser(uid int64, code *code.Code, action string) {
 	uidStr := strconv.FormatInt(uid, 10)
+	w.events.Publish(uidStr, code.Vault(), action, code.Data())
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
@@ -2010,9 +2131,12 @@ func (w *WebsocketServer) BroadcastToUser(uid int64, code *code.Code, action str
 		if uc.conn == nil {
 			continue
 		}
+		if !uc.acceptsBroadcast(code.Vault()) {
+			continue
+		}
 		if err := b.Broadcast(uc.conn); err != nil {
 			if uc.failCount.Add(1) == 4 {
-				uc.conn.WriteClose(1000, []byte("broadcast failed"))
+				uc.conn.WriteClose(1000, []byte(broadcastFailureReason))
 			}
 		} else {
 			uc.failCount.Store(0)

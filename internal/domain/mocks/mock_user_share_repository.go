@@ -126,3 +126,11 @@ func (m *MockUserShareRepository) DeleteByVaultID(ctx context.Context, vaultID, 
 // Compile-time check: MockUserShareRepository must implement domain.UserShareRepository.
 // 编译时检查：MockUserShareRepository 必须实现 domain.UserShareRepository 接口。
 var _ domain.UserShareRepository = (*MockUserShareRepository)(nil)
+
+func (m *MockUserShareRepository) GetByPathAndHash(ctx context.Context, uid int64, vaultID int64, path, pathHash string) (*domain.UserShare, error) {
+	args := m.Called(ctx, uid, vaultID, path, pathHash)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.UserShare), args.Error(1)
+}

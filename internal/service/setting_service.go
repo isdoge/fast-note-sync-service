@@ -51,6 +51,12 @@ type SettingService interface {
 	// ListByLastTime 获取在 lastTime 之后更新的配置
 	ListByLastTime(ctx context.Context, uid int64, params *dto.SettingSyncRequest) ([]*dto.SettingDTO, error)
 
+	// GetByPathHashesMetaBatch 按路径哈希批量获取配置元数据（含所有状态，不读正文），
+	// 供增量同步窗口外条目比对使用。
+	// GetByPathHashesMetaBatch batch-fetches setting metadata by path hash (all
+	// statuses, no content) for diffing out-of-window entries in incremental sync.
+	GetByPathHashesMetaBatch(ctx context.Context, uid int64, vault string, pathHashes []string) (map[string]*dto.SettingDTO, error)
+
 	// CleanDuplicateSettings cleans up duplicate configuration records
 	// CleanDuplicateSettings 清理重复的配置记录
 	CleanDuplicateSettings(ctx context.Context, uid int64, vaultID int64) error
@@ -404,6 +410,29 @@ func (s *settingService) ListByLastTime(ctx context.Context, uid int64, params *
 // Sync 同步配置（ListByLastTime 的别名）
 func (s *settingService) Sync(ctx context.Context, uid int64, params *dto.SettingSyncRequest) ([]*dto.SettingDTO, error) {
 	return s.ListByLastTime(ctx, uid, params)
+}
+
+// GetByPathHashesMetaBatch 按路径哈希批量获取配置元数据（含所有状态，不读正文）。
+func (s *settingService) GetByPathHashesMetaBatch(ctx context.Context, uid int64, vault string, pathHashes []string) (map[string]*dto.SettingDTO, error) {
+	result := make(map[string]*dto.SettingDTO, len(pathHashes))
+	if len(pathHashes) == 0 {
+		return result, nil
+	}
+
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
+	if err != nil {
+		return nil, err
+	}
+
+	metaMap, err := s.settingRepo.ListByPathHashesMeta(ctx, pathHashes, vaultID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	for pathHash, st := range metaMap {
+		result[pathHash] = s.domainToDTO(st)
+	}
+	return result, nil
 }
 
 // List retrieves configurations with pagination

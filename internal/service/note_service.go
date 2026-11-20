@@ -44,10 +44,10 @@ type NoteService interface {
 	UpdateCheckWithNote(ctx context.Context, uid int64, params *dto.NoteUpdateCheckRequest) (string, *domain.Note, *dto.NoteDTO, error)
 
 	// ModifyOrCreate creates or modifies a note. existingNote is optional: pass the note
-	// already fetched via UpdateCheckWithNote (for the same pathHash) to skip the internal
+	// already fetched via UpdateCheckWithNote (for the same vault and path) to skip the internal
 	// lookup; omit it (or pass nil) to look it up as before.
 	// ModifyOrCreate 创建或修改笔记。existingNote 为可选参数：传入已通过 UpdateCheckWithNote
-	// 查到的 note（针对同一 pathHash）可跳过内部查询；不传（或传 nil）则按原逻辑查询。
+	// 查到的 note（针对同一库和路径）可跳过内部查询；不传（或传 nil）则按原逻辑查询。
 	ModifyOrCreate(ctx context.Context, uid int64, params *dto.NoteModifyOrCreateRequest, mtimeCheck bool, existingNote ...*domain.Note) (bool, *dto.NoteDTO, error)
 
 	// Delete deletes a note
@@ -80,6 +80,15 @@ type NoteService interface {
 	// ExistsBatch 单次批量查询一组 pathHash 是否存在且未被软删除。
 	// 用于批量处理客户端上报删除前，避免逐条存在性检查造成的 N+1。
 	ExistsBatch(ctx context.Context, uid int64, vault string, pathHashes []string) (map[string]bool, error)
+
+	// ExistsPathsBatch 按完整路径判断存在性。
+	ExistsPathsBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]bool, error)
+
+	// GetPathsMetaBatch 按完整路径批量获取笔记元数据（含所有状态，不读正文），
+	// 供增量同步窗口外条目比对使用。
+	// GetPathsMetaBatch batch-fetches note metadata by full path (all statuses,
+	// no content) for diffing out-of-window entries in incremental sync.
+	GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.NoteDTO, error)
 
 	// Sync syncs notes (alias for ListByLastTime, used for WebSocket sync)
 	// Sync 同步笔记（ListByLastTime 的别名，用于 WebSocket 同步）
@@ -282,7 +291,7 @@ func (s *noteService) Get(ctx context.Context, uid int64, params *dto.NoteGetReq
 		return nil, err
 	}
 
-	note, err := s.noteRepo.GetByPathHashIncludeRecycle(ctx, params.PathHash, vaultID, uid, params.IsRecycle)
+	note, err := s.noteRepo.GetByPathHashAndPathIncludeRecycle(ctx, params.PathHash, params.Path, vaultID, uid, params.IsRecycle)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorNoteNotFound
@@ -303,7 +312,7 @@ func (s *noteService) UpdateCheck(ctx context.Context, uid int64, params *dto.No
 		return "", nil, err
 	}
 
-	note, _ := s.noteRepo.GetAllByPathHash(ctx, params.PathHash, vaultID, uid)
+	note, _ := s.noteRepo.GetAllByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	mode, noteDTO, err := s.evalUpdateCheck(ctx, uid, note, params)
 	return mode, noteDTO, err
 }
@@ -319,7 +328,7 @@ func (s *noteService) UpdateCheckWithNote(ctx context.Context, uid int64, params
 		return "", nil, nil, err
 	}
 
-	note, _ := s.noteRepo.GetAllByPathHash(ctx, params.PathHash, vaultID, uid)
+	note, _ := s.noteRepo.GetAllByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	mode, noteDTO, err := s.evalUpdateCheck(ctx, uid, note, params)
 	return mode, note, noteDTO, err
 }
@@ -361,8 +370,8 @@ func (s *noteService) evalUpdateCheck(ctx context.Context, uid int64, note *doma
 }
 
 // ModifyOrCreate creates or modifies a note. existingNote is an optional already-fetched
-// note (e.g. from UpdateCheckWithNote for the same pathHash) to reuse instead of querying again.
-// ModifyOrCreate 创建或修改笔记。existingNote 为可选的已查到的 note（例如来自同一 pathHash 的
+// note (e.g. from UpdateCheckWithNote for the same vault and path) to reuse instead of querying again.
+// ModifyOrCreate 创建或修改笔记。existingNote 为可选的已查到的 note（例如来自同一库和路径 的
 // UpdateCheckWithNote），复用以避免重复查询。
 func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto.NoteModifyOrCreateRequest, mtimeCheck bool, existingNote ...*domain.Note) (bool, *dto.NoteDTO, error) {
 	// Use VaultService.MustGetID to retrieve VaultID
@@ -375,9 +384,12 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 	var preFetchedNote *domain.Note
 	if len(existingNote) > 0 {
 		preFetchedNote = existingNote[0]
+		if preFetchedNote != nil && (preFetchedNote.Path != params.Path || preFetchedNote.VaultID != vaultID) {
+			preFetchedNote = nil
+		}
 	}
 
-	key := fmt.Sprintf("modify_or_create_%d_%d_%s", uid, vaultID, params.PathHash)
+	key := fmt.Sprintf("modify_or_create_%d_%d_%s", uid, vaultID, params.Path)
 	type result struct {
 		isNew bool
 		dto   *dto.NoteDTO
@@ -404,7 +416,7 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 		var isNew bool
 		note := preFetchedNote
 		if note == nil {
-			note, _ = s.noteRepo.GetAllByPathHash(ctx, params.PathHash, vaultID, uid)
+			note, _ = s.noteRepo.GetAllByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 		}
 
 		if note != nil {
@@ -576,9 +588,9 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 	// 活跃行残留；没有未删除行时再回退到任意状态的记录。
 	// Prefer the non-deleted row when duplicate path_hash rows exist (incl. tombstones), so a
 	// tombstone hit cannot skip deleting the live row; fall back to any status otherwise.
-	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	note, err := s.noteRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		note, err = s.noteRepo.GetAllByPathHash(ctx, params.PathHash, vaultID, uid)
+		note, err = s.noteRepo.GetAllByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	}
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -651,7 +663,7 @@ func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRe
 	}
 
 	// Get note from recycle bin // 从回收站获取笔记
-	note, err := s.noteRepo.GetByPathHashIncludeRecycle(ctx, params.PathHash, vaultID, uid, true)
+	note, err := s.noteRepo.GetByPathHashAndPathIncludeRecycle(ctx, params.PathHash, params.Path, vaultID, uid, true)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorNoteNotFound
@@ -719,7 +731,7 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 		newPathHash = util.EncodeHash32(newPath)
 	}
 
-	key := fmt.Sprintf("rename_%d_%d_%s_%s", uid, vaultID, params.OldPathHash, newPathHash)
+	key := fmt.Sprintf("rename_%d_%d_%q_%q", uid, vaultID, params.OldPath, newPath)
 	type result struct {
 		oldNote *dto.NoteDTO
 		newNote *dto.NoteDTO
@@ -728,7 +740,7 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 	val, err, _ := s.sf.Do(key, func() (any, error) {
 		// 1. Check if target path has valid note
 		// 1. 判断目标路径是否存在有效笔记
-		existNote, _ := s.noteRepo.GetAllByPathHash(ctx, newPathHash, vaultID, uid)
+		existNote, _ := s.noteRepo.GetAllByPathHashAndPath(ctx, newPathHash, newPath, vaultID, uid)
 		if existNote != nil && existNote.Action != domain.NoteActionDelete {
 			return nil, code.ErrorNoteExist
 		}
@@ -741,7 +753,7 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 
 		// 2. Get old note
 		// 2. 获取旧笔记
-		n, err := s.noteRepo.GetByPathHash(ctx, oldPathHash, vaultID, uid)
+		n, err := s.noteRepo.GetByPathHashAndPath(ctx, oldPathHash, oldPath, vaultID, uid)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return nil, code.ErrorNoteNotFound
@@ -914,11 +926,11 @@ func (s *noteService) ListByLastTime(ctx context.Context, uid int64, params *dto
 	var results []*dto.NoteDTO
 	cacheList := make(map[string]bool)
 	for _, note := range notes {
-		if cacheList[note.PathHash] {
+		if cacheList[note.Path] {
 			continue
 		}
 		results = append(results, s.domainToDTO(note))
-		cacheList[note.PathHash] = true
+		cacheList[note.Path] = true
 	}
 
 	return results, nil
@@ -1130,7 +1142,7 @@ func (s *noteService) PatchFrontmatter(ctx context.Context, uid int64, params *d
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
 
-	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	note, err := s.noteRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorNoteNotFound
@@ -1177,7 +1189,7 @@ func (s *noteService) AppendContent(ctx context.Context, uid int64, params *dto.
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
 
-	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	note, err := s.noteRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorNoteNotFound
@@ -1217,7 +1229,7 @@ func (s *noteService) PrependContent(ctx context.Context, uid int64, params *dto
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
 
-	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	note, err := s.noteRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorNoteNotFound
@@ -1270,7 +1282,7 @@ func (s *noteService) ReplaceContent(ctx context.Context, uid int64, params *dto
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
 
-	note, err := s.noteRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+	note, err := s.noteRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, code.ErrorNoteNotFound
@@ -1450,7 +1462,7 @@ func (s *noteService) RecycleClear(ctx context.Context, uid int64, params *dto.N
 	// 捕获待删除的项目以便进行详细日志记录
 	var notesToDelete []*domain.Note
 	if params.PathHash != "" {
-		note, _ := s.noteRepo.GetByPathHashIncludeRecycle(ctx, params.PathHash, vaultID, uid, true)
+		note, _ := s.noteRepo.GetByPathHashAndPathIncludeRecycle(ctx, params.PathHash, params.Path, vaultID, uid, true)
 		if note != nil {
 			notesToDelete = append(notesToDelete, note)
 			if params.Path == "" {
@@ -1576,3 +1588,50 @@ func (s *noteService) CleanDuplicateNotesAll(ctx context.Context) error {
 // Ensure noteService implements NoteService interface
 // 确保 noteService 实现了 NoteService interface
 var _ NoteService = (*noteService)(nil)
+
+// ExistsPathsBatch 按完整路径批量判断活跃笔记是否存在。
+func (s *noteService) ExistsPathsBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]bool, error) {
+	result := make(map[string]bool, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
+	if err != nil {
+		return nil, err
+	}
+
+	metaMap, err := s.noteRepo.ListByPathsMeta(ctx, paths, vaultID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	for _, path := range paths {
+		n, ok := metaMap[path]
+		result[path] = ok && n.Action != domain.NoteActionDelete
+	}
+	return result, nil
+}
+
+// GetPathsMetaBatch 按完整路径批量获取笔记元数据（含所有状态，不读正文）。
+func (s *noteService) GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.NoteDTO, error) {
+	result := make(map[string]*dto.NoteDTO, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
+	if err != nil {
+		return nil, err
+	}
+
+	metaMap, err := s.noteRepo.ListByPathsMeta(ctx, paths, vaultID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	for path, n := range metaMap {
+		result[path] = s.domainToDTO(n)
+	}
+	return result, nil
+}
