@@ -21,38 +21,52 @@ type FolderListRequest struct {
 // FolderCreateRequest Request parameters for creating a folder
 // 创建文件夹请求参数
 type FolderCreateRequest struct {
-	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
-	Path               string `json:"path" form:"path" binding:"required" example:"NewFolder"` // Folder path // 文件夹路径
-	PathHash           string `json:"pathHash" form:"pathHash" example:"fhash456"`             // Path hash // 路径哈希
-	Context            string `json:"context" form:"context" example:"ctx123"`                 // Context // 同步上下文
+	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path               string `json:"path" form:"path" binding:"required" example:"NewFolder"`                     // Folder path // 文件夹路径
+	PathHash           string `json:"pathHash" form:"pathHash" example:"fhash456"`                                 // Path hash // 路径哈希
+	Context            string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
 	BaseRevision       string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
-	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"` // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"`                // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
 }
 
 // FolderDeleteRequest Request parameters for deleting a folder
 // 删除文件夹请求参数
 type FolderDeleteRequest struct {
-	Vault        string `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
-	Path         string `json:"path" form:"path" binding:"required" example:"OldFolder"` // Folder path // 文件夹路径
-	PathHash     string `json:"pathHash" form:"pathHash" example:"fhash789"`             // Path hash // 路径哈希
-	Context      string `json:"context" form:"context" example:"ctx123"`                 // Context // 同步上下文
+	Vault        string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path         string `json:"path" form:"path" binding:"required" example:"OldFolder"`                     // Folder path // 文件夹路径
+	PathHash     string `json:"pathHash" form:"pathHash" example:"fhash789"`                                 // Path hash // 路径哈希
+	Context      string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
 	BaseRevision string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
 }
 
 // FolderSyncCheckRequest Parameters for single record check during synchronization
 // 同步检查单条记录的参数
 type FolderSyncCheckRequest struct {
-	Path         string `json:"path" form:"path" example:"FolderA"`                             // Folder path // 文件夹路径
-	PathHash     string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash012"` // Path hash // 路径哈希
-	Mtime        int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`     // Modification timestamp // 修改时间戳
+	Path         string `json:"path" form:"path" example:"FolderA"`                                          // Folder path // 文件夹路径
+	PathHash     string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash012"`              // Path hash // 路径哈希
+	Mtime        int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`                  // Modification timestamp // 修改时间戳
 	BaseRevision string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
 // FolderSyncDelFolder Parameters for deleting/missing folder during synchronization
 // 同步删除/缺失文件夹的参数
 type FolderSyncDelFolder struct {
-	Path         string `json:"path" form:"path" binding:"required" example:"DeletedFolder"`     // Folder path // 文件夹路径
-	PathHash     string `json:"pathHash" form:"pathHash" binding:"required" example:"dfhash345"` // Path hash // 路径哈希
+	Path         string `json:"path" form:"path" binding:"required" example:"DeletedFolder"`                 // Folder path // 文件夹路径
+	PathHash     string `json:"pathHash" form:"pathHash" binding:"required" example:"dfhash345"`             // Path hash // 路径哈希
 	BaseRevision string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
@@ -62,8 +76,8 @@ type FolderSyncRequest struct {
 	Context        string                   `json:"context" form:"context" example:"task123"`                // Context // 上下文
 	Vault          string                   `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
 	LastTime       int64                    `json:"lastTime" form:"lastTime" example:"1700000000"`           // Last sync time // 最后同步时间
-	BatchIndex     int                      `json:"batchIndex" form:"batchIndex" example:"0"`               // Current batch index (0-based) // 当前批次索引（0 起）
-	TotalBatches   int                      `json:"totalBatches" form:"totalBatches" example:"1"`           // Total batch count // 总批次数
+	BatchIndex     int                      `json:"batchIndex" form:"batchIndex" example:"0"`                // Current batch index (0-based) // 当前批次索引（0 起）
+	TotalBatches   int                      `json:"totalBatches" form:"totalBatches" example:"1"`            // Total batch count // 总批次数
 	Folders        []FolderSyncCheckRequest `json:"folders" form:"folders"`                                  // Folders to check // 待检查文件夹列表
 	DelFolders     []FolderSyncDelFolder    `json:"delFolders" form:"delFolders"`                            // Folders to delete // 待删除文件夹列表
 	MissingFolders []FolderSyncDelFolder    `json:"missingFolders" form:"missingFolders"`                    // Missing folders // 缺失文件夹列表
@@ -113,6 +127,7 @@ type FolderDTO struct {
 	UpdatedTimestamp int64      `json:"lastTime" form:"updatedTimestamp"` // Record update timestamp // 记录更新时间戳
 	UpdatedAt        timex.Time `json:"updatedAt"`                        // Updated at time // 更新时间
 	CreatedAt        timex.Time `json:"createdAt"`                        // Created at time // 创建时间
+	Revision         string     `json:"revision,omitempty"`               // Server revision token // 服务端版本令牌
 }
 
 // FolderTreeNode Folder tree node

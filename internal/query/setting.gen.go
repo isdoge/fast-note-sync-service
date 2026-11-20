@@ -43,6 +43,7 @@ func newSetting(db *gorm.DB, opts ...gen.DOOption) setting {
 	_setting.UpdatedTimestamp = field.NewInt64(tableName, "updated_timestamp")
 	_setting.CreatedAt = field.NewField(tableName, "created_at")
 	_setting.UpdatedAt = field.NewField(tableName, "updated_at")
+	_setting.Revision = field.NewString(tableName, "revision")
 
 	_setting.fillFieldMap()
 
@@ -68,6 +69,7 @@ type setting struct {
 	UpdatedTimestamp field.Int64
 	CreatedAt        field.Field
 	UpdatedAt        field.Field
+	Revision         field.String
 
 	fieldMap map[string]field.Expr
 }
@@ -99,6 +101,7 @@ func (s *setting) updateTableName(table string) *setting {
 	s.UpdatedTimestamp = field.NewInt64(table, "updated_timestamp")
 	s.CreatedAt = field.NewField(table, "created_at")
 	s.UpdatedAt = field.NewField(table, "updated_at")
+	s.Revision = field.NewString(table, "revision")
 
 	s.fillFieldMap()
 
@@ -123,7 +126,7 @@ func (s *setting) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (s *setting) fillFieldMap() {
-	s.fieldMap = make(map[string]field.Expr, 15)
+	s.fieldMap = make(map[string]field.Expr, 16)
 	s.fieldMap["id"] = s.ID
 	s.fieldMap["vault_id"] = s.VaultID
 	s.fieldMap["action"] = s.Action
@@ -139,6 +142,7 @@ func (s *setting) fillFieldMap() {
 	s.fieldMap["updated_timestamp"] = s.UpdatedTimestamp
 	s.fieldMap["created_at"] = s.CreatedAt
 	s.fieldMap["updated_at"] = s.UpdatedAt
+	s.fieldMap["revision"] = s.Revision
 }
 
 func (s setting) clone(db *gorm.DB) setting {

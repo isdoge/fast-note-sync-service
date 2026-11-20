@@ -172,6 +172,7 @@ func (s *fileService) domainToDTO(file *domain.File) *dto.FileDTO {
 		Size:             file.Size,
 		Ctime:            file.Ctime,
 		Mtime:            file.Mtime,
+		Revision:         file.Revision,
 		UpdatedTimestamp: file.UpdatedTimestamp,
 	}
 }
@@ -301,6 +302,19 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 				return &result{isNew: isNew, dto: s.domainToDTO(file)}, nil
 			}
 
+			// 基线模式墓碑闸门：服务端墓碑不得被静默复活；只有用户明确选择恢复、且携带的
+			// 令牌仍等于当前墓碑令牌时才允许条件复活。
+			// Baseline tombstone gate: never silently revive a server tombstone; only an
+			// explicit user choice carrying the tombstone's current revision may.
+			if params.Baseline != nil && file.Action == domain.FileActionDelete {
+				if !params.Baseline.IsConflictResolved {
+					return nil, baselineConflictFromFile(dto.BaselineRejectRemoteDeleted, file)
+				}
+				if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != file.Revision {
+					return nil, baselineConflictFromFile(dto.BaselineRejectRevisionMoved, file)
+				}
+			}
+
 			// Set action
 			// 设置 action
 			var action domain.FileAction
@@ -340,9 +354,40 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 			// Clear the purged marker when a tombstone row is revived.
 			file.ContentPurged = 0
 
-			updated, err := s.fileRepo.Update(ctx, file, uid)
-			if err != nil {
-				return nil, code.ErrorDBQuery.WithDetails(err.Error())
+			var updated *domain.File
+			if params.Baseline != nil {
+				// 有基线更新：仅当行仍带客户端确认的令牌时才原子写入；预检后被抢先改动
+				// 则重新读取最新状态报冲突。
+				// Baseline update: write atomically only while the row still carries the
+				// client's revision; a concurrent change after the precheck becomes a conflict.
+				if params.Baseline.BaseRevision == "" {
+					return nil, baselineConflictFromFile(dto.BaselineRejectRevisionMoved, file)
+				}
+				ok, err := s.fileRepo.UpdateIfRevision(ctx, file, params.Baseline.BaseRevision, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+				if !ok {
+					latest, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+					if latest == nil {
+						latest = file
+					}
+					reason := dto.BaselineRejectRevisionMoved
+					if latest.ContentHash != params.Baseline.BaseHash {
+						reason = dto.BaselineRejectBothModified
+					}
+					return nil, baselineConflictFromFile(reason, latest)
+				}
+				updated, err = s.fileRepo.GetByID(ctx, file.ID, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+			} else {
+				var err error
+				updated, err = s.fileRepo.Update(ctx, file, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
 			}
 
 			// Log content modify // 记录内容变更日志
@@ -365,6 +410,11 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 
 		// Create new file // 创建新文件
 		isNew = true
+		if params.Baseline != nil {
+			if err := checkBaselineCreate(params.Baseline); err != nil {
+				return nil, err
+			}
+		}
 		newFile := &domain.File{
 			VaultID:     vaultID,
 			Path:        params.Path,
@@ -438,13 +488,43 @@ func (s *fileService) Delete(ctx context.Context, uid int64, params *dto.FileDel
 		return res, nil
 	}
 
+	// 基线模式实时删除：活跃行只有在客户端携带匹配的版本令牌（内容资源还需匹配
+	// 内容哈希）时才能软删除，否则拒绝并报冲突，保持服务端活跃。
+	// Baseline realtime delete: a live row may only be soft-deleted when the client
+	// carries a matching revision (and matching content hash); otherwise reject with a
+	// conflict and keep the server row live.
+	if params.Baseline != nil {
+		if err := checkBaselineDelete(params.Baseline, file.Revision, file.ContentHash, func(reason string) error {
+			return baselineConflictFromFile(reason, file)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	// Update to deleted status // 更新为删除状态
 	file.Action = domain.FileActionDelete
 	file.Rename = 0
 
-	updated, err := s.fileRepo.Update(ctx, file, uid)
-	if err != nil {
-		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	var updated *domain.File
+	if params.Baseline != nil {
+		ok, err := s.fileRepo.UpdateIfRevision(ctx, file, params.Baseline.BaseRevision, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+		if !ok {
+			latest, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+			return nil, baselineConflictFromFile(dto.BaselineRejectRevisionMoved, latest)
+		}
+		updated, err = s.fileRepo.GetByID(ctx, file.ID, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+	} else {
+		var err error
+		updated, err = s.fileRepo.Update(ctx, file, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
 	}
 
 	// Log soft delete // 记录软删除日志

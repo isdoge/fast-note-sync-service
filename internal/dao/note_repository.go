@@ -132,6 +132,7 @@ func (r *noteRepository) toDomain(m *model.Note, uid int64) (*domain.Note, error
 		Ctime:                   m.Ctime,
 		Mtime:                   m.Mtime,
 		UpdatedTimestamp:        m.UpdatedTimestamp,
+		Revision:                m.Revision,
 		CreatedAt:               time.Time(m.CreatedAt),
 		UpdatedAt:               time.Time(m.UpdatedAt),
 	}
@@ -168,6 +169,7 @@ func (r *noteRepository) toModel(note *domain.Note) *model.Note {
 		Ctime:                   note.Ctime,
 		Mtime:                   note.Mtime,
 		UpdatedTimestamp:        note.UpdatedTimestamp,
+		Revision:                note.Revision,
 		CreatedAt:               timex.Time(note.CreatedAt),
 		UpdatedAt:               timex.Time(note.UpdatedAt),
 	}
@@ -264,6 +266,7 @@ func (r *noteRepository) toDomainMeta(m *model.Note) *domain.Note {
 		Ctime:                   m.Ctime,
 		Mtime:                   m.Mtime,
 		UpdatedTimestamp:        m.UpdatedTimestamp,
+		Revision:                m.Revision,
 		CreatedAt:               time.Time(m.CreatedAt),
 		UpdatedAt:               time.Time(m.UpdatedAt),
 	}
@@ -401,6 +404,9 @@ func (r *noteRepository) Create(ctx context.Context, note *domain.Note, uid int6
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
 		m.CreatedAt = timex.Now()
 		m.UpdatedAt = timex.Now()
+		// 每次创建都是新的服务端状态，必须生成新令牌。
+		// Every create is a new server-side state and must mint a new token.
+		m.Revision = util.NewRevisionToken()
 
 		content := m.Content
 		m.Content = ""             // Do not store content in database // 不在数据库存储内容
@@ -449,6 +455,10 @@ func (r *noteRepository) Update(ctx context.Context, note *domain.Note, uid int6
 
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
 		m.UpdatedAt = timex.Now()
+		// 正文/路径/状态变更一律换新令牌（重命名、恢复、重建都走这里）。
+		// Any content/path/state change mints a new token (rename, restore and
+		// rebuild all go through this path).
+		m.Revision = util.NewRevisionToken()
 
 		content := m.Content
 		m.Content = "" // Do not update content in database // 不在数据库更新内容
@@ -475,6 +485,7 @@ func (r *noteRepository) Update(ctx context.Context, note *domain.Note, uid int6
 			u.UpdatedAt,
 			u.UpdatedTimestamp,
 			u.FID,
+			u.Revision,
 		).Save(m)
 
 		if updateErr != nil {
@@ -521,6 +532,9 @@ func (r *noteRepository) UpdateDelete(ctx context.Context, note *domain.Note, ui
 			ClientVersion:    note.ClientVersion,
 			Mtime:            note.Mtime,
 			UpdatedTimestamp: timex.Now().UnixMilli(),
+			// 删除、恢复与重命名墓碑都是新状态，必须换令牌。
+			// Delete, restore and rename tombstones are new states and must mint a token.
+			Revision: util.NewRevisionToken(),
 		}
 
 		err := u.WithContext(ctx).Where(
@@ -534,8 +548,10 @@ func (r *noteRepository) UpdateDelete(ctx context.Context, note *domain.Note, ui
 			u.ClientVersion,
 			u.Mtime,
 			u.UpdatedTimestamp,
+			u.Revision,
 		).Save(m)
 		if err == nil {
+			note.Revision = m.Revision
 			// 把实际写入的 UpdatedTimestamp 回写到调用方的 note 上，
 			// 使调用方无需重新查库即可拿到写入后的准确值
 			// Write the actually-persisted UpdatedTimestamp back onto the caller's note,
@@ -1223,6 +1239,8 @@ func (r *noteRepository) RecycleClear(ctx context.Context, path, pathHash string
 			r.deleteFTS(m.ID, m.VaultID, uid)
 		}
 
+		// 手动清空回收站改变墓碑可见状态，也要换新令牌。
+		// A manual recycle clear changes the tombstone's visible state and mints a token.
 		_, err = build().UpdateSimple(
 			u.Rename.Value(2),
 			u.ContentPurged.Value(1),
@@ -1231,6 +1249,7 @@ func (r *noteRepository) RecycleClear(ctx context.Context, path, pathHash string
 			u.ContentLastSnapshotHash.Value(""),
 			u.UpdatedTimestamp.Value(timex.Now().UnixMilli()),
 			u.UpdatedAt.Value(timex.Now()),
+			u.Revision.Value(util.NewRevisionToken()),
 		)
 		if err != nil {
 			return err
@@ -1746,4 +1765,124 @@ func (r *noteRepository) ListByPathsMeta(ctx context.Context, paths []string, va
 		}
 	}
 	return result, nil
+}
+
+// UpdateIfRevision applies a content update only when the row still carries
+// expectedRevision. It returns false (and writes nothing) when another device
+// changed the row between the caller's precheck and this write.
+// UpdateIfRevision 仅在行仍携带 expectedRevision 时应用内容更新；若另一设备在预检与本次写入之间
+// 改过该行，则返回 false 且不写入。
+func (r *noteRepository) UpdateIfRevision(ctx context.Context, note *domain.Note, expectedRevision string, uid int64) (bool, error) {
+	updated := false
+	var updateErr error
+
+	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		u := r.note(uid).Note
+		m := r.toModel(note)
+
+		m.UpdatedTimestamp = timex.Now().UnixMilli()
+		m.UpdatedAt = timex.Now()
+		m.Revision = util.NewRevisionToken()
+
+		content := m.Content
+		m.Content = ""
+
+		res, err := u.WithContext(ctx).Where(
+			u.ID.Eq(m.ID),
+			u.Revision.Eq(expectedRevision),
+		).Select(
+			u.ID,
+			u.VaultID,
+			u.Action,
+			u.Rename,
+			u.ContentPurged,
+			u.Path,
+			u.PathHash,
+			u.Content,
+			u.ContentHash,
+			u.ClientName,
+			u.ClientType,
+			u.ClientVersion,
+			u.Size,
+			u.Ctime,
+			u.Mtime,
+			u.Version,
+			u.UpdatedAt,
+			u.UpdatedTimestamp,
+			u.FID,
+			u.Revision,
+		).Updates(m)
+		if err != nil {
+			updateErr = err
+			return err
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		updated = true
+
+		folder := r.dao.GetNoteFolderPath(uid, m.ID)
+		if err := r.dao.SaveContentToFile(folder, "content.txt", content); err != nil {
+			updateErr = err
+			return err
+		}
+		r.upsertFTS(m, content, uid)
+		note.Revision = m.Revision
+		note.UpdatedTimestamp = m.UpdatedTimestamp
+		return nil
+	})
+
+	if err != nil {
+		return false, err
+	}
+	return updated, updateErr
+}
+
+// UpdateDeleteIfRevision soft-deletes a note only when the row still carries
+// expectedRevision. It returns false when the row moved or disappeared.
+// UpdateDeleteIfRevision 仅在行仍携带 expectedRevision 时把笔记软删除；行已变化或消失时返回 false。
+func (r *noteRepository) UpdateDeleteIfRevision(ctx context.Context, note *domain.Note, expectedRevision string, uid int64) (bool, error) {
+	updated := false
+	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		u := r.note(uid).Note
+		m := &model.Note{
+			ID:               note.ID,
+			Action:           string(note.Action),
+			Rename:           note.Rename,
+			ClientName:       note.ClientName,
+			ClientType:       note.ClientType,
+			ClientVersion:    note.ClientVersion,
+			Mtime:            note.Mtime,
+			UpdatedTimestamp: timex.Now().UnixMilli(),
+			Revision:         util.NewRevisionToken(),
+		}
+		res, err := u.WithContext(ctx).Where(
+			u.ID.Eq(m.ID),
+			u.Revision.Eq(expectedRevision),
+		).Select(
+			u.ID,
+			u.Action,
+			u.Rename,
+			u.ClientName,
+			u.ClientType,
+			u.ClientVersion,
+			u.Mtime,
+			u.UpdatedTimestamp,
+			u.Revision,
+		).Updates(m)
+		if err != nil {
+			return err
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		updated = true
+		note.Revision = m.Revision
+		note.UpdatedTimestamp = m.UpdatedTimestamp
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return updated, nil
 }

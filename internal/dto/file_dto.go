@@ -7,18 +7,22 @@ import "github.com/haierkeys/fast-note-sync-service/pkg/timex"
 // FileUpdateCheckRequest Client request parameters for checking if updates are needed
 // 客户端用于检查是否需要更新的请求参数
 type FileUpdateCheckRequest struct {
-	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"`        // Vault name // 保险库名称
-	Path               string `json:"path" form:"path" binding:"required" example:"Image.png"`        // File path // 文件路径
-	PathHash           string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash123"` // Path hash // 路径哈希
-	ContentHash        string `json:"contentHash" form:"contentHash" binding:"" example:"chash456"`   // Content hash // 内容哈希
-	Size               int64  `json:"size" form:"size" binding:"" example:"1024"`                     // File size // 文件大小
-	Ctime              int64  `json:"ctime" form:"ctime" binding:"required" example:"1700000000"`     // Creation timestamp // 创建时间戳
-	Mtime              int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`     // Modification timestamp // 修改时间戳
-	Context            string `json:"context" form:"context" example:"ctx123"`                        // Context // 同步上下文
-	BaseHash           string `json:"baseHash" form:"baseHash" example:"bhash789"`                    // Content baseline // 内容基线
-	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`         // No trusted content baseline // 没有可信内容基线
+	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path               string `json:"path" form:"path" binding:"required" example:"Image.png"`                     // File path // 文件路径
+	PathHash           string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash123"`              // Path hash // 路径哈希
+	ContentHash        string `json:"contentHash" form:"contentHash" binding:"" example:"chash456"`                // Content hash // 内容哈希
+	Size               int64  `json:"size" form:"size" binding:"" example:"1024"`                                  // File size // 文件大小
+	Ctime              int64  `json:"ctime" form:"ctime" binding:"required" example:"1700000000"`                  // Creation timestamp // 创建时间戳
+	Mtime              int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`                  // Modification timestamp // 修改时间戳
+	Context            string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
+	BaseHash           string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision       string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
-	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"`   // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"`                // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 
 // NormalizeSyncBaseline see dto.NormalizeBaseline.
@@ -48,18 +52,28 @@ type FileUpdateRequest struct {
 	Size        int64  `json:"size" form:"size" example:"1024"`                              // File size // 文件大小
 	Ctime       int64  `json:"ctime" form:"ctime" example:"1700000000"`                      // Creation timestamp // 创建时间戳
 	Mtime       int64  `json:"mtime" form:"mtime" example:"1700000000"`                      // Modification timestamp // 修改时间戳
+
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 
 // FileDeleteRequest Parameters required for deleting a file
 // 删除文件所需参数
 type FileDeleteRequest struct {
-	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`        // Vault name // 保险库名称
-	Path            string `json:"path" form:"path" binding:"required" example:"Image.png"`        // File path // 文件路径
-	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash123"` // Path hash // 路径哈希
-	Context         string `json:"context" form:"context" example:"ctx123"`                        // Context // 同步上下文
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                    // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`         // No trusted content baseline // 没有可信内容基线
+	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path            string `json:"path" form:"path" binding:"required" example:"Image.png"`                     // File path // 文件路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash123"`              // Path hash // 路径哈希
+	Context         string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 
 // NormalizeSyncBaseline see dto.NormalizeBaseline.
@@ -87,24 +101,24 @@ type FileRecycleClearRequest struct {
 // FileSyncCheckRequest/ Parameters for checking synchronization of a single record
 // 同步检查单条记录的参数
 type FileSyncCheckRequest struct {
-	Path            string `json:"path" form:"path" example:"Image.png"`                           // File path // 文件路径
-	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash123"` // Path hash // 路径哈希
-	ContentHash     string `json:"contentHash" form:"contentHash" binding:"" example:"chash456"`   // Content hash // 内容哈希
-	Mtime           int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`     // Modification timestamp // 修改时间戳
-	Ctime           int64  `json:"ctime" form:"ctime" example:"1700000000"`                        // Creation timestamp // 创建时间戳
-	Size            int64  `json:"size" form:"size" example:"1024"`                                // File size // 文件大小
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                    // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`         // No trusted content baseline // 没有可信内容基线
+	Path            string `json:"path" form:"path" example:"Image.png"`                                        // File path // 文件路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash123"`              // Path hash // 路径哈希
+	ContentHash     string `json:"contentHash" form:"contentHash" binding:"" example:"chash456"`                // Content hash // 内容哈希
+	Mtime           int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`                  // Modification timestamp // 修改时间戳
+	Ctime           int64  `json:"ctime" form:"ctime" example:"1700000000"`                                     // Creation timestamp // 创建时间戳
+	Size            int64  `json:"size" form:"size" example:"1024"`                                             // File size // 文件大小
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
 // FileSyncDelFile parameters for deleting a file during sync
 // 同步删除文件参数
 type FileSyncDelFile struct {
-	Path            string `json:"path" form:"path" binding:"required" example:"DeletedFile.png"`   // File path // 文件路径
-	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"dfhash789"` // Path hash // 路径哈希
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                     // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`          // No trusted content baseline // 没有可信内容基线
+	Path            string `json:"path" form:"path" binding:"required" example:"DeletedFile.png"`               // File path // 文件路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"dfhash789"`             // Path hash // 路径哈希
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
@@ -177,7 +191,7 @@ type FileRenameRequest struct {
 // FileDTO File Data Transfer Object
 // FileDTO 文件数据传输对象
 type FileDTO struct {
-	ID               int64      `json:"id" form:"id"`                                // File ID // 文件 ID
+	ID               int64      `json:"id" form:"id"`                     // File ID // 文件 ID
 	Action           string     `json:"-"`                                // Action // 动作
 	Path             string     `json:"path" form:"path"`                 // File path // 文件路径
 	PathHash         string     `json:"pathHash" form:"pathHash"`         // Path hash // 路径哈希
@@ -192,5 +206,6 @@ type FileDTO struct {
 	CreatedAt        timex.Time `json:"createdAt"`                        // Created at time // 创建时间
 	// Unchanged is set by Delete when the record was missing or already deleted (no write happened)
 	// Unchanged 由 Delete 设置：记录不存在或已是删除状态，本次未写库（调用方据此不广播）
-	Unchanged bool `json:"-" form:"-"`
+	Unchanged bool   `json:"-" form:"-"`
+	Revision  string `json:"revision,omitempty"` // Server revision token // 服务端版本令牌
 }

@@ -63,6 +63,17 @@ type FileUploadBinaryChunkSession struct {
 	uploadedChunks map[uint32]struct{} // Record of uploaded chunk indices for idempotency // 已上传分块索引记录，用于幂等
 	isCompleted    bool                // Whether upload is completely finished // 上传是否已彻底完成
 	Context        string              // Context // 上下文
+
+	// 基线模式上传会话绑定：分片全部写完、最终替换活跃附件之前必须再做一次 CAS 校验，
+	// 防止上传期间远端附件被另一设备更新或删除后仍被旧上传覆盖。
+	// Baseline upload-session binding: the final commit re-runs the CAS check after all
+	// chunks are written, so an upload cannot overwrite a remote attachment that another
+	// device changed or deleted while the chunks were in flight.
+	SyncBaselineVersion uint32 // Negotiated baseline version at session start // 会话开始时的基线协议版本
+	BaseHash            string // Trusted content baseline // 可信内容基线
+	BaseHashMissing     bool   // No trusted content baseline // 没有可信内容基线
+	BaseRevision        string // Server revision of the baseline // 基线的服务端版本令牌
+	IsConflictResolved  bool   // User resolved a conflict // 用户已解决冲突
 }
 
 func (s *FileUploadBinaryChunkSession) Cleanup() {
@@ -189,9 +200,14 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 
 	// 检查文件更新状态
 	fileService := h.App.GetFileService(c.ClientType(), c.ClientName(), c.ClientVersion())
+	params.Baseline = baselineCommitFromNote(c, params.BaseHash, params.BaseHashMissing, params.BaseRevision, params.IsConflictResolved)
 	updateMode, fileSvc, err := fileService.UploadCheck(ctx, c.User.UID, params)
 
 	if err != nil {
+		if conflict, ok := isBaselineConflict(err); ok {
+			h.respondBaselineConflict(c, dto.SyncConflictKindFile, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			return
+		}
 		h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, slotPath, msg.Type, "websocket_router.file.FileUploadCheck.UploadCheck")
 		return
 	}
@@ -200,7 +216,18 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 	switch updateMode {
 	case "UpdateContent", "Create":
 
-		session, err := h.handleFileUploadSessionCreate(c, params.Vault, params.Path, params.PathHash, params.ContentHash, params.Size, params.Ctime, params.Mtime, params.Context)
+		state := baselineClientState{
+			LocalHash:          params.ContentHash,
+			BaseHash:           params.BaseHash,
+			HasBase:            params.Baseline != nil && params.Baseline.HasBase,
+			BaseRevision:       params.BaseRevision,
+			IsConflictResolved: params.IsConflictResolved,
+			IsFile:             true,
+		}
+		if params.Baseline != nil {
+			state.BaseHash = params.Baseline.BaseHash
+		}
+		session, err := h.handleFileUploadSessionCreateWithBaseline(c, params.Vault, params.Path, params.PathHash, params.ContentHash, params.Size, params.Ctime, params.Mtime, params.Context, state)
 		if err != nil {
 			h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, slotPath, msg.Type, "websocket_router.file.FileUploadCheck.handleFileUploadSessionCreate")
 			return
@@ -224,6 +251,8 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 				Ctime:            fileSvc.Ctime,
 				Mtime:            fileSvc.Mtime,
 				UpdatedTimestamp: fileSvc.UpdatedTimestamp,
+				ContentHash:      fileSvc.ContentHash,
+				Revision:         fileSvc.Revision,
 			},
 		).WithContext(params.Context), FileSyncMtime)
 		return
@@ -242,8 +271,10 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 		// (the server#101 missed-pull cause), so 0 is safest for all known clients.
 		if fileSvc != nil {
 			c.ToResponse(code.Success.WithData(dto.FileUploadAckMessage{
-				Path:     params.Path,
-				PathHash: params.PathHash,
+				Path:        params.Path,
+				PathHash:    params.PathHash,
+				ContentHash: fileSvc.ContentHash,
+				Revision:    fileSvc.Revision,
 			}).WithVault(params.Vault).WithContext(params.Context), string(FileUploadAck))
 		} else {
 			// 无需更新
@@ -434,6 +465,19 @@ func (h *FileWSHandler) FileUploadChunkBinary(c *pkgapp.WebsocketClient, data []
 			Ctime:       session.Ctime,
 			Mtime:       session.Mtime,
 		}
+		// 附件上传会话绑定基线：最终提交时在服务层临界区内再次做 CAS 校验，
+		// 若期间远端附件已被另一设备更新或删除，则不替换活跃附件并返回冲突。
+		// The upload session carries the client's baseline: the final commit re-runs the
+		// CAS check inside the service critical section, so an attachment changed or
+		// deleted by another device meanwhile is never overwritten.
+		if session.SyncBaselineVersion >= 1 {
+			svcParams.Baseline = &dto.BaselineCommit{
+				HasBase:            !session.BaseHashMissing,
+				BaseHash:           session.BaseHash,
+				BaseRevision:       session.BaseRevision,
+				IsConflictResolved: session.IsConflictResolved,
+			}
+		}
 		// 收尾响应与广播用的字段一并在锁内取快照：并发复用的请求会在会话锁内
 		// 改写 Context / Ctime / Mtime，锁外读取会形成数据竞态。
 		// Snapshot the fields used by the completion replies and broadcast under the
@@ -451,6 +495,15 @@ func (h *FileWSHandler) FileUploadChunkBinary(c *pkgapp.WebsocketClient, data []
 		_, fileSvc, err := fileService.UploadComplete(ctx, c.User.UID, svcParams)
 
 		if err != nil {
+			if conflict, ok := isBaselineConflict(err); ok {
+				// 分片已全部写完但远端已被抢先改动：不替换活跃附件，回冲突并清理会话与临时文件。
+				// All chunks are in but the remote changed first: do not replace the active
+				// attachment; report the conflict and reclaim the session and temp file.
+				h.respondBaselineConflict(c, dto.SyncConflictKindFile, ackPath, ackPathHash, session.BaseHash, conflict, ackPath)
+				c.Server.RemoveSession(c.User.ID, ackSessionID)
+				session.Cleanup()
+				return
+			}
 			// 陈旧重报被墓碑闸门拒绝：回 ACK 清理客户端待传状态、补发删除指令清理
 			// 本地残留；不落库、不广播，并立即回收上传会话与临时文件。
 			// 闸门只拒绝内容与墓碑一致的原样重报，补发删除不会丢失未同步的修改。
@@ -496,10 +549,16 @@ func (h *FileWSHandler) FileUploadChunkBinary(c *pkgapp.WebsocketClient, data []
 
 		// Reply to sender with ack carrying server timestamp, so client can update lastFileSyncTime
 		// 回复发送方携带服务端时间戳的 ack，让客户端可以更新 lastFileSyncTime
+		ackContentHash, ackRevision := "", ""
+		if fileSvc != nil {
+			ackContentHash, ackRevision = fileSvc.ContentHash, fileSvc.Revision
+		}
 		c.ToResponse(code.Success.WithData(dto.FileUploadAckMessage{
-			LastTime: ackLastTime,
-			Path:     ackPath,
-			PathHash: ackPathHash,
+			LastTime:    ackLastTime,
+			Path:        ackPath,
+			PathHash:    ackPathHash,
+			ContentHash: ackContentHash,
+			Revision:    ackRevision,
 		}).WithVault(ackVault).WithContext(ackContext), string(FileUploadAck))
 
 		// Mark as completed and remove from global server
@@ -534,6 +593,7 @@ func (h *FileWSHandler) FileUploadChunkBinary(c *pkgapp.WebsocketClient, data []
 					Ctime:            fileSvc.Ctime,
 					Mtime:            fileSvc.Mtime,
 					UpdatedTimestamp: fileSvc.UpdatedTimestamp,
+					Revision:         fileSvc.Revision,
 				},
 			).WithVault(session.Vault), true, FileSyncUpdate)
 		} else {
@@ -570,9 +630,14 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	// Execute deletion logic
 	// 执行删除逻辑
 	fileService := h.App.GetFileService(c.ClientType(), c.ClientName(), c.ClientVersion())
+	params.Baseline = baselineCommitFromNote(c, params.BaseHash, params.BaseHashMissing, params.BaseRevision, false)
 	fileSvc, err := fileService.Delete(ctx, c.User.UID, params)
 
 	if err != nil {
+		if conflict, ok := isBaselineConflict(err); ok {
+			h.respondBaselineConflict(c, dto.SyncConflictKindFile, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			return
+		}
 		h.respondErrorWithPath(c, code.ErrorFileDeleteFailed, err, slotPath, msg.Type, "websocket_router.file.FileDelete.Delete")
 		return
 	}
@@ -581,6 +646,7 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		LastTime: fileSvc.UpdatedTimestamp,
 		Path:     fileSvc.Path,
 		PathHash: fileSvc.PathHash,
+		Revision: fileSvc.Revision,
 	}).WithVault(params.Vault).WithContext(params.Context), string(FileDeleteAck))
 
 	// 记录不存在或已删除（幂等重复删除）：只回 Ack，不广播，避免向其他设备重复下发删除
@@ -598,6 +664,8 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			Mtime:            fileSvc.Mtime,
 			Size:             fileSvc.Size,
 			UpdatedTimestamp: fileSvc.UpdatedTimestamp,
+			Revision:         fileSvc.Revision,
+			ContentHash:      fileSvc.ContentHash,
 		},
 	).WithVault(params.Vault), true, FileSyncDelete)
 }
@@ -840,6 +908,11 @@ func (h *FileWSHandler) FileSync(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocke
 			allMissingFiles = append(allMissingFiles, item.(dto.FileSyncDelFile))
 		}
 		params.MissingFiles = allMissingFiles
+	}
+
+	if baselineModeEnabled(c) {
+		h.doFileSyncBaseline(c, params)
+		return
 	}
 
 	h.doFileSync(c, params)

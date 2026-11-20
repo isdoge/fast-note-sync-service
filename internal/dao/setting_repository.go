@@ -14,6 +14,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/query"
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -73,6 +74,7 @@ func (r *settingRepository) toDomain(m *model.Setting, uid int64) (*domain.Setti
 		Ctime:            m.Ctime,
 		Mtime:            m.Mtime,
 		UpdatedTimestamp: m.UpdatedTimestamp,
+		Revision:         m.Revision,
 		CreatedAt:        time.Time(m.CreatedAt),
 		UpdatedAt:        time.Time(m.UpdatedAt),
 	}
@@ -199,6 +201,7 @@ func (r *settingRepository) ListByPathHashesMeta(ctx context.Context, pathHashes
 					Ctime:            m.Ctime,
 					Mtime:            m.Mtime,
 					UpdatedTimestamp: m.UpdatedTimestamp,
+					Revision:         m.Revision,
 					CreatedAt:        time.Time(m.CreatedAt),
 					UpdatedAt:        time.Time(m.UpdatedAt),
 				}
@@ -230,6 +233,9 @@ func (r *settingRepository) Create(ctx context.Context, setting *domain.Setting,
 			UpdatedTimestamp: timex.Now().UnixMilli(),
 			CreatedAt:        timex.Now(),
 			UpdatedAt:        timex.Now(),
+			// 新建配置是新的服务端状态，必须生成新令牌。
+			// A new setting is a new server state and must mint a token.
+			Revision: util.NewRevisionToken(),
 		}
 
 		content := setting.Content
@@ -284,6 +290,9 @@ func (r *settingRepository) Update(ctx context.Context, setting *domain.Setting,
 			Mtime:            setting.Mtime,
 			UpdatedTimestamp: timex.Now().UnixMilli(),
 			UpdatedAt:        timex.Now(),
+			// 配置正文/状态变更一律换新令牌。
+			// Any content/state change mints a new token.
+			Revision: util.NewRevisionToken(),
 		}
 
 		content := setting.Content
@@ -473,6 +482,9 @@ func (r *settingRepository) TombstoneByVaultID(ctx context.Context, vaultID, uid
 				u.Content.Value(""),
 				u.UpdatedTimestamp.Value(now.UnixMilli()),
 				u.UpdatedAt.Value(now),
+				// 整库配置清空把每行变成墓碑，也是新状态。
+				// A vault-wide setting clear turns every row into a tombstone: a new state.
+				u.Revision.Value(util.NewRevisionToken()),
 			)
 			return err
 		}); err != nil {
@@ -574,3 +586,78 @@ func (r *settingRepository) DeleteByVaultID(ctx context.Context, vaultID, uid in
 // Ensure settingRepository implements domain.SettingRepository interface
 // 确保 settingRepository 实现了 domain.SettingRepository 接口
 var _ domain.SettingRepository = (*settingRepository)(nil)
+
+// UpdateIfRevision applies a setting update only when the row still carries
+// expectedRevision. It returns false (and writes nothing) when another device
+// changed the row between the caller's precheck and this write.
+// UpdateIfRevision 仅在行仍携带 expectedRevision 时应用配置更新；另一设备在预检与本次写入之间
+// 改过该行时返回 false 且不写入。
+func (r *settingRepository) UpdateIfRevision(ctx context.Context, setting *domain.Setting, expectedRevision string, uid int64) (bool, error) {
+	updated := false
+	var updateErr error
+
+	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		u := r.setting(uid).Setting
+		m := &model.Setting{
+			ID:               setting.ID,
+			VaultID:          setting.VaultID,
+			Action:           string(setting.Action),
+			Path:             setting.Path,
+			PathHash:         setting.PathHash,
+			ContentHash:      setting.ContentHash,
+			Size:             setting.Size,
+			Rename:           setting.Rename,
+			ContentPurged:    setting.ContentPurged,
+			Ctime:            setting.Ctime,
+			Mtime:            setting.Mtime,
+			UpdatedTimestamp: timex.Now().UnixMilli(),
+			UpdatedAt:        timex.Now(),
+			Revision:         util.NewRevisionToken(),
+		}
+
+		content := setting.Content
+		m.Content = ""
+
+		res, err := u.WithContext(ctx).Where(
+			u.ID.Eq(m.ID),
+			u.Revision.Eq(expectedRevision),
+		).Select(
+			u.ID,
+			u.VaultID,
+			u.Action,
+			u.Path,
+			u.PathHash,
+			u.ContentHash,
+			u.Size,
+			u.Rename,
+			u.ContentPurged,
+			u.Ctime,
+			u.Mtime,
+			u.UpdatedTimestamp,
+			u.UpdatedAt,
+			u.Revision,
+		).Updates(m)
+		if err != nil {
+			updateErr = err
+			return err
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		updated = true
+
+		folderPath := r.dao.GetSettingFolderPath(uid, setting.ID)
+		if err := r.dao.SaveContentToFile(folderPath, "content.txt", content); err != nil {
+			updateErr = err
+			return err
+		}
+		setting.Revision = m.Revision
+		setting.UpdatedTimestamp = m.UpdatedTimestamp
+		return nil
+	})
+
+	if err != nil {
+		return false, err
+	}
+	return updated, updateErr
+}

@@ -30,6 +30,7 @@ type Setting struct {
 	Ctime            int64
 	Mtime            int64
 	UpdatedTimestamp int64
+	Revision         string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -71,6 +72,9 @@ type SettingRepository interface {
 
 	// Update 更新配置
 	Update(ctx context.Context, setting *Setting, uid int64) (*Setting, error)
+
+	// UpdateIfRevision 仅在行仍携带 expectedRevision 时更新配置（CAS）。
+	UpdateIfRevision(ctx context.Context, setting *Setting, expectedRevision string, uid int64) (bool, error)
 
 	// UpdateMtime 更新配置修改时间
 	UpdateMtime(ctx context.Context, mtime int64, id, uid int64) error

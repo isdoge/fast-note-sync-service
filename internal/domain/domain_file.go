@@ -30,6 +30,7 @@ type File struct {
 	Ctime            int64
 	Mtime            int64
 	UpdatedTimestamp int64
+	Revision         string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -85,6 +86,9 @@ type FileRepository interface {
 
 	// Update 更新文件
 	Update(ctx context.Context, file *File, uid int64) (*File, error)
+
+	// UpdateIfRevision 仅在行仍携带 expectedRevision 时更新附件（CAS）。
+	UpdateIfRevision(ctx context.Context, file *File, expectedRevision string, uid int64) (bool, error)
 
 	// UpdateMtime 更新文件修改时间
 	UpdateMtime(ctx context.Context, mtime int64, id, uid int64) error

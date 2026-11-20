@@ -68,3 +68,61 @@ const (
 	SyncConflictKindSetting = "setting"
 	SyncConflictKindFolder  = "folder"
 )
+
+// BaselineCommit carries the conditional-commit contract of a baseline-mode write.
+// It is attached to realtime write/delete requests by the WebSocket handlers only;
+// HTTP, MCP and legacy connections leave it nil and keep the unconditional behavior.
+// BaselineCommit 是基线模式写入的条件提交契约。仅由 WebSocket 处理器附加到实时写/删请求；
+// HTTP、MCP 与旧连接保持 nil，维持无条件写入行为。
+type BaselineCommit struct {
+	// HasBase reports a trusted content baseline (BaseHash may be "0" for empty text).
+	// HasBase 表示存在可信内容基线（BaseHash 可为空文本的 "0"）。
+	HasBase bool
+	// BaseHash is the trusted last-synced content hash.
+	// BaseHash 是可信的上次同步内容哈希。
+	BaseHash string
+	// BaseRevision is the server revision token the client confirmed.
+	// BaseRevision 是客户端确认过的服务端版本令牌。
+	BaseRevision string
+	// IsConflictResolved marks an explicit user choice; it never skips the revision check.
+	// IsConflictResolved 标记用户已作出选择；它绝不跳过版本校验。
+	IsConflictResolved bool
+	// ServerMissingResolved marks a "keep local" choice for a server_missing conflict.
+	// When set with an empty BaseRevision, creation is allowed only while the server row
+	// is still absent.
+	// ServerMissingResolved 标记 server_missing 冲突下"保留本地"的选择。与空 BaseRevision 同时
+	// 出现时，仅当服务端仍不存在该行才允许创建。
+	ServerMissingResolved bool
+}
+
+// BaselineRejectReason lists the commit-time rejection reasons of the unified payload.
+// BaselineRejectReason 列出统一载荷中提交阶段可用的拒绝原因。
+const (
+	BaselineRejectRemoteDeleted = SyncConflictReasonRemoteDeleted
+	BaselineRejectLocalDeleted  = SyncConflictReasonLocalDeleted
+	BaselineRejectNoBaseline    = SyncConflictReasonNoBaseline
+	BaselineRejectBothModified  = SyncConflictReasonBothModified
+	BaselineRejectRevisionMoved = SyncConflictReasonRevisionChanged
+	BaselineRejectServerMissing = SyncConflictReasonServerMissing
+)
+
+// BaselineConflictError is returned by a rejected conditional commit. Callers map it
+// onto the unified SyncConflict payload (530 for realtime writes).
+// BaselineConflictError 是条件提交被拒绝时返回的错误；调用方把它映射为统一 SyncConflict 载荷
+// （实时写入回 530）。
+type BaselineConflictError struct {
+	Reason         string // One of the BaselineReject* constants // BaselineReject* 常量之一
+	ServerActive   bool   // Server row is live at rejection time // 拒绝时服务端行为活跃
+	ServerDeleted  bool   // Server row is a tombstone // 服务端行是墓碑
+	ServerRevision string // Current server revision // 当前服务端版本令牌
+	ServerHash     string // Current server content hash // 当前服务端内容哈希
+}
+
+// Error implements error.
+// Error 实现 error 接口。
+func (e *BaselineConflictError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return "baseline conflict: " + e.Reason
+}

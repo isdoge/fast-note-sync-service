@@ -26,6 +26,7 @@ type Folder struct {
 	Ctime            int64
 	Mtime            int64
 	UpdatedTimestamp int64
+	Revision         string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -61,6 +62,9 @@ type FolderRepository interface {
 
 	// Update 更新文件夹
 	Update(ctx context.Context, folder *Folder, uid int64) (*Folder, error)
+
+	// UpdateIfRevision 仅在行仍携带 expectedRevision 时更新目录（CAS）。
+	UpdateIfRevision(ctx context.Context, folder *Folder, expectedRevision string, uid int64) (bool, error)
 
 	// Delete 物理删除文件夹
 	Delete(ctx context.Context, id, uid int64) error

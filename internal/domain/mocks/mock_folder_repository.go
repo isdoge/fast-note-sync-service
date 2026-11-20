@@ -124,3 +124,10 @@ func (m *MockFolderRepository) GetAllByPathHashAndPath(ctx context.Context, path
 	}
 	return args.Get(0).([]*domain.Folder), args.Error(1)
 }
+
+// UpdateIfRevision is a CAS update used by the baseline-mode conditional commit.
+// UpdateIfRevision 是基线模式条件提交使用的 CAS 更新。
+func (m *MockFolderRepository) UpdateIfRevision(ctx context.Context, folder *domain.Folder, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, folder, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
+}
