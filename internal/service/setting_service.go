@@ -145,6 +145,7 @@ func (s *settingService) domainToDTO(setting *domain.Setting) *dto.SettingDTO {
 		ContentHash:      setting.ContentHash,
 		Ctime:            setting.Ctime,
 		Mtime:            setting.Mtime,
+		Revision:         setting.Revision,
 		UpdatedTimestamp: setting.UpdatedTimestamp,
 		UpdatedAt:        timex.Time(setting.UpdatedAt),
 		CreatedAt:        timex.Time(setting.CreatedAt),
@@ -214,6 +215,27 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 		return false, nil, err
 	}
 
+	// 客户端未上报内容哈希时由服务端回退计算：二进制配置（fns-bin-v1: 前缀）
+	// 必须按解码后的原始字节哈希，普通文本仍按原字符串哈希。非法 base64 直接
+	// 拒绝，避免把客户端永远算不出哈希的脏数据写进库。
+	// When the client omits contentHash the server derives it: binary settings
+	// (fns-bin-v1: prefix) hash their decoded raw bytes while plain text keeps the
+	// legacy string hash. Corrupt base64 is rejected instead of persisted.
+	if params.ContentHash == "" {
+		hash, err := util.SettingContentHashBytesForPath(params.Path, params.Content)
+		if err != nil {
+			return false, nil, code.ErrorInvalidParams.WithDetails(err.Error())
+		}
+		params.ContentHash = hash
+	} else if util.IsEncodedSettingContent(params.Content) {
+		// 客户端已上报哈希时仍要校验载荷可解码，否则会存下无法还原的脏数据。
+		// Even with a client-supplied hash, validate the payload is decodable so
+		// undecodable content is never persisted.
+		if _, _, err := util.DecodeSettingContentBytes(params.Content); err != nil {
+			return false, nil, code.ErrorInvalidParams.WithDetails(err.Error())
+		}
+	}
+
 	key := fmt.Sprintf("modify_or_create_%d_%d_%s", uid, vaultID, params.PathHash)
 	type result struct {
 		isNew bool
@@ -231,7 +253,10 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 			}
 			// If content is consistent but modification time is different, only update modification time
 			// 检查内容是否一致但修改时间不同，则只更新修改时间
-			if mtimeCheck && setting.Mtime < params.Mtime && setting.ContentHash == params.ContentHash {
+			// 墓碑记录不得走“仅更新时间戳”的短路，否则会保持删除状态却刷新同步水位。
+			// Tombstones must not take the mtime-only shortcut, which would refresh the
+			// sync watermark while leaving the row deleted.
+			if mtimeCheck && setting.Action != domain.SettingActionDelete && setting.Mtime < params.Mtime && setting.ContentHash == params.ContentHash {
 				err := s.settingRepo.UpdateActionMtime(ctx, domain.SettingActionModify, params.Mtime, setting.ID, uid)
 				if err != nil {
 					return nil, code.ErrorDBQuery.WithDetails(err.Error())
@@ -242,6 +267,19 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 					s.syncLogService.Log(uid, vaultID, domain.SyncLogTypeSetting, domain.SyncLogActionModify, "mtime", setting.Path, setting.PathHash, s.clientType, s.clientName, s.clientVer, int64(len(setting.Content)))
 				}
 				return &result{isNew: false, dto: s.domainToDTO(setting)}, nil
+			}
+
+			// 基线模式墓碑闸门：服务端墓碑不得被静默复活；只有用户明确选择恢复、且携带的
+			// 令牌仍等于当前墓碑令牌时才允许条件复活。
+			// Baseline tombstone gate: never silently revive a server tombstone; only an
+			// explicit user choice carrying the tombstone's current revision may.
+			if params.Baseline != nil && setting.Action == domain.SettingActionDelete {
+				if !params.Baseline.IsConflictResolved {
+					return nil, baselineConflictFromSetting(dto.BaselineRejectRemoteDeleted, setting)
+				}
+				if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != setting.Revision {
+					return nil, baselineConflictFromSetting(dto.BaselineRejectRevisionMoved, setting)
+				}
 			}
 
 			// Set action
@@ -264,10 +302,45 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 			setting.Mtime = params.Mtime
 			setting.Ctime = params.Ctime
 			setting.Action = action
+			// 复用墓碑行复活为存活记录时，必须同时重置 rename 与“正文已清理”标记，
+			// 否则复活后的配置会一直隐藏或被视为不可恢复。
+			// Reviving a tombstone row must reset both the rename flag and the purged marker.
+			setting.Rename = 0
+			setting.ContentPurged = 0
 
-			updated, err := s.settingRepo.Update(ctx, setting, uid)
-			if err != nil {
-				return nil, code.ErrorDBQuery.WithDetails(err.Error())
+			var updated *domain.Setting
+			if params.Baseline != nil {
+				// 有基线更新：仅当行仍带客户端确认的令牌时才原子写入。
+				// Baseline update: write atomically only while the row still carries the
+				// client's revision.
+				if params.Baseline.BaseRevision == "" {
+					return nil, baselineConflictFromSetting(dto.BaselineRejectRevisionMoved, setting)
+				}
+				ok, err := s.settingRepo.UpdateIfRevision(ctx, setting, params.Baseline.BaseRevision, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+				if !ok {
+					latest, _ := s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+					if latest == nil {
+						latest = setting
+					}
+					reason := dto.BaselineRejectRevisionMoved
+					if latest.ContentHash != params.Baseline.BaseHash {
+						reason = dto.BaselineRejectBothModified
+					}
+					return nil, baselineConflictFromSetting(reason, latest)
+				}
+				updated, err = s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+			} else {
+				var err error
+				updated, err = s.settingRepo.Update(ctx, setting, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
 			}
 
 			// Log content modify // 记录内容变更日志
@@ -280,6 +353,11 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 
 		// Create new configuration
 		// 创建新配置
+		if params.Baseline != nil {
+			if err := checkBaselineCreate(params.Baseline); err != nil {
+				return nil, err
+			}
+		}
 		newSetting := &domain.Setting{
 			VaultID:     vaultID,
 			Path:        params.Path,
@@ -332,21 +410,70 @@ func (s *settingService) Delete(ctx context.Context, uid int64, params *dto.Sett
 	setting, err := s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 基线模式：不存在即幂等成功（与笔记/附件一致），供决策表确认删除已完成。
+			// Baseline mode: missing means idempotent success, matching notes/files, so the
+			// decision table can confirm the delete already happened.
+			if params.Baseline != nil {
+				return &dto.SettingDTO{Path: params.Path, PathHash: params.PathHash, Unchanged: true}, nil
+			}
 			return nil, code.ErrorSettingNotFound
 		}
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
+	if setting.Action == domain.SettingActionDelete {
+		// 基线模式：已是墓碑即幂等成功。
+		// Baseline mode: an existing tombstone is an idempotent success.
+		if params.Baseline != nil {
+			res := s.domainToDTO(setting)
+			res.Unchanged = true
+			return res, nil
+		}
+	}
+
+	// 基线模式实时删除：活跃行只有在客户端携带匹配的版本令牌与内容哈希时才能软删除。
+	// Baseline realtime delete: a live row may only be soft-deleted when the client
+	// carries a matching revision and content hash.
+	if params.Baseline != nil {
+		if err := checkBaselineDelete(params.Baseline, setting.Revision, setting.ContentHash, func(reason string) error {
+			return baselineConflictFromSetting(reason, setting)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	// Update to deleted status
 	// 更新为删除状态
+	// 保留 ContentHash：墓碑需要删除前的最后内容哈希，供墓碑闸门与后续增量同步比对，
+	// 清空它会让删除证据永久丢失。正文与大小照旧清空。
+	// Keep ContentHash: the tombstone needs the last pre-deletion content hash for the
+	// tombstone gate and later sync comparisons; clearing it would destroy the deletion
+	// evidence. Content and size are still cleared as before.
 	setting.Action = domain.SettingActionDelete
 	setting.Content = ""
-	setting.ContentHash = ""
 	setting.Size = 0
+	setting.Rename = 0
 
-	updated, err := s.settingRepo.Update(ctx, setting, uid)
-	if err != nil {
-		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	var updated *domain.Setting
+	if params.Baseline != nil {
+		ok, err := s.settingRepo.UpdateIfRevision(ctx, setting, params.Baseline.BaseRevision, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+		if !ok {
+			latest, _ := s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+			return nil, baselineConflictFromSetting(dto.SyncConflictReasonLocalDeleted, latest)
+		}
+		updated, err = s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+	} else {
+		var err error
+		updated, err = s.settingRepo.Update(ctx, setting, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
 	}
 
 	// Log soft delete // 记录软删除日志
@@ -503,6 +630,9 @@ func (s *settingService) Rename(ctx context.Context, uid int64, params *dto.Sett
 		existSetting.Ctime = n.Ctime
 		existSetting.Mtime = n.Mtime // Preserve original mtime
 		existSetting.Rename = 0
+		// 复用墓碑行作为重命名目标时同样要清除“正文已清理”标记。
+		// Reusing a tombstone row as the rename target must clear the purged marker too.
+		existSetting.ContentPurged = 0
 		existSetting.UpdatedTimestamp = timex.Now().UnixMilli()
 		newSettingCreated, err = s.settingRepo.Update(ctx, existSetting, uid)
 	} else {
@@ -555,17 +685,22 @@ func (s *settingService) Cleanup(ctx context.Context, uid int64) error {
 	}
 
 	cutoffTime := time.Now().Add(-retentionDuration).UnixMilli()
-	return s.settingRepo.DeletePhysicalByTime(ctx, cutoffTime, uid)
+	return s.settingRepo.PurgeContentByTime(ctx, cutoffTime, uid)
 }
 
-// CleanupByTime cleans up expired soft-deleted configurations for all users by cutoff time
-// CleanupByTime 按截止时间清理所有用户的过期软删除配置
+// CleanupByTime releases stored bodies of expired setting tombstones for all users by
+// cutoff time, keeping the lightweight metadata rows.
+// CleanupByTime 按截止时间清理所有用户的过期软删除配置正文，保留轻量墓碑元数据行。
 func (s *settingService) CleanupByTime(ctx context.Context, cutoffTime int64) error {
-	return s.settingRepo.DeletePhysicalByTimeAll(ctx, cutoffTime)
+	return s.settingRepo.PurgeContentByTimeAll(ctx, cutoffTime)
 }
 
-// ClearByVault clears all settings for a specific vault of a user
-// ClearByVault 清除用户指定笔记本的所有配置
+// ClearByVault clears all settings for a specific vault of a user. Live settings are
+// converted into deletion tombstones instead of being physically deleted, so other
+// clients still receive the deletions through incremental sync and the deletion
+// evidence survives.
+// ClearByVault 清除用户指定笔记本的所有配置。存活配置会被转为删除墓碑而不是物理删除，
+// 使其它客户端仍能通过增量同步收到删除，删除证据也得以保留。
 func (s *settingService) ClearByVault(ctx context.Context, uid int64, vaultName string) error {
 	// Use VaultService.MustGetID to retrieve VaultID
 	// 使用 VaultService.MustGetID 获取 VaultID
@@ -573,7 +708,7 @@ func (s *settingService) ClearByVault(ctx context.Context, uid int64, vaultName 
 	if err != nil {
 		return err
 	}
-	return s.settingRepo.DeleteByVaultID(ctx, vaultID, uid)
+	return s.settingRepo.TombstoneByVaultID(ctx, vaultID, uid)
 }
 
 // CleanDuplicateSettings cleans up duplicate configuration records

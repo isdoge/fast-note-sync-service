@@ -11,6 +11,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/convert"
 	"github.com/haierkeys/fast-note-sync-service/pkg/logger"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -49,6 +50,23 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
+
+	// 客户端未上报内容哈希时先按内容回退计算，让下面的 UpdateCheck 与后续写入使用
+	// 同一哈希：fns-bin-v1: 二进制载荷按解码后的原始字节哈希，普通文本按原字符串。
+	// 非法 base64 在更新检查前就拒绝，避免写库后才发现无法还原。
+	// Derive a missing content hash before UpdateCheck so the check and the later
+	// write agree: binary fns-bin-v1: payloads hash their decoded raw bytes, plain
+	// text keeps the legacy string hash. Corrupt base64 is rejected before any
+	// database work.
+	if params.ContentHash == "" {
+		hash, err := util.SettingContentHashBytesForPath(params.Path, params.Content)
+		if err != nil {
+			h.respondErrorWithPath(c, code.ErrorInvalidParams, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ContentHash")
+			return
+		}
+		params.ContentHash = hash
+	}
+
 	// mtime 缺省（<=0）时先按 0 做更新检查：内容与服务端一致时 UpdateCheck 会
 	// 返回 UpdateMtime（不改库、不广播），这正是幂等返回；只有确需写入时才在下方
 	// 用服务端当前时间兜底，避免把内容未变的配置改写时间戳并广播。
@@ -65,6 +83,11 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 	h.App.VaultService.GetOrCreate(ctx, c.User.UID, params.Vault)
 
 	settingSvc := h.App.GetSettingService(c.ClientType(), c.ClientName(), c.ClientVersion())
+
+	// 基线模式连接：附加条件提交契约（旧连接为 nil，保持无条件写入）。
+	// Baseline-mode connections attach the conditional-commit contract; legacy
+	// connections stay nil.
+	params.Baseline = baselineCommitFromNote(c, params.BaseHash, params.BaseHashMissing, params.BaseRevision, params.IsConflictResolved)
 
 	checkParams := convert.StructAssign(params, &dto.SettingUpdateCheckRequest{}).(*dto.SettingUpdateCheckRequest)
 	updateMode, settingCheck, err := settingSvc.UpdateCheck(ctx, c.User.UID, checkParams)
@@ -85,14 +108,20 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 		}
 		_, setting, err := settingSvc.ModifyOrCreate(ctx, c.User.UID, params, true)
 		if err != nil {
+			if conflict, ok := isBaselineConflict(err); ok {
+				h.respondBaselineConflict(c, dto.SyncConflictKindSetting, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+				return
+			}
 			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
 			return
 		}
 
 		c.ToResponse(code.Success.WithData(dto.SettingModifyAckMessage{
-			LastTime: setting.UpdatedTimestamp,
-			Path:     setting.Path,
-			PathHash: setting.PathHash,
+			LastTime:    setting.UpdatedTimestamp,
+			Path:        setting.Path,
+			PathHash:    setting.PathHash,
+			ContentHash: setting.ContentHash,
+			Revision:    setting.Revision,
 		}).WithVault(params.Vault).WithContext(params.Context), string(SettingModifyAck))
 		c.BroadcastResponse(code.Success.WithData(
 			dto.SettingSyncModifyMessage{
@@ -104,15 +133,18 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 				Ctime:            setting.Ctime,
 				Mtime:            setting.Mtime,
 				UpdatedTimestamp: setting.UpdatedTimestamp,
+				Revision:         setting.Revision,
 			},
 		).WithVault(params.Vault), true, SettingSyncModify)
 		return
 
 	case "UpdateMtime":
 		c.ToResponse(code.Success.WithData(dto.SettingModifyAckMessage{
-			LastTime: settingCheck.UpdatedTimestamp,
-			Path:     settingCheck.Path,
-			PathHash: settingCheck.PathHash,
+			LastTime:    settingCheck.UpdatedTimestamp,
+			Path:        settingCheck.Path,
+			PathHash:    settingCheck.PathHash,
+			ContentHash: settingCheck.ContentHash,
+			Revision:    settingCheck.Revision,
 		}).WithVault(params.Vault).WithContext(params.Context), string(SettingModifyAck))
 		return
 	default:
@@ -207,8 +239,13 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	settingSvc := h.App.GetSettingService(c.ClientType(), c.ClientName(), c.ClientVersion())
 
+	params.Baseline = baselineCommitFromNote(c, params.BaseHash, params.BaseHashMissing, params.BaseRevision, false)
 	setting, err := settingSvc.Delete(ctx, c.User.UID, params)
 	if err != nil {
+		if conflict, ok := isBaselineConflict(err); ok {
+			h.respondBaselineConflict(c, dto.SyncConflictKindSetting, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			return
+		}
 		h.respondErrorWithPath(c, code.ErrorSettingDeleteFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingDelete.Delete")
 		return
 	}
@@ -217,7 +254,13 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 		LastTime: setting.UpdatedTimestamp,
 		Path:     setting.Path,
 		PathHash: setting.PathHash,
+		Revision: setting.Revision,
 	}).WithVault(params.Vault).WithContext(params.Context), string(SettingDeleteAck))
+	// 幂等删除（不存在/已是墓碑）：只回 Ack，不广播。
+	// Idempotent delete (missing/already a tombstone): ack only, no broadcast.
+	if setting.Unchanged {
+		return
+	}
 	c.BroadcastResponse(code.Success.WithData(
 		dto.SettingSyncDeleteMessage{
 			Path:             setting.Path,
@@ -225,6 +268,8 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 			Ctime:            setting.Ctime,
 			Mtime:            setting.Mtime,
 			UpdatedTimestamp: setting.UpdatedTimestamp,
+			Revision:         setting.Revision,
+			ContentHash:      setting.ContentHash,
 		},
 	).WithVault(params.Vault), true, SettingSyncDelete)
 }
@@ -312,6 +357,11 @@ func (h *SettingWSHandler) SettingSync(c *pkgapp.WebsocketClient, msg *pkgapp.We
 			allMissingSettings = append(allMissingSettings, item.(dto.SettingSyncDelSetting))
 		}
 		params.MissingSettings = allMissingSettings
+	}
+
+	if baselineModeEnabled(c) {
+		h.doSettingSyncBaseline(c, params)
+		return
 	}
 
 	h.doSettingSync(c, params)

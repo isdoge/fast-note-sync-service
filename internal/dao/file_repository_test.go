@@ -173,3 +173,143 @@ func TestFileRepository_Update_UploadMovesTempFile(t *testing.T) {
 	require.Equal(t, "new-hash", stored.ContentHash)
 	require.Equal(t, domain.FileActionModify, stored.Action)
 }
+
+// TestFileRepository_UpdateIfRevision_ConflictKeepsDiskPayload 覆盖 P0-05：CAS 失败时
+// 绝不触碰磁盘上现有的 file.dat——旧附件必须保持逐字节不变，临时文件原样留给上层清理。
+// CAS failure must never touch the existing file.dat: the previous payload stays
+// byte-identical and the temp file is left for the caller to clean up.
+func TestFileRepository_UpdateIfRevision_ConflictKeepsDiskPayload(t *testing.T) {
+	fileRepo, cleanup := setupFileRepoTestEnv(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const uid = int64(1)
+
+	tmpDir := t.TempDir()
+	initialPayload := filepath.Join(tmpDir, "initial.dat")
+	require.NoError(t, os.WriteFile(initialPayload, []byte("ORIGINAL-BYTES"), 0644))
+
+	created, err := fileRepo.Create(ctx, &domain.File{
+		VaultID: 1, Path: "a.png", PathHash: "ph-a", ContentHash: "H1",
+		SavePath: initialPayload, Size: 14, Mtime: 1000, Ctime: 1000,
+		Action: domain.FileActionCreate,
+	}, uid)
+	require.NoError(t, err)
+	require.NotEmpty(t, created.Revision)
+
+	// 读取落盘后的真实路径与字节，作为"冲突后必须原样保留"的基准。
+	stored, err := fileRepo.GetByID(ctx, created.ID, uid)
+	require.NoError(t, err)
+	beforeBytes, err := os.ReadFile(stored.SavePath)
+	require.NoError(t, err)
+	require.Equal(t, []byte("ORIGINAL-BYTES"), beforeBytes)
+
+	newPayload := filepath.Join(tmpDir, "new.dat")
+	require.NoError(t, os.WriteFile(newPayload, []byte("REPLACEMENT-BYTES"), 0644))
+
+	// 用过期令牌提交：必须返回 false，且磁盘文件不变。
+	ok, err := fileRepo.UpdateIfRevision(ctx, &domain.File{
+		ID: created.ID, VaultID: 1, Path: "a.png", PathHash: "ph-a", ContentHash: "H2",
+		SavePath: newPayload, Size: 17, Mtime: 2000, Ctime: 1000, Action: domain.FileActionCreate,
+	}, "stale-revision-token", uid)
+	require.NoError(t, err)
+	require.False(t, ok, "CAS 失败必须返回 false")
+
+	afterBytes, err := os.ReadFile(stored.SavePath)
+	require.NoError(t, err)
+	require.Equal(t, beforeBytes, afterBytes, "CAS 失败后原磁盘 file.dat 字节必须 100%% 未变")
+
+	// 临时文件没有被搬走（仍由调用方清理），内容也未污染正式位置。
+	require.FileExists(t, newPayload)
+
+	// 数据库行同样未被改动：内容哈希与令牌仍是旧值。
+	still, err := fileRepo.GetByID(ctx, created.ID, uid)
+	require.NoError(t, err)
+	require.Equal(t, "H1", still.ContentHash)
+	require.Equal(t, created.Revision, still.Revision)
+}
+
+// TestFileRepository_UpdateIfRevision_MatchReplacesPayload CAS 成功时才把临时文件搬进
+// 正式位置并换新令牌。
+func TestFileRepository_UpdateIfRevision_MatchReplacesPayload(t *testing.T) {
+	fileRepo, cleanup := setupFileRepoTestEnv(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const uid = int64(1)
+
+	tmpDir := t.TempDir()
+	initialPayload := filepath.Join(tmpDir, "initial.dat")
+	require.NoError(t, os.WriteFile(initialPayload, []byte("V1"), 0644))
+	created, err := fileRepo.Create(ctx, &domain.File{
+		VaultID: 1, Path: "b.png", PathHash: "ph-b", ContentHash: "H1",
+		SavePath: initialPayload, Size: 2, Mtime: 1000, Ctime: 1000, Action: domain.FileActionCreate,
+	}, uid)
+	require.NoError(t, err)
+	stored, err := fileRepo.GetByID(ctx, created.ID, uid)
+	require.NoError(t, err)
+
+	newPayload := filepath.Join(tmpDir, "new.dat")
+	require.NoError(t, os.WriteFile(newPayload, []byte("V2-longer"), 0644))
+
+	ok, err := fileRepo.UpdateIfRevision(ctx, &domain.File{
+		ID: created.ID, VaultID: 1, Path: "b.png", PathHash: "ph-b", ContentHash: "H2",
+		SavePath: newPayload, Size: 9, Mtime: 2000, Ctime: 1000, Action: domain.FileActionCreate,
+	}, created.Revision, uid)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	afterBytes, err := os.ReadFile(stored.SavePath)
+	require.NoError(t, err)
+	require.Equal(t, []byte("V2-longer"), afterBytes)
+
+	updated, err := fileRepo.GetByID(ctx, created.ID, uid)
+	require.NoError(t, err)
+	require.Equal(t, "H2", updated.ContentHash)
+	require.NotEqual(t, created.Revision, updated.Revision, "成功提交必须换新令牌")
+}
+
+// TestFileRepository_UpdateIfRevision_RenameFailureRollsBackRow 覆盖 B-03：CAS 命中后
+// os.Rename 失败必须触发真实 SQL 回滚，数据库里的 revision 与 content_hash 保持原值，
+// 而不是留下"新哈希已写入、磁盘还是旧内容"的库盘不一致。
+// A rename failure after a successful CAS must roll the row back: revision and
+// content_hash keep their previous values instead of claiming the new payload landed.
+func TestFileRepository_UpdateIfRevision_RenameFailureRollsBackRow(t *testing.T) {
+	fileRepo, cleanup := setupFileRepoTestEnv(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const uid = int64(1)
+
+	tmpDir := t.TempDir()
+	initialPayload := filepath.Join(tmpDir, "initial.dat")
+	require.NoError(t, os.WriteFile(initialPayload, []byte("ORIGINAL-BYTES"), 0644))
+	created, err := fileRepo.Create(ctx, &domain.File{
+		VaultID: 1, Path: "c.png", PathHash: "ph-c", ContentHash: "H1",
+		SavePath: initialPayload, Size: 14, Mtime: 1000, Ctime: 1000, Action: domain.FileActionCreate,
+	}, uid)
+	require.NoError(t, err)
+	stored, err := fileRepo.GetByID(ctx, created.ID, uid)
+	require.NoError(t, err)
+	require.Equal(t, "H1", stored.ContentHash)
+
+	// 不存在的临时路径：CAS 成功之后 os.Rename 必然失败，用于验证事务回滚。
+	// A missing temp path makes os.Rename fail deterministically after the CAS hits.
+	missing := filepath.Join(tmpDir, "missing-dir", "never.dat")
+	ok, err := fileRepo.UpdateIfRevision(ctx, &domain.File{
+		ID: created.ID, VaultID: 1, Path: "c.png", PathHash: "ph-c", ContentHash: "H2",
+		SavePath: missing, Size: 17, Mtime: 2000, Ctime: 1000, Action: domain.FileActionCreate,
+	}, created.Revision, uid)
+	require.Error(t, err, "os.Rename 失败必须向调用方返回错误")
+	require.False(t, ok, "回滚后不得声称更新成功")
+
+	still, err := fileRepo.GetByID(ctx, created.ID, uid)
+	require.NoError(t, err)
+	require.Equal(t, "H1", still.ContentHash, "Rename 失败后 content_hash 必须回滚为原值")
+	require.Equal(t, created.Revision, still.Revision, "Rename 失败后 revision 必须回滚为原值")
+
+	// 磁盘上的旧附件保持原样。
+	afterBytes, err := os.ReadFile(stored.SavePath)
+	require.NoError(t, err)
+	require.Equal(t, []byte("ORIGINAL-BYTES"), afterBytes)
+}

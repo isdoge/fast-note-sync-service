@@ -118,14 +118,12 @@ func (m *MockNoteRepository) Delete(ctx context.Context, id, vaultID, uid int64)
 	return args.Error(0)
 }
 
-func (m *MockNoteRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
+func (m *MockNoteRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) ([]int64, error) {
 	args := m.Called(ctx, timestamp, uid)
-	return args.Error(0)
-}
-
-func (m *MockNoteRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
-	args := m.Called(ctx, timestamp)
-	return args.Error(0)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]int64), args.Error(1)
 }
 
 func (m *MockNoteRepository) List(ctx context.Context, vaultID int64, page, pageSize int, uid int64, keyword string, isRecycle bool, searchMode string, searchContent bool, sortBy string, sortOrder string, paths []string) ([]*domain.Note, error) {
@@ -315,4 +313,18 @@ func (m *MockNoteRepository) ListByPathsMeta(ctx context.Context, paths []string
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(map[string]*domain.Note), args.Error(1)
+}
+
+// UpdateIfRevision is a CAS update used by the baseline-mode conditional commit.
+// UpdateIfRevision 是基线模式条件提交使用的 CAS 更新。
+func (m *MockNoteRepository) UpdateIfRevision(ctx context.Context, note *domain.Note, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, note, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
+}
+
+// UpdateDeleteIfRevision is a CAS soft-delete used by the baseline-mode conditional commit.
+// UpdateDeleteIfRevision 是基线模式条件提交使用的 CAS 软删除。
+func (m *MockNoteRepository) UpdateDeleteIfRevision(ctx context.Context, note *domain.Note, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, note, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
 }

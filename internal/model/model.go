@@ -69,5 +69,33 @@ func AutoMigrate(db *gorm.DB, key string) error {
 			return err
 		}
 	}
-	return autoMigrateModel(db, value)
+	if err := autoMigrateModel(db, value); err != nil {
+		return err
+	}
+	// 阶段 D：升级后为存量行补 128 位 revision 令牌（跨方言可移植的 Go 分批回填），
+	// 保证新模式连接读取到的每一行活跃记录与墓碑都有非空令牌。
+	// Stage D: backfill 128-bit revision tokens for pre-existing rows after the
+	// migration (portable, batched Go loop) so every live row and tombstone read by a
+	// baseline-mode connection carries a non-empty token.
+	if table := revisionTableOf(key); table != "" {
+		return BackfillRevisionTokens(db, table)
+	}
+	return nil
+}
+
+// revisionTableOf maps an AutoMigrate model key to its revision-bearing table.
+// revisionTableOf 把 AutoMigrate 的模型 key 映射到带版本令牌的表名。
+func revisionTableOf(key string) string {
+	switch key {
+	case "Note":
+		return TableNameNote
+	case "File":
+		return TableNameFile
+	case "Setting":
+		return TableNameSetting
+	case "Folder":
+		return TableNameFolder
+	default:
+		return ""
+	}
 }

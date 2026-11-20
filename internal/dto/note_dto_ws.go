@@ -24,6 +24,7 @@ type NoteSyncModifyMessage struct {
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	Revision         string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the confirmed state // 已确认状态的服务端版本令牌
 }
 
 // NoteSyncEndMessage message structure returned when sync ends
@@ -34,6 +35,7 @@ type NoteSyncEndMessage struct {
 	NeedModifyCount    int64 `json:"needModifyCount" form:"needModifyCount" example:"5"`       // Number of notes needing modification // 需要修改的数量
 	NeedSyncMtimeCount int64 `json:"needSyncMtimeCount" form:"needSyncMtimeCount" example:"2"` // Number of notes needing mtime sync // 需要同步修改时间的数量
 	NeedDeleteCount    int64 `json:"needDeleteCount" form:"needDeleteCount" example:"0"`       // Number of notes needing deletion // 需要删除的数量
+	NeedConflictCount  int64 `json:"needConflictCount" form:"needConflictCount" example:"0"`   // Persisted conflicts in this round // 本轮已持久化的冲突数量
 }
 
 // NoteSyncNeedPushMessage server informs client of file info needing push
@@ -41,6 +43,11 @@ type NoteSyncEndMessage struct {
 type NoteSyncNeedPushMessage struct {
 	Path     string `json:"path" form:"path" example:"ReadMe.md"`        // Note path // 笔记路径
 	PathHash string `json:"pathHash" form:"pathHash" example:"nhash123"` // Path hash // 路径哈希值
+	// BaseMissing marks a 530 payload whose baseContent is not a proven common ancestor.
+	// It must never be inferred from baseContent == "" (empty text is a legitimate base).
+	// BaseMissing 标记 530 载荷中的 baseContent 不是已证实的共同祖先；不得用 baseContent == "" 推断
+	//（空文本本身是合法基线）。
+	BaseMissing bool `json:"baseMissing" form:"baseMissing" example:"false"`
 }
 
 // NoteSyncMtimeMessage message structure for updating mtime during sync
@@ -50,6 +57,8 @@ type NoteSyncMtimeMessage struct {
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	ContentHash      string `json:"contentHash,omitempty" example:"chash456"`              // Confirmed content hash // 确认一致的内容哈希
+	Revision         string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Confirmed server revision token // 确认的服务端版本令牌
 }
 
 // NoteSyncDeleteMessage message structure for note deletion
@@ -61,14 +70,18 @@ type NoteSyncDeleteMessage struct {
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	Size             int64  `json:"size" form:"size" example:"1024"`                       // File size // 文件大小
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	Revision         string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Revision token of the tombstone state // 墓碑状态的版本令牌
+	ContentHash      string `json:"contentHash,omitempty" example:"chash456"`              // Last content hash before deletion // 删除前最后内容哈希
 }
 
 // NoteModifyAckMessage note modify operation ACK, sent back to sender after server processes NoteModify
 // NoteModifyAckMessage 笔记修改操作 ACK，服务端处理完 NoteModify 后回发给发送方
 type NoteModifyAckMessage struct {
-	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
-	Path     string `json:"path"`     // Note path // 笔记路径
-	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	LastTime    int64  `json:"lastTime"`                                          // Server write timestamp // 服务端写入时间戳
+	Path        string `json:"path"`                                              // Note path // 笔记路径
+	PathHash    string `json:"pathHash"`                                          // Path hash // 路径哈希值
+	ContentHash string `json:"contentHash,omitempty" example:"chash456"`          // Confirmed content hash // 确认的内容哈希
+	Revision    string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Confirmed server revision token // 确认的服务端版本令牌
 }
 
 // NoteRenameAckMessage note rename operation ACK, sent back to sender after server processes NoteRename
@@ -85,4 +98,5 @@ type NoteDeleteAckMessage struct {
 	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
 	Path     string `json:"path"`     // Note path // 笔记路径
 	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	Revision string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Revision token after deletion // 删除后的版本令牌
 }

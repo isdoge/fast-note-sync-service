@@ -25,10 +25,12 @@ type File struct {
 	ContentHash      string
 	SavePath         string
 	Rename           int64
+	ContentPurged    int64
 	Size             int64
 	Ctime            int64
 	Mtime            int64
 	UpdatedTimestamp int64
+	Revision         string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -85,6 +87,9 @@ type FileRepository interface {
 	// Update 更新文件
 	Update(ctx context.Context, file *File, uid int64) (*File, error)
 
+	// UpdateIfRevision 仅在行仍携带 expectedRevision 时更新附件（CAS）。
+	UpdateIfRevision(ctx context.Context, file *File, expectedRevision string, uid int64) (bool, error)
+
 	// UpdateMtime 更新文件修改时间
 	UpdateMtime(ctx context.Context, mtime int64, id, uid int64) error
 
@@ -100,11 +105,15 @@ type FileRepository interface {
 	// Delete 物理删除文件
 	Delete(ctx context.Context, id, uid int64) error
 
-	// DeletePhysicalByTime 根据时间物理删除已标记删除的文件
-	DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error
+	// PurgeContentByTime 释放早于给定时间的已删除附件的磁盘文件，保留轻量墓碑行
+	// （action=delete、content_purged=1、rename=2），且不刷新 updated_timestamp。
+	// PurgeContentByTime releases stored payloads of expired tombstones while keeping a
+	// lightweight metadata row (action=delete, content_purged=1, rename=2) and leaving
+	// updated_timestamp untouched.
+	PurgeContentByTime(ctx context.Context, timestamp, uid int64) error
 
-	// DeletePhysicalByTimeAll 根据时间物理删除所有用户的已标记删除的文件
-	DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error
+	// PurgeContentByTimeAll 对所有用户执行 PurgeContentByTime
+	PurgeContentByTimeAll(ctx context.Context, timestamp int64) error
 
 	// List 分页获取文件列表
 	List(ctx context.Context, vaultID int64, page, pageSize int, uid int64, keyword string, isRecycle bool, sortBy string, sortOrder string) ([]*File, error)

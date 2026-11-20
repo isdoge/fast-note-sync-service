@@ -11,6 +11,7 @@ type SettingSyncModifyMessage struct {
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	Revision         string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the confirmed state // 已确认状态的服务端版本令牌
 }
 
 // SettingSyncEndMessage defines the setting sync end message structure
@@ -21,6 +22,7 @@ type SettingSyncEndMessage struct {
 	NeedModifyCount    int64 `json:"needModifyCount" form:"needModifyCount" example:"1"`       // Number of settings needing modification // 需要修改的数量
 	NeedSyncMtimeCount int64 `json:"needSyncMtimeCount" form:"needSyncMtimeCount" example:"1"` // Number of settings needing mtime sync // 需要同步修改时间的数量
 	NeedDeleteCount    int64 `json:"needDeleteCount" form:"needDeleteCount" example:"0"`       // Number of settings needing deletion // 需要删除的数量
+	NeedConflictCount  int64 `json:"needConflictCount" form:"needConflictCount" example:"0"`   // Persisted conflicts in this round // 本轮已持久化的冲突数量
 }
 
 // SettingSyncNeedUploadMessage defines the message structure informing client that setting upload is needed during sync
@@ -36,6 +38,8 @@ type SettingSyncMtimeMessage struct {
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	ContentHash      string `json:"contentHash,omitempty" example:"chash456"`              // Confirmed content hash // 确认一致的内容哈希
+	Revision         string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Confirmed server revision token // 确认的服务端版本令牌
 }
 
 // SettingSyncDeleteMessage defines the message structure for setting deletion during sync
@@ -46,14 +50,18 @@ type SettingSyncDeleteMessage struct {
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	Revision         string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Revision token of the tombstone state // 墓碑状态的版本令牌
+	ContentHash      string `json:"contentHash,omitempty" example:"chash456"`              // Last content hash before deletion // 删除前最后内容哈希
 }
 
 // SettingModifyAckMessage setting modify operation ACK
 // SettingModifyAckMessage 配置修改操作 ACK
 type SettingModifyAckMessage struct {
-	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
-	Path     string `json:"path"`     // Setting path // 配置路径
-	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	LastTime    int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
+	Path        string `json:"path"`     // Setting path // 配置路径
+	PathHash    string `json:"pathHash"` // Path hash // 路径哈希值
+	ContentHash string `json:"contentHash,omitempty" example:"chash456"` // Confirmed content hash // 确认的内容哈希
+	Revision    string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Confirmed server revision token // 确认的服务端版本令牌
 }
 
 // SettingDeleteAckMessage setting delete operation ACK
@@ -62,4 +70,5 @@ type SettingDeleteAckMessage struct {
 	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
 	Path     string `json:"path"`     // Setting path // 配置路径
 	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	Revision string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Revision token after deletion // 删除后的版本令牌
 }

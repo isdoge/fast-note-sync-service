@@ -64,6 +64,7 @@
 
 - **先备份**数据目录与配置。首次启动 v3.7.0 会执行三个一次性数据迁移（标签索引回填、笔记大小回填、秒级时间戳转毫秒）。v3.8.0 首次启动还会执行一次路径规范化迁移，把历史数据里带反斜杠的路径改成正斜杠；目标路径已被占用时，带反斜杠的那一条会改名为 `*.conflict.<时间戳>.*` 保留，不覆盖、不删除。既有 MySQL / MariaDB 部署升级到 v3.8.0 后，首次启动会将路径与库名列改为区分大小写的二进制类型（`varbinary(1024)` / `varbinary(255)`），并在改列前自动预检字节长度；若历史数据存在超过 1024 UTF-8 字节的超长路径（或超过 255 字节的库名），预检会提示具体表名与记录 ID 并中止迁移，缩短后再启动即可。
 - **Docker 部署**：把镜像地址换成 `ghcr.io/isdoge/fast-note-sync-service:latest`，数据卷和配置不用动。
+- **v3.8.4 首次启动**会为已有的每条笔记、附件、配置与目录回填一个 128 位随机 `revision` 版本令牌（SQLite、PostgreSQL 与 MySQL / MariaDB 均适用），无需手工操作；首次启动会把每行各写一次，数据量大的实例请先备份数据库。
 - **二进制部署**：从本仓库的 Releases 下载对应平台的包替换原程序，或重新执行下文的一键脚本。
 - **行为变化**（节选，完整内容见更新日志的「变更」与「安全」部分）：
   - `trusted-proxies` 默认只信任回环地址。同机 Docker + Nginx 部署且令牌绑定了 IP 时，需要把网关地址加入 `trusted-proxies`。
@@ -117,6 +118,7 @@
   * 当附件和笔记发生变更时，自动更新并推送至远程 Git 仓库。
   * 仓库地址支持 http / https；内网仓库需要加入白名单 `git.allowed-private-hosts`。
   * 任务结束后自动释放系统内存。
+  * 支持子目录沙箱与静态博客发布（Astro / Firefly）：只导出指定源目录到仓库目标子目录、按 Frontmatter 过滤、导出前预检文章、把引用图片汇聚到 `./assets/`，并在真实推送后触发部署 Webhook。详见[对接 Firefly 博客运行手册](/docs/runbook/firefly-blog.zh-CN.md)。
 
 * **☁️ 多存储备份与单向镜像同步**：
   * 适配 S3/OSS/R2/WebDAV/本地 等多种存储协议。
@@ -152,7 +154,7 @@
 - [ ] 更多的内网穿透(中继网关)的支持
 - [x] 快速部署计划
   * 只需要提供服务器地址(公网), 账号密码 即可完成 FNS 服务端的部署
-- [ ] 优化现有的离线笔记合并方案, 增加冲突处理机制
+- [x] 优化现有的离线笔记合并方案, 增加冲突处理机制
 
 路线图沿用原作者的规划。独立维护版会按这份清单逐项推进，完成一项勾选一项。
 
@@ -265,6 +267,7 @@ docker compose up -d
 - [升级指南](/docs/runbook/upgrade.zh-CN.md)
 - [排错与错误码](/docs/runbook/troubleshooting.zh-CN.md)
 - [远程部署](/docs/runbook/remote-deploy.zh-CN.md)
+- [对接 Firefly 博客（回环 Git 网关）](/docs/runbook/firefly-blog.zh-CN.md)
 
 ## 🌐 Nginx 反代配置示例
 

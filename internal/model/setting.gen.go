@@ -14,6 +14,7 @@ type Setting struct {
 	VaultID          int64      `gorm:"column:vault_id;not null;default:0" json:"vaultId" form:"vaultId"`
 	Action           string     `gorm:"column:action;default:''" json:"action" form:"action"`
 	Rename           int64      `gorm:"column:rename;default:0" json:"rename" form:"rename"`
+	ContentPurged    int64      `gorm:"column:content_purged;not null;default:0" json:"contentPurged" form:"contentPurged"`
 	Path             string     `gorm:"column:path;type:varchar(1024);mysqlType:varbinary(1024);index:idx_setting_id_path,priority:2,length:255;default:''" json:"path" form:"path"`
 	PathHash         string     `gorm:"column:path_hash;type:varchar(1024);mysqlType:varbinary(1024);index:idx_setting_id_path_hash,priority:2,length:255;default:''" json:"pathHash" form:"pathHash"`
 	Content          string     `gorm:"column:content;default:''" json:"content" form:"content"`
@@ -24,6 +25,7 @@ type Setting struct {
 	UpdatedTimestamp int64      `gorm:"column:updated_timestamp;index:idx_setting_id_updated_timestamp,priority:2;default:0" json:"updatedTimestamp" form:"updatedTimestamp"`
 	CreatedAt        timex.Time `gorm:"column:created_at;default:NULL;autoCreateTime:false" json:"createdAt" form:"createdAt"`
 	UpdatedAt        timex.Time `gorm:"column:updated_at;index:idx_setting_id_updated_at,priority:2;default:NULL;autoUpdateTime:false" json:"updatedAt" form:"updatedAt"`
+	Revision         string     `gorm:"column:revision;type:varchar(64);not null;default:''" json:"revision" form:"revision"`
 }
 
 // TableName Setting's table name

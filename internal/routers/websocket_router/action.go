@@ -167,6 +167,10 @@ const (
 	// NoteSyncBatchAck note sync batch receive ack
 	// NoteSyncBatchAck 笔记分批同步接收确认，服务端接收到中间批次后发回客户端
 	NoteSyncBatchAck WebSocketSendAction = "NoteSyncBatchAck"
+	// SyncConflict unified baseline conflict notification; only sent to connections that
+	// negotiated syncBaselineVersion >= 1
+	// SyncConflict 统一基线冲突通知；仅发送给已协商 syncBaselineVersion >= 1 的连接
+	SyncConflict WebSocketSendAction = "SyncConflict"
 
 	// ---------------- File ----------------
 

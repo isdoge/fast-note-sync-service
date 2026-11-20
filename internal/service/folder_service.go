@@ -34,6 +34,7 @@ type FolderService interface {
 	CleanupEmptyAncestors(ctx context.Context, uid int64, vaultID int64, resourcePath string) error
 	SyncResourceFID(ctx context.Context, uid int64, vaultID int64, noteIDs []int64, fileIDs []int64) error
 	IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64, paths ...string) (bool, error)
+	GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FolderDTO, error)
 	GetTree(ctx context.Context, uid int64, params *dto.FolderTreeRequest) (*dto.FolderTreeResponse, error)
 	CleanDuplicateFolders(ctx context.Context, uid int64, vaultID int64) error
 	WithClient(clientType, clientName, clientVersion string) FolderService
@@ -81,6 +82,7 @@ func (s *folderService) domainToDTO(f *domain.Folder) *dto.FolderDTO {
 		FID:              f.FID,
 		Ctime:            f.Ctime,
 		Mtime:            f.Mtime,
+		Revision:         f.Revision,
 		UpdatedTimestamp: f.UpdatedTimestamp,
 		UpdatedAt:        timex.Time(f.UpdatedAt),
 		CreatedAt:        timex.Time(f.CreatedAt),
@@ -142,6 +144,34 @@ func (s *folderService) UpdateOrCreate(ctx context.Context, uid int64, params *d
 		params.PathHash = util.EncodeHash32(params.Path)
 	}
 
+	// 基线模式条件提交：目录没有内容哈希，只按 BaseRevision 判断。服务端活跃目录要求
+	// 令牌匹配；服务端墓碑要求用户明确选择恢复且令牌匹配；服务端不存在时允许创建。
+	// Baseline conditional commit: folders have no content hash, so only BaseRevision
+	// decides. A live folder requires a matching revision; a tombstone requires an
+	// explicit resolution with a matching revision; a missing row may be created.
+	if params.Baseline != nil {
+		current, getErr := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+		switch {
+		case getErr != nil && errors.Is(getErr, gorm.ErrRecordNotFound):
+			if params.Baseline.BaseRevision != "" && !params.Baseline.IsConflictResolved {
+				return nil, baselineConflictFromFolder(dto.BaselineRejectServerMissing, nil)
+			}
+		case getErr != nil:
+			return nil, code.ErrorDBQuery.WithDetails(getErr.Error())
+		case current.Action == domain.FolderActionDelete:
+			if !params.Baseline.IsConflictResolved {
+				return nil, baselineConflictFromFolder(dto.BaselineRejectRemoteDeleted, current)
+			}
+			if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != current.Revision {
+				return nil, baselineConflictFromFolder(dto.BaselineRejectRevisionMoved, current)
+			}
+		default:
+			if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != current.Revision {
+				return nil, baselineConflictFromFolder(dto.BaselineRejectRevisionMoved, current)
+			}
+		}
+	}
+
 	// Unified call to EnsurePathFID
 	// 统一调用 EnsurePathFID
 	fid, err := s.EnsurePathFID(ctx, uid, vaultID, params.Path)
@@ -163,6 +193,31 @@ func (s *folderService) UpdateOrCreate(ctx context.Context, uid int64, params *d
 	}
 
 	return s.domainToDTO(f), nil
+}
+
+// GetPathsMetaBatch 按完整路径批量获取目录元数据（含墓碑），供增量同步窗口外的路径补查。
+// GetPathsMetaBatch batch-loads folder metadata (tombstones included) for exact paths
+// so paths outside the incremental window are never mistaken for absent ones.
+func (s *folderService) GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FolderDTO, error) {
+	result := make(map[string]*dto.FolderDTO, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
+	if err != nil {
+		return nil, err
+	}
+
+	metaMap, err := s.folderRepo.ListByPathsMeta(ctx, paths, vaultID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	for path, f := range metaMap {
+		result[path] = s.domainToDTO(f)
+	}
+	return result, nil
 }
 
 // IsStaleRevive reports whether a client-reported folder would be a stale
@@ -214,18 +269,52 @@ func (s *folderService) Delete(ctx context.Context, uid int64, params *dto.Folde
 	f, err := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 基线模式删除必须幂等：目录不存在（上传未完成或已物理清理）也返回成功，
+			// 与 note/file 的删除语义对齐，否则客户端会一直重试。
+			// Baseline deletes must be idempotent: a missing folder (upload not finished or
+			// physically cleaned) is still a success, matching note/file deletion.
+			if params.Baseline != nil {
+				return &dto.FolderDTO{Path: params.Path, PathHash: params.PathHash, Unchanged: true}, nil
+			}
 			return nil, code.ErrorFolderNotFound
 		}
 		return nil, code.ErrorFolderGetFailed.WithDetails(err.Error())
+	}
+
+	// 基线模式实时删除：已是墓碑即幂等成功；活跃行只有在携带匹配的 BaseRevision 时
+	// 才能条件删除，令牌不匹配统一按 local_deleted 报告。
+	// Baseline realtime delete: an existing tombstone is an idempotent success; a live
+	// folder may only be conditionally deleted with a matching BaseRevision, and a token
+	// mismatch is reported as local_deleted.
+	if params.Baseline != nil {
+		if f.Action == domain.FolderActionDelete {
+			res := s.domainToDTO(f)
+			res.Unchanged = true
+			return res, nil
+		}
+		if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != f.Revision {
+			return nil, baselineConflictFromFolder(dto.SyncConflictReasonLocalDeleted, f)
+		}
 	}
 
 	// Update to deleted status
 	// 更新为删除状态
 	f.Action = domain.FolderActionDelete
 	f.UpdatedTimestamp = time.Now().UnixMilli()
-	_, err = s.folderRepo.Update(ctx, f, uid)
-	if err != nil {
-		return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
+	if params.Baseline != nil {
+		ok, err := s.folderRepo.UpdateIfRevision(ctx, f, params.Baseline.BaseRevision, uid)
+		if err != nil {
+			return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
+		}
+		if !ok {
+			latest, _ := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+			return nil, baselineConflictFromFolder(dto.SyncConflictReasonLocalDeleted, latest)
+		}
+	} else {
+		_, err = s.folderRepo.Update(ctx, f, uid)
+		if err != nil {
+			return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
+		}
 	}
 
 	if s.backupService != nil {

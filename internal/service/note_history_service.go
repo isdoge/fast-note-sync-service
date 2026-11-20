@@ -234,6 +234,13 @@ func (s *noteHistoryService) ProcessDelay(ctx context.Context, noteID int64, uid
 		return code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
+	// 正文已超过保留期清理的墓碑没有内容可比较；直接返回，避免为已删除资源生成空历史。
+	// A tombstone whose body was purged has nothing to diff; return early instead of
+	// creating empty history for a deleted resource.
+	if note.ContentPurged != 0 {
+		return nil
+	}
+
 	if note.Content == note.ContentLastSnapshot {
 		// 内容未变但哈希不一致（如空笔记：EncodeHash32("") 为 "0"，快照哈希默认为 ""）时同步快照哈希，
 		// 否则该笔记每次启动都会被 ListContentUnchanged 重新调度（#499）
@@ -390,6 +397,9 @@ func (s *noteHistoryService) RestoreFromHistory(ctx context.Context, uid int64, 
 	note.Mtime = timex.Now().UnixMilli()
 	note.Action = domain.NoteActionModify
 	note.Rename = 0
+	// 从历史版本恢复会写回真实正文，因此同时清除“正文已清理”标记。
+	// Restoring from history writes real content back, so clear the purged marker.
+	note.ContentPurged = 0
 	// 恢复后正文长度已变，Size 必须随内容重算，否则列表/MCP note_list 报告旧值（#360）
 	// The restored body length differs; Size must follow the content or list/MCP note_list
 	// keeps reporting the stale value (#360)

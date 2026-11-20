@@ -172,6 +172,7 @@ func (s *fileService) domainToDTO(file *domain.File) *dto.FileDTO {
 		Size:             file.Size,
 		Ctime:            file.Ctime,
 		Mtime:            file.Mtime,
+		Revision:         file.Revision,
 		UpdatedTimestamp: file.UpdatedTimestamp,
 	}
 }
@@ -301,6 +302,19 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 				return &result{isNew: isNew, dto: s.domainToDTO(file)}, nil
 			}
 
+			// 基线模式墓碑闸门：服务端墓碑不得被静默复活；只有用户明确选择恢复、且携带的
+			// 令牌仍等于当前墓碑令牌时才允许条件复活。
+			// Baseline tombstone gate: never silently revive a server tombstone; only an
+			// explicit user choice carrying the tombstone's current revision may.
+			if params.Baseline != nil && file.Action == domain.FileActionDelete {
+				if !params.Baseline.IsConflictResolved {
+					return nil, baselineConflictFromFile(dto.BaselineRejectRemoteDeleted, file)
+				}
+				if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != file.Revision {
+					return nil, baselineConflictFromFile(dto.BaselineRejectRevisionMoved, file)
+				}
+			}
+
 			// Set action
 			// 设置 action
 			var action domain.FileAction
@@ -336,10 +350,44 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 			file.Ctime = params.Ctime
 			file.Action = action
 			file.Rename = 0
+			// 复用墓碑行复活为存活记录时清掉“正文已清理”标记。
+			// Clear the purged marker when a tombstone row is revived.
+			file.ContentPurged = 0
 
-			updated, err := s.fileRepo.Update(ctx, file, uid)
-			if err != nil {
-				return nil, code.ErrorDBQuery.WithDetails(err.Error())
+			var updated *domain.File
+			if params.Baseline != nil {
+				// 有基线更新：仅当行仍带客户端确认的令牌时才原子写入；预检后被抢先改动
+				// 则重新读取最新状态报冲突。
+				// Baseline update: write atomically only while the row still carries the
+				// client's revision; a concurrent change after the precheck becomes a conflict.
+				if params.Baseline.BaseRevision == "" {
+					return nil, baselineConflictFromFile(dto.BaselineRejectRevisionMoved, file)
+				}
+				ok, err := s.fileRepo.UpdateIfRevision(ctx, file, params.Baseline.BaseRevision, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+				if !ok {
+					latest, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+					if latest == nil {
+						latest = file
+					}
+					reason := dto.BaselineRejectRevisionMoved
+					if latest.ContentHash != params.Baseline.BaseHash {
+						reason = dto.BaselineRejectBothModified
+					}
+					return nil, baselineConflictFromFile(reason, latest)
+				}
+				updated, err = s.fileRepo.GetByID(ctx, file.ID, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+			} else {
+				var err error
+				updated, err = s.fileRepo.Update(ctx, file, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
 			}
 
 			// Log content modify // 记录内容变更日志
@@ -362,6 +410,11 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 
 		// Create new file // 创建新文件
 		isNew = true
+		if params.Baseline != nil {
+			if err := checkBaselineCreate(params.Baseline); err != nil {
+				return nil, err
+			}
+		}
 		newFile := &domain.File{
 			VaultID:     vaultID,
 			Path:        params.Path,
@@ -435,13 +488,43 @@ func (s *fileService) Delete(ctx context.Context, uid int64, params *dto.FileDel
 		return res, nil
 	}
 
+	// 基线模式实时删除：活跃行只有在客户端携带匹配的版本令牌（内容资源还需匹配
+	// 内容哈希）时才能软删除，否则拒绝并报冲突，保持服务端活跃。
+	// Baseline realtime delete: a live row may only be soft-deleted when the client
+	// carries a matching revision (and matching content hash); otherwise reject with a
+	// conflict and keep the server row live.
+	if params.Baseline != nil {
+		if err := checkBaselineDelete(params.Baseline, file.Revision, file.ContentHash, func(reason string) error {
+			return baselineConflictFromFile(reason, file)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	// Update to deleted status // 更新为删除状态
 	file.Action = domain.FileActionDelete
 	file.Rename = 0
 
-	updated, err := s.fileRepo.Update(ctx, file, uid)
-	if err != nil {
-		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	var updated *domain.File
+	if params.Baseline != nil {
+		ok, err := s.fileRepo.UpdateIfRevision(ctx, file, params.Baseline.BaseRevision, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+		if !ok {
+			latest, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+			return nil, baselineConflictFromFile(dto.SyncConflictReasonLocalDeleted, latest)
+		}
+		updated, err = s.fileRepo.GetByID(ctx, file.ID, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+	} else {
+		var err error
+		updated, err = s.fileRepo.Update(ctx, file, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
 	}
 
 	// Log soft delete // 记录软删除日志
@@ -484,10 +567,19 @@ func (s *fileService) Restore(ctx context.Context, uid int64, params *dto.FileRe
 		return nil, code.ErrorNoteNotFound
 	}
 
+	// 正文已清理的墓碑或已手动清空回收站的条目不可恢复：恢复只会得到一个
+	// 指向不存在文件的空记录。
+	// Purged tombstones (or entries removed by a manual recycle clear) cannot be
+	// restored: doing so would yield a record pointing at a missing payload.
+	if file.ContentPurged != 0 || file.Rename == 2 {
+		return nil, code.ErrorContentPurged
+	}
+
 	// Update to modified status and update modification time
 	file.Action = domain.FileActionModify
 	file.Mtime = time.Now().UnixMilli()
 	file.Rename = 0
+	file.ContentPurged = 0
 
 	updated, err := s.fileRepo.Update(ctx, file, uid)
 	if err != nil {
@@ -644,13 +736,14 @@ func (s *fileService) Cleanup(ctx context.Context, uid int64) error {
 	}
 
 	cutoffTime := time.Now().Add(-retentionDuration).UnixMilli()
-	return s.fileRepo.DeletePhysicalByTime(ctx, cutoffTime, uid)
+	return s.fileRepo.PurgeContentByTime(ctx, cutoffTime, uid)
 }
 
-// CleanupByTime cleans up expired soft-deleted files for all users by cutoff time
-// CleanupByTime 按截止时间清理所有用户的过期软删除文件
+// CleanupByTime releases stored payloads of expired attachment tombstones for all users
+// by cutoff time, keeping the lightweight metadata rows.
+// CleanupByTime 按截止时间清理所有用户的过期软删除附件载荷，保留轻量墓碑元数据行。
 func (s *fileService) CleanupByTime(ctx context.Context, cutoffTime int64) error {
-	return s.fileRepo.DeletePhysicalByTimeAll(ctx, cutoffTime)
+	return s.fileRepo.PurgeContentByTimeAll(ctx, cutoffTime)
 }
 
 // GetContent retrieves raw content of note or attachment file
@@ -692,6 +785,12 @@ func (s *fileService) GetContent(ctx context.Context, uid int64, params *dto.Fil
 				if file.Action == domain.FileActionDelete {
 					return nil, "", 0, "", code.ErrorFileNotFound
 				}
+			}
+
+			// 正文已清理的墓碑没有可下载内容：明确报“已清理”而不是磁盘读取失败。
+			// A purged tombstone has no payload: report "purged" instead of a disk read error.
+			if file.ContentPurged != 0 || file.Rename == 2 {
+				return nil, "", 0, "", code.ErrorContentPurged
 			}
 
 			// Identify file MIME type
@@ -766,6 +865,12 @@ func (s *fileService) GetContentInfo(ctx context.Context, uid int64, params *dto
 					return "", "", 0, "", "", code.ErrorFileNotFound
 				}
 			}
+			// 正文已清理的墓碑没有可下载内容：明确报“已清理”而不是磁盘读取失败。
+			// A purged tombstone has no payload: report "purged" instead of a disk read error.
+			if file.ContentPurged != 0 || file.Rename == 2 {
+				return "", "", 0, "", "", code.ErrorContentPurged
+			}
+
 			// Identify file MIME type
 			// 识别文件 MIME 类型
 			ext := filepath.Ext(file.Path)
@@ -941,6 +1046,9 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 			// 复用已删除的记录
 			existFile.Action = domain.FileActionCreate
 			existFile.Rename = 0 // Reset rename flag to ensure correct file count statistics
+			// 复用墓碑行作为重命名目标时同样要清除“正文已清理”标记。
+			// Reusing a tombstone row as the rename target must clear the purged marker too.
+			existFile.ContentPurged = 0
 			existFile.Path = newPath
 			existFile.PathHash = newPathHash
 			newPathDir := ""

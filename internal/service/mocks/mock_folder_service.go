@@ -121,6 +121,14 @@ func (m *MockFolderService) IsStaleRevive(ctx context.Context, uid int64, vault 
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *MockFolderService) GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FolderDTO, error) {
+	args := m.Called(ctx, uid, vault, paths)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[string]*dto.FolderDTO), args.Error(1)
+}
+
 func (m *MockFolderService) GetTree(ctx context.Context, uid int64, params *dto.FolderTreeRequest) (*dto.FolderTreeResponse, error) {
 	args := m.Called(ctx, uid, params)
 	if v := args.Get(0); v != nil {

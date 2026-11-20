@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -181,7 +184,14 @@ func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService 
 	}
 
 	if dbToken.Vaults != "" {
-		targetVault := app.RequestParam(c, "vault")
+		targetVault, mismatch := extractRequestedVault(c)
+		// Query/Form 与 JSON Body 指向不同库：这是典型的参数遮蔽绕过尝试，直接拒绝，
+		// 绝不挑其中一个去校验、让另一个继续生效。
+		// Query/Form and JSON body name different vaults: a classic parameter-shadowing
+		// bypass. Reject outright instead of validating one and letting the other through.
+		if mismatch {
+			return nil, "", "", nil, code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: conflicting vault parameters")
+		}
 		targets := []string{targetVault}
 		// The event endpoint takes one complete vault name per repeated vault= parameter
 		// (commas are legal in vault names), so every value is checked individually.
@@ -262,6 +272,104 @@ func RevalidateUserToken(c *gin.Context, secretKey string, tokenService service.
 	return nil
 }
 
+// extractRequestedVault resolves the vault a request addresses. It collects every
+// non-empty vault string from the URL query, the form body and the top-level JSON
+// body fields, comparing keys case-insensitively. If more than one distinct vault
+// name appears the request is rejected with mismatch=true: a caller must never be
+// able to get one value checked while the handler binds a different one (e.g.
+// ?VAULT=Allowed&vault=Secret). A JSON value that is neither a string nor null
+// (array, object, number) is also a mismatch, since binding could coerce it into
+// a vault the middleware never validated.
+//
+// The /api/webgui/events endpoint is exempt from the query collection: it takes one
+// complete vault name per repeated vault= parameter and checks each one separately
+// in the caller, so multiple values there are legitimate.
+// extractRequestedVault 解析请求指向的库：收集 URL query、表单 body 与 JSON Body 顶层
+// 所有大小写不敏感匹配的 vault 非空字符串。出现两个及以上不同的库名即返回
+// mismatch=true —— 绝不允许"校验一个、绑定另一个"（如 ?VAULT=Allowed&vault=Secret）。
+// JSON 中匹配键的值若不是字符串或 null（数组/对象/数字），同样判为 mismatch，因为
+// 绑定层可能把它强制转换成中间件从未校验过的库名。
+// /api/webgui/events 不参与 query 收集：该端点每个重复的 vault= 参数是一个完整库名，
+// 由调用方逐个校验，多值在此合法。
+func extractRequestedVault(c *gin.Context) (vault string, mismatch bool) {
+	if c.Request == nil {
+		return "", false
+	}
+
+	values := make(map[string]struct{})
+	add := func(v string) {
+		if v != "" {
+			values[v] = struct{}{}
+		}
+	}
+
+	if c.Request.URL.Path != "/api/webgui/events" {
+		for key, list := range c.Request.URL.Query() {
+			if strings.EqualFold(key, "vault") {
+				for _, v := range list {
+					add(v)
+				}
+			}
+		}
+	}
+
+	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead && c.Request.Form != nil {
+		for key, list := range c.Request.Form {
+			if strings.EqualFold(key, "vault") {
+				for _, v := range list {
+					add(v)
+				}
+			}
+		}
+	}
+
+	if jsonBodyVaults(c, add) {
+		return "", true
+	}
+	if len(values) > 1 {
+		return "", true
+	}
+	for v := range values {
+		return v, false
+	}
+	return "", false
+}
+
+// jsonBodyVaults feeds every top-level case-insensitive "vault" field of a JSON
+// body into add, restoring the body afterwards so the handler can still bind it.
+// It reports invalid=true when a matching key holds a value that is neither a
+// string nor null.
+// jsonBodyVaults 将 JSON Body 顶层所有大小写不敏感 vault 字段的值交给 add，并复原
+// Body 供后续绑定；匹配键的值既非字符串也非 null 时返回 invalid=true。
+func jsonBodyVaults(c *gin.Context, add func(string)) (invalid bool) {
+	if c.Request == nil || c.Request.Body == nil || !strings.Contains(c.ContentType(), "application/json") {
+		return false
+	}
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return false
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	var body map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		return false
+	}
+	for key, value := range body {
+		if !strings.EqualFold(key, "vault") {
+			continue
+		}
+		switch v := value.(type) {
+		case nil:
+			// null 视作未提供。
+		case string:
+			add(v)
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 func isHeaderlessLoginTokenResourceRead(c *gin.Context) bool {
 	return c.Request.URL.Path == "/api/file" &&
 		(c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead)
@@ -315,6 +423,17 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 	switch {
 	case path == "/api/webgui/events":
 		return "note_r", nil
+
+	// ---------------- Git sync (client-safe, vault-scoped) ----------------
+	// Exactly these two routes are reachable with note_r/note_w manual tokens; the
+	// vault allowlist check below then confines them to the token's vaults. Every
+	// other /api/git-sync/* route stays config_r/config_w and WebGUI-only.
+	// 仅这两条 Git 同步路由允许 note_r/note_w 手动令牌；下方库白名单校验再把它们
+	// 限制在令牌授权的库内。其余 /api/git-sync/* 仍是 config_r/config_w 且仅限 WebGUI。
+	case path == "/api/git-sync/status":
+		return "note_r", nil
+	case path == "/api/git-sync/trigger":
+		return "note_w", nil
 	// ---------------- Vault ----------------
 	// Vault discovery is needed before REST clients can address note/file
 	// APIs; any read capability suffices so restricted read-only tokens keep

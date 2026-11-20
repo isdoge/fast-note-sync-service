@@ -64,6 +64,7 @@ The following items have been removed in this independently maintained fork. **I
 
 - **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion). On first start, v3.8.0 also runs a path normalization migration to convert backslashes in historical paths to forward slashes; if the target path is already occupied, the entry containing backslashes is renamed to `*.conflict.<timestamp>.*` and preserved without overwriting or deleting data. For existing MySQL / MariaDB deployments, the first start on v3.8.0 converts path and vault-name columns to case-sensitive binary types (`varbinary(1024)` / `varbinary(255)`) and automatically runs a byte-length precheck beforehand; if any historical path exceeds 1024 UTF-8 bytes (or any vault name exceeds 255 bytes), the precheck reports the specific table name and record ID and aborts migration — shorten the value and start again.
 - **Docker**: Change the image to `ghcr.io/isdoge/fast-note-sync-service:latest`; volumes and configuration can stay as they are.
+- **v3.8.4 first start** backfills a 128-bit random `revision` token for every existing note, attachment, setting and folder row (SQLite, PostgreSQL and MySQL / MariaDB alike). No manual step is needed, but the first start writes every row once, so back up the database first on large instances.
 - **Binary**: Download the package for your platform from this repository's Releases and replace the binary, or re-run the one-click script below.
 - **Behavior changes** (excerpt; see the "Changes" and "Security" sections of the changelog for the full list):
   - `trusted-proxies` trusts only loopback addresses by default. For same-host Docker + Nginx deployments with IP-bound tokens, add the gateway address to `trusted-proxies`.
@@ -117,6 +118,7 @@ The following items have been removed in this independently maintained fork. **I
   * Automatically updates and pushes changes to a remote Git repository when notes or attachments change.
   * Repository URLs support http / https; repositories on private networks must be added to the `git.allowed-private-hosts` whitelist.
   * Automatically releases system memory after tasks complete.
+  * Supports subdirectory sandboxes and static-blog publishing (Astro / Firefly): export only a source directory into a target subdirectory, filter by frontmatter, validate posts before export, bundle referenced images into `./assets/`, and fire a deploy webhook after a real push. See the [Firefly blog runbook](docs/runbook/firefly-blog.en.md).
 
 * **☁️ Multi-Storage Backup & One-way Mirror Sync**:
   * Adapts to S3, OSS, R2, WebDAV, local filesystem, and other storage protocols.
@@ -152,7 +154,7 @@ The following items have been removed in this independently maintained fork. **I
 - [ ] Provide support for more intranet penetration (relay gateway) options.
 - [x] Quick deployment plan:
   * Deploy the FNS server by simply providing the server address (public IP) and account credentials.
-- [ ] Optimize the existing offline note merging scheme and introduce conflict resolution mechanisms.
+- [x] Optimize the existing offline note merging scheme and introduce conflict resolution mechanisms.
 
 This roadmap follows the original author's plan. The independently maintained fork will work through the list item by item, checking off each one as it is completed.
 
@@ -265,6 +267,7 @@ More documentation:
 - [Upgrade guide](/docs/runbook/upgrade.en.md)
 - [Troubleshooting and error codes](/docs/runbook/troubleshooting.en.md)
 - [Remote deployment](/docs/runbook/remote-deploy.en.md)
+- [Publishing to a Firefly blog (loopback Git gateway)](/docs/runbook/firefly-blog.en.md)
 
 ## 🌐 Nginx Reverse Proxy Example
 

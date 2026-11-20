@@ -70,13 +70,18 @@ func (m *MockSettingRepository) Delete(ctx context.Context, id, uid int64) error
 	return args.Error(0)
 }
 
-func (m *MockSettingRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
+func (m *MockSettingRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) error {
 	args := m.Called(ctx, timestamp, uid)
 	return args.Error(0)
 }
 
-func (m *MockSettingRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
+func (m *MockSettingRepository) PurgeContentByTimeAll(ctx context.Context, timestamp int64) error {
 	args := m.Called(ctx, timestamp)
+	return args.Error(0)
+}
+
+func (m *MockSettingRepository) TombstoneByVaultID(ctx context.Context, vaultID, uid int64) error {
+	args := m.Called(ctx, vaultID, uid)
 	return args.Error(0)
 }
 
@@ -109,3 +114,10 @@ func (m *MockSettingRepository) DeleteByVaultID(ctx context.Context, vaultID, ui
 // Compile-time check: MockSettingRepository must implement domain.SettingRepository.
 // 编译时检查：MockSettingRepository 必须实现 domain.SettingRepository 接口。
 var _ domain.SettingRepository = (*MockSettingRepository)(nil)
+
+// UpdateIfRevision is a CAS update used by the baseline-mode conditional commit.
+// UpdateIfRevision 是基线模式条件提交使用的 CAS 更新。
+func (m *MockSettingRepository) UpdateIfRevision(ctx context.Context, setting *domain.Setting, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, setting, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
+}

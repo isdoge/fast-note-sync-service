@@ -224,6 +224,10 @@ type ClientInfoMessage struct {
 	IsLinux             bool   `json:"isLinux"`             // Is Linux // 是否为 Linux
 	OfflineSyncStrategy string `json:"offlineSyncStrategy"` // Offline device sync strategy "newTimeMerge" | "ignoreTimeMerge" // 离线设备同步策略 "newTimeMerge" | "ignoreTimeMerge"
 	Protobuf            bool   `json:"protobuf"`            // Use protobuf // 是否使用 protobuf
+	// SyncBaselineVersion is the sync baseline protocol version requested by the client.
+	// 0 (absent) keeps the legacy decision rules and legacy messages.
+	// SyncBaselineVersion 是客户端请求的同步基线协议版本；0（缺省）保持旧决策规则与旧消息。
+	SyncBaselineVersion uint32 `json:"syncBaselineVersion"` // Requested sync baseline version // 请求的同步基线版本
 }
 
 type WSConfig struct {
@@ -292,6 +296,8 @@ type WebsocketClient struct {
 	offlineSyncStrategy string                    // Offline device sync strategy "newTimeMerge" | "ignoreTimeMerge"; access via OfflineSyncStrategy() // 离线设备同步策略；请通过 OfflineSyncStrategy() 访问
 	acceptProtobuf      bool                      // pv2 inbound negotiation, guarded by infoMu // pv2 入站协商结果，由 infoMu 保护
 	useProtobuf         bool                      // Whether to use protobuf protocol; access via UseProtobuf() // 是否使用 protobuf 协议；请通过 UseProtobuf() 访问
+	syncBaselineVersion uint32                    // Negotiated sync baseline version for this connection, guarded by infoMu; access via SyncBaselineVersion() // 本连接已协商的同步基线版本，由 infoMu 保护；请通过 SyncBaselineVersion() 访问
+	syncBaselineDone    bool                      // Whether the first ClientInfo negotiation completed, guarded by infoMu // 首次 ClientInfo 协商是否已完成，由 infoMu 保护
 	StartTime           timex.Time                // Connection start time // 连接开始时间
 	IsFirstSync         bool                      // Whether it's the first sync // 是否是第一次同步过
 	DiffMergePaths      map[string]DiffMergeEntry // File paths needing merging // 需要合并的文件路径，包含创建时间用于超时清理
@@ -471,6 +477,59 @@ func (c *WebsocketClient) setUseProtobuf(useProtobuf bool) {
 	c.useProtobuf = useProtobuf
 }
 
+// SyncBaselineVersion returns the sync baseline protocol version in force on this connection.
+// 0 means the legacy rules; 1 means the baseline rules were confirmed by both sides.
+// Safe for concurrent use; guarded by infoMu.
+// SyncBaselineVersion 返回本连接生效的同步基线协议版本。0 表示旧规则；1 表示双方已确认基线规则。
+// 并发安全，由 infoMu 保护。
+func (c *WebsocketClient) SyncBaselineVersion() uint32 {
+	c.infoMu.RLock()
+	defer c.infoMu.RUnlock()
+	return c.syncBaselineVersion
+}
+
+// negotiateSyncBaseline records the accepted baseline version exactly once per connection.
+// The first ClientInfo wins: a later PB downgrade re-send or a background version broadcast
+// must not silently flip the protocol mode of an established connection.
+// negotiateSyncBaseline 每连接只记录一次接受的基线版本：首次 ClientInfo 生效，之后 PB 降级重发或
+// 后台版本广播不得悄悄翻转已建立的协议模式。
+func (c *WebsocketClient) negotiateSyncBaseline(requested, maxSupported uint32) uint32 {
+	accepted := requested
+	if accepted > maxSupported {
+		accepted = maxSupported
+	}
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	if !c.syncBaselineDone {
+		c.syncBaselineVersion = accepted
+		c.syncBaselineDone = true
+	}
+	return c.syncBaselineVersion
+}
+
+// SetSyncBaselineVersionForTest seeds the negotiated state for unit tests.
+// SetSyncBaselineVersionForTest 为单元测试预置协商结果。
+func (c *WebsocketClient) SetSyncBaselineVersionForTest(version uint32) {
+	c.infoMu.Lock()
+	defer c.infoMu.Unlock()
+	c.syncBaselineVersion = version
+	c.syncBaselineDone = true
+}
+
+// syncBaselineNormalizer is implemented by every request DTO that carries a baseline.
+// syncBaselineNormalizer 由所有携带基线的请求 DTO 实现。
+type syncBaselineNormalizer interface {
+	NormalizeSyncBaseline()
+}
+
+// normalizeSyncBaseline applies the DTO's own baseline normalization, if it has one.
+// normalizeSyncBaseline 调用 DTO 自带的基线规范化（若实现）。
+func normalizeSyncBaseline(obj any) {
+	if normalizer, ok := obj.(syncBaselineNormalizer); ok {
+		normalizer.NormalizeSyncBaseline()
+	}
+}
+
 // initContext initializes the context for the WebSocket connection
 // initContext 初始化 WebSocket 连接的 context
 // Called when building connection
@@ -612,6 +671,12 @@ func (c *WebsocketClient) validateBoundObject(obj any) (bool, ValidErrors) {
 	if verr := normalizeBoundPaths(obj); verr != nil {
 		return false, ValidErrors{verr}
 	}
+	// Both wire encodings must produce the same baseline semantics: baseHashMissing=true or
+	// baseHash=="" means "no trusted baseline", while the empty-text hash "0" stays a real
+	// baseline. Normalizing here means every handler downstream sees one representation.
+	// 两种编码必须得到同一基线语义：baseHashMissing=true 或 baseHash="" 表示没有可信基线，
+	// 空文本哈希 "0" 仍是有效基线。在此归一后，下游所有处理器只看到一种表示。
+	normalizeSyncBaseline(obj)
 	if verr := verifyBoundVault(c.Vaults, obj); verr != nil {
 		return false, ValidErrors{verr}
 	}
@@ -1011,6 +1076,13 @@ type ValidatorInterface interface {
 	ValidateStruct(obj interface{}) error
 }
 
+// MaxSyncBaselineVersionSupported is the highest sync baseline protocol version this
+// server implements. Connections that request >= 1 via ClientInfo are switched to the
+// baseline rules; everything else keeps the legacy behavior.
+// MaxSyncBaselineVersionSupported 是本服务端实现的最高同步基线协议版本。通过 ClientInfo
+// 请求 >= 1 的连接会切到基线规则；其余连接保持旧行为。
+const MaxSyncBaselineVersionSupported uint32 = 1
+
 type WebsocketServer struct {
 	app                AppContainer // App Container (Required) // App Container（必须）
 	handlers           map[string]func(*WebsocketClient, *WebSocketMessage)
@@ -1033,6 +1105,14 @@ type WebsocketServer struct {
 	EnvelopeDecoder     func(data []byte) (string, []byte, error)               // Protobuf envelope decoder // Protobuf 信封解包钩子
 	ProtobufDecoder     func(action string, data []byte, obj any) (bool, error) // Protobuf decoder hook // Protobuf 解码钩子
 	ProtobufEncoder     func(action string, res *Res) ([]byte, error)           // Protobuf encoder hook // Protobuf 编码钩子
+	// MaxSyncBaselineVersion is the highest sync baseline protocol version this server advertises.
+	// Stage D is complete (decision engine, conditional commit, revision tokens), so the
+	// server advertises 1: only connections that explicitly request >= 1 through ClientInfo
+	// are switched to the baseline rules; every other connection keeps the legacy behavior.
+	// MaxSyncBaselineVersion 是本服务端广告的最高同步基线协议版本。阶段 D 已完整实现
+	//（决策引擎、条件提交、版本令牌），NewWebsocketServer 默认置 1：只有通过 ClientInfo
+	// 明确请求 >= 1 的连接才切换到基线规则，其余连接保持旧行为。
+	MaxSyncBaselineVersion uint32
 }
 
 // WSClientInfo WebSocket client information for API responses
@@ -1137,6 +1217,10 @@ func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 		events:              NewEventHub(),
 		config:              &c,
 		binaryChunkSessions: make(map[string]map[string]any),
+		// Stage D is complete: advertise baseline protocol version 1. A connection only
+		// switches modes when its ClientInfo explicitly requests >= 1.
+		// 阶段 D 已完成：广告基线协议版本 1。只有 ClientInfo 明确请求 >= 1 的连接才会切换模式。
+		MaxSyncBaselineVersion: MaxSyncBaselineVersionSupported,
 	}
 
 	// Register built-in unauthenticated handlers
@@ -1373,6 +1457,12 @@ func (w *WebsocketServer) Authorization(c *WebsocketClient, msg *WebSocketMessag
 			"buildTime": versionInfo.BuildTime,
 			"changelog": versionInfo.Changelog,
 		}
+		// Baseline capability is negotiated independently of pv/pb: every authenticated client
+		// gets the advertisement, and old clients simply ignore the unknown JSON key.
+		// Capability advertisement only — it never switches a client to the new mode by itself.
+		// 基线能力与 pv/pb 独立协商：所有已认证客户端都会收到广告，旧客户端忽略未知 JSON key。
+		// 这里只是能力广告，本身绝不把客户端切到新模式。
+		authData["syncBaselineVersion"] = w.MaxSyncBaselineVersion
 
 		protobufAck := c.Protocol == "protobuf" && c.PbEnabled
 
@@ -1460,7 +1550,15 @@ func (w *WebsocketServer) ClientInfo(c *WebsocketClient, msg *WebSocketMessage) 
 		return "Guest"
 	}()), zap.String("name", c.ClientName()), zap.String("version", c.ClientVersion()), zap.String("offlineSyncStrategy", c.OfflineSyncStrategy()))
 
+	// Baseline capability negotiation: the first ClientInfo fixes the mode for this connection.
+	// A PB downgrade re-send carries the same requested version and therefore resolves to the
+	// already accepted value instead of re-negotiating.
+	// 基线能力协商：首次 ClientInfo 固定本连接的模式；PB 降级重发携带同一请求版本，
+	// 因此解析为已接受的值，而不是重新协商。
+	acceptedBaseline := c.negotiateSyncBaseline(info.SyncBaselineVersion, w.MaxSyncBaselineVersion)
+
 	checkVersionInfo := w.app.CheckVersion(c.ClientVersion())
+	checkVersionInfo.SyncBaselineVersion = acceptedBaseline
 
 	c.ToResponse(code.Success.WithData(checkVersionInfo), "ClientInfo")
 }
@@ -1480,6 +1578,10 @@ func (w *WebsocketServer) BroadcastClientInfo() {
 			continue
 		}
 		checkVersionInfo := w.app.CheckVersion(c.ClientVersion())
+		// Echo the value already accepted on this connection: a background broadcast must not
+		// activate or revoke the baseline mode.
+		// 回显本连接已接受的值：后台广播不得激活或撤销基线模式。
+		checkVersionInfo.SyncBaselineVersion = c.SyncBaselineVersion()
 		// Only push if there's a new version (server or plugin)
 		// 只有当有新版本（服务端或插件）时才推送
 		if checkVersionInfo.VersionIsNew || checkVersionInfo.PluginVersionIsNew {

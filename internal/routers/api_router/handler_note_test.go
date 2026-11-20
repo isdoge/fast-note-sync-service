@@ -275,3 +275,51 @@ func TestNoteHandler_RecycleClear_WholeBinRequiresPurge(t *testing.T) {
 		})
 	}
 }
+
+// TestNoteHandler_Restore_PurgedTombstoneReturns532 覆盖 E2E-2 / MultiDB-2：正文已被
+// 清理的墓碑不在回收站可恢复集合里（recycle 查询过滤 rename=0 且 content_purged=0），
+// 预查未命中时必须交给 NoteService.Restore 判定，最终返回 532 ErrorContentPurged，
+// 而不是提前短路成 430 Note does not exist。
+// A purged tombstone is outside the restorable recycle set, so a pre-check miss must
+// delegate to NoteService.Restore and surface 532 instead of 430.
+func TestNoteHandler_Restore_PurgedTombstoneReturns532(t *testing.T) {
+	mockNoteSvc := new(svcmocks.MockNoteService)
+
+	// 预查命中不到可恢复墓碑：服务层按回收站语义返回 430。
+	mockNoteSvc.On("Get", mock.Anything, int64(1), mock.MatchedBy(func(req *dto.NoteGetRequest) bool {
+		return req.IsRecycle
+	})).Return(nil, code.ErrorNoteNotFound).Once()
+	// 真正的判定在 Restore 内部：已清理墓碑返回 532。
+	mockNoteSvc.On("Restore", mock.Anything, int64(1), mock.AnythingOfType("*dto.NoteRestoreRequest")).
+		Return(nil, code.ErrorContentPurged).Once()
+
+	handler := newTestNoteHandler(mockNoteSvc, nil)
+	c, w := newNoteTestContext("PUT", "/api/note/restore", `{"vault":"main","path":"purged.md"}`, 1)
+
+	handler.Restore(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assertResponseCode(t, w, code.ErrorContentPurged.Code())
+	mockNoteSvc.AssertExpectations(t)
+}
+
+// TestNoteHandler_Restore_RestorableTombstoneSucceeds 保证预查放行后的正常恢复路径不变：
+// 回收站命中删除态 → 执行恢复并返回成功。
+func TestNoteHandler_Restore_RestorableTombstoneSucceeds(t *testing.T) {
+	mockNoteSvc := new(svcmocks.MockNoteService)
+
+	mockNoteSvc.On("Get", mock.Anything, int64(1), mock.MatchedBy(func(req *dto.NoteGetRequest) bool {
+		return req.IsRecycle
+	})).Return(&dto.NoteDTO{ID: 9, Path: "del.md", Action: "delete"}, nil).Once()
+	mockNoteSvc.On("Restore", mock.Anything, int64(1), mock.AnythingOfType("*dto.NoteRestoreRequest")).
+		Return(&dto.NoteDTO{ID: 9, Path: "del.md", Action: "modify", Revision: "rev-2"}, nil).Once()
+
+	handler := newTestNoteHandler(mockNoteSvc, nil)
+	c, w := newNoteTestContext("PUT", "/api/note/restore", `{"vault":"main","path":"del.md"}`, 1)
+
+	handler.Restore(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assertResponseCode(t, w, code.Success.Code())
+	mockNoteSvc.AssertExpectations(t)
+}

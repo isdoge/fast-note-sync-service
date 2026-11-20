@@ -10,29 +10,55 @@ import (
 // NoteUpdateCheckRequest Client request parameters for checking if updates are needed
 // 客户端用于检查是否需要更新的请求参数
 type NoteUpdateCheckRequest struct {
-	Vault       string `json:"vault" form:"vault" binding:"required" example:"MyVault"`       // Vault name // 保险库名称
-	Path        string `json:"path" form:"path" binding:"required" example:"ReadMe.md"`       // Note path // 笔记路径
-	PathHash    string `json:"pathHash" form:"pathHash" binding:"required" example:"hash123"` // Path hash // 路径哈希
-	ContentHash string `json:"contentHash" form:"contentHash" binding:"" example:"chash456"`  // Content hash // 内容哈希
-	Ctime       int64  `json:"ctime" form:"ctime" binding:"required" example:"1700000000"`    // Creation timestamp // 创建时间戳
-	Mtime       int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`    // Modification timestamp // 修改时间戳
+	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path            string `json:"path" form:"path" binding:"required" example:"ReadMe.md"`                     // Note path // 笔记路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"hash123"`               // Path hash // 路径哈希
+	ContentHash     string `json:"contentHash" form:"contentHash" binding:"" example:"chash456"`                // Content hash // 内容哈希
+	Ctime           int64  `json:"ctime" form:"ctime" binding:"required" example:"1700000000"`                  // Creation timestamp // 创建时间戳
+	Mtime           int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`                  // Modification timestamp // 修改时间戳
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
+	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+}
+
+// NormalizeSyncBaseline see NormalizeBaseline.
+// NormalizeSyncBaseline 见 NormalizeBaseline。
+func (r *NoteUpdateCheckRequest) NormalizeSyncBaseline() {
+	r.BaseHash, r.BaseHashMissing = NormalizeBaseline(r.BaseHash, r.BaseHashMissing)
 }
 
 // NoteModifyOrCreateRequest Request parameters for creating or modifying a note
 // 用于创建或修改笔记的请求参数
 type NoteModifyOrCreateRequest struct {
-	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`      // Vault name // 保险库名称
-	Path            string `json:"path" form:"path" binding:"required" example:"ReadMe.md"`      // Note path // 笔记路径
-	PathHash        string `json:"pathHash" form:"pathHash" example:"hash123"`                   // Path hash // 路径哈希
-	BaseHash        string `json:"baseHash" form:"baseHash" binding:"" example:"bhash789"`       // Base hash for sync // 同步基准哈希
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`       // Marks if baseHash is unavailable // 标记基准哈希是否缺失
-	Content         string `json:"content" form:"content" binding:"" example:"# Hello World"`    // Note content // 笔记内容
-	ContentHash     string `json:"contentHash" form:"contentHash" binding:"" example:"chash012"` // Content hash // 内容哈希
-	Ctime           int64  `json:"ctime" form:"ctime" example:"1700000000"`                      // Creation timestamp // 创建时间戳
-	Mtime           int64  `json:"mtime" form:"mtime" example:"1700000000"`                      // Modification timestamp // 修改时间戳
-	CreateOnly      bool   `json:"createOnly" form:"createOnly" example:"false"`                 // If true, fail if note already exists // 如果为 true，笔记已存在则失败
+	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"`      // Vault name // 保险库名称
+	Path               string `json:"path" form:"path" binding:"required" example:"ReadMe.md"`      // Note path // 笔记路径
+	PathHash           string `json:"pathHash" form:"pathHash" example:"hash123"`                   // Path hash // 路径哈希
+	BaseHash           string `json:"baseHash" form:"baseHash" binding:"" example:"bhash789"`       // Base hash for sync // 同步基准哈希
+	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`       // Marks if baseHash is unavailable // 标记基准哈希是否缺失
+	Content            string `json:"content" form:"content" binding:"" example:"# Hello World"`    // Note content // 笔记内容
+	ContentHash        string `json:"contentHash" form:"contentHash" binding:"" example:"chash012"` // Content hash // 内容哈希
+	Ctime              int64  `json:"ctime" form:"ctime" example:"1700000000"`                      // Creation timestamp // 创建时间戳
+	Mtime              int64  `json:"mtime" form:"mtime" example:"1700000000"`                      // Modification timestamp // 修改时间戳
+	CreateOnly         bool   `json:"createOnly" form:"createOnly" example:"false"`                 // If true, fail if note already exists // 如果为 true，笔记已存在则失败
 	Context            string `json:"context" form:"context" example:"ctx123"`                      // Context // 同步上下文
 	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"` // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+	// BaseRevision is the server revision token the client saw when confirming the base.
+	// Empty means "no trusted version token"; it must never authorize a conditional delete.
+	// BaseRevision 是客户端确认基线时看到服务端版本令牌；为空表示没有可信版本令牌，不得据此执行条件删除。
+	BaseRevision string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"`
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
+}
+
+// NormalizeSyncBaseline makes baseHash/baseHashMissing agree regardless of the wire encoding.
+// Empty or missing means "no trusted content baseline"; "0" is a real hash for empty text and
+// must survive normalization unchanged.
+// NormalizeSyncBaseline 让 baseHash/baseHashMissing 在两种编码下具有同一含义：空串或 missing 表示
+// 没有可信内容基线；空文本的哈希 "0" 是有效哈希，必须原样保留。
+func (r *NoteModifyOrCreateRequest) NormalizeSyncBaseline() {
+	r.BaseHash, r.BaseHashMissing = NormalizeBaseline(r.BaseHash, r.BaseHashMissing)
 }
 
 // ContentModifyRequest Request parameters for modifying content only
@@ -50,10 +76,23 @@ type ContentModifyRequest struct {
 // NoteDeleteRequest Parameters required for deleting a note
 // 删除笔记所需参数
 type NoteDeleteRequest struct {
-	Vault    string `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
-	Path     string `json:"path" form:"path" binding:"required" example:"ReadMe.md"` // Note path // 笔记路径
-	PathHash string `json:"pathHash" form:"pathHash" example:"hash123"`              // Path hash // 路径哈希
-	Context  string `json:"context" form:"context" example:"ctx123"`                 // Context // 同步上下文
+	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path            string `json:"path" form:"path" binding:"required" example:"ReadMe.md"`                     // Note path // 笔记路径
+	PathHash        string `json:"pathHash" form:"pathHash" example:"hash123"`                                  // Path hash // 路径哈希
+	Context         string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
+	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
+}
+
+// NormalizeSyncBaseline see NormalizeBaseline.
+// NormalizeSyncBaseline 见 NormalizeBaseline。
+func (r *NoteDeleteRequest) NormalizeSyncBaseline() {
+	r.BaseHash, r.BaseHashMissing = NormalizeBaseline(r.BaseHash, r.BaseHashMissing)
 }
 
 // NoteRestoreRequest parameters for restoring a note
@@ -134,18 +173,24 @@ type NoteLinkQueryRequest struct {
 // NoteSyncCheckRequest Parameters for checking synchronization of a single record
 // NoteSyncCheckRequest 同步检查单条记录的参数
 type NoteSyncCheckRequest struct {
-	Path        string `json:"path" form:"path" example:"ReadMe.md"`                          // Note path // 笔记路径
-	PathHash    string `json:"pathHash" form:"pathHash" binding:"required" example:"hash123"` // Path hash // 路径哈希
-	ContentHash string `json:"contentHash" form:"contentHash" binding:"" example:"chash456"`  // Content hash // 内容哈希
-	Mtime       int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`    // Modification timestamp // 修改时间戳
-	Ctime       int64  `json:"ctime" form:"ctime" example:"1700000000"`                       // Creation timestamp // 创建时间戳
+	Path            string `json:"path" form:"path" example:"ReadMe.md"`                                        // Note path // 笔记路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"hash123"`               // Path hash // 路径哈希
+	ContentHash     string `json:"contentHash" form:"contentHash" binding:"" example:"chash456"`                // Content hash // 内容哈希
+	Mtime           int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`                  // Modification timestamp // 修改时间戳
+	Ctime           int64  `json:"ctime" form:"ctime" example:"1700000000"`                                     // Creation timestamp // 创建时间戳
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
+	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
 // NoteSyncDelNote parameters for deleting a note during sync
 // 同步删除笔记参数
 type NoteSyncDelNote struct {
-	Path     string `json:"path" form:"path" binding:"required" example:"DeletedNote.md"`   // Note path // 笔记路径
-	PathHash string `json:"pathHash" form:"pathHash" binding:"required" example:"dhash789"` // Path hash // 路径哈希
+	Path            string `json:"path" form:"path" binding:"required" example:"DeletedNote.md"`                // Note path // 笔记路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"dhash789"`              // Path hash // 路径哈希
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
+	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
 // NoteSyncRequest Synchronization request body
@@ -154,11 +199,25 @@ type NoteSyncRequest struct {
 	Context      string                 `json:"context" form:"context" example:"task123"`                // Context // 上下文
 	Vault        string                 `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
 	LastTime     int64                  `json:"lastTime" form:"lastTime" example:"1700000000"`           // Last sync time // 最后同步时间
-	BatchIndex   int                    `json:"batchIndex" form:"batchIndex" example:"0"`               // Current batch index (0-based) // 当前批次索引（0 起）
-	TotalBatches int                    `json:"totalBatches" form:"totalBatches" example:"1"`           // Total batch count // 总批次数
+	BatchIndex   int                    `json:"batchIndex" form:"batchIndex" example:"0"`                // Current batch index (0-based) // 当前批次索引（0 起）
+	TotalBatches int                    `json:"totalBatches" form:"totalBatches" example:"1"`            // Total batch count // 总批次数
 	Notes        []NoteSyncCheckRequest `json:"notes" form:"notes"`                                      // Notes to check // 待检查笔记列表
 	DelNotes     []NoteSyncDelNote      `json:"delNotes" form:"delNotes"`                                // Notes to delete // 待删除笔记列表
 	MissingNotes []NoteSyncDelNote      `json:"missingNotes" form:"missingNotes"`                        // Missing notes // 缺失笔记列表
+}
+
+// NormalizeSyncBaseline normalizes every baseline-bearing entry of the request.
+// NormalizeSyncBaseline 规范化请求中所有携带基线的条目。
+func (r *NoteSyncRequest) NormalizeSyncBaseline() {
+	for i := range r.Notes {
+		r.Notes[i].BaseHash, r.Notes[i].BaseHashMissing = NormalizeBaseline(r.Notes[i].BaseHash, r.Notes[i].BaseHashMissing)
+	}
+	for i := range r.DelNotes {
+		r.DelNotes[i].BaseHash, r.DelNotes[i].BaseHashMissing = NormalizeBaseline(r.DelNotes[i].BaseHash, r.DelNotes[i].BaseHashMissing)
+	}
+	for i := range r.MissingNotes {
+		r.MissingNotes[i].BaseHash, r.MissingNotes[i].BaseHashMissing = NormalizeBaseline(r.MissingNotes[i].BaseHash, r.MissingNotes[i].BaseHashMissing)
+	}
 }
 
 // ModifyMtimeFilesRequest Request for querying modified files by mtime
@@ -222,7 +281,7 @@ type NoteHistoryRestoreRequest struct {
 // NoteDTO Note data transfer object
 // NoteDTO 笔记数据传输对象
 type NoteDTO struct {
-	ID               int64      `json:"id" form:"id"`                    // Note ID // 笔记 ID
+	ID               int64      `json:"id" form:"id"`                   // Note ID // 笔记 ID
 	Action           string     `json:"-" form:"action"`                // Action // 动作
 	Path             string     `json:"path" form:"path"`               // Note path // 笔记路径
 	PathHash         string     `json:"pathHash" form:"pathHash"`       // Path hash // 路径哈希
@@ -240,13 +299,14 @@ type NoteDTO struct {
 	CreatedAt        timex.Time `json:"createdAt"`                      // Created at time // 创建时间
 	// Unchanged is set by Delete when the record was missing or already deleted (no write happened)
 	// Unchanged 由 Delete 设置：记录不存在或已是删除状态，本次未写库（调用方据此不广播）
-	Unchanged bool `json:"-" form:"-"`
+	Unchanged bool   `json:"-" form:"-"`
+	Revision  string `json:"revision,omitempty"` // Server revision token // 服务端版本令牌
 }
 
 // NoteNoContentDTO Note DTO without content
 // NoteNoContentDTO 不包含内容的笔记 DTO
 type NoteNoContentDTO struct {
-	ID               int64      `json:"id" form:"id"`                      // Note ID // 笔记 ID
+	ID               int64      `json:"id" form:"id"`                     // Note ID // 笔记 ID
 	Action           string     `json:"-" form:"action"`                  // Action // 动作
 	Path             string     `json:"path" form:"path"`                 // Note path // 笔记路径
 	PathHash         string     `json:"pathHash" form:"pathHash"`         // Path hash // 路径哈希
@@ -302,7 +362,7 @@ type NoteHistoryDTO struct {
 	NoteID        int64                 `json:"noteId" form:"noteId"`               // Associated note ID // 笔记 ID
 	VaultID       int64                 `json:"vaultId" form:"vaultId"`             // Associated vault ID // 保险库 ID
 	Path          string                `json:"path" form:"path"`                   // Note path at that time // 当时的笔记路径
-	Diffs         []diffmatchpatch.Diff `json:"diffs" swaggertype:"array,object"`    // Text differences // 文本差异内容
+	Diffs         []diffmatchpatch.Diff `json:"diffs" swaggertype:"array,object"`   // Text differences // 文本差异内容
 	Content       string                `json:"content" form:"content"`             // Full historical content // 完整历史内容
 	ContentHash   string                `json:"contentHash" form:"contentHash"`     // Content hash // 内容哈希
 	ClientName    string                `json:"clientName" form:"clientName"`       // Client that made changes // 产生变更的客户端

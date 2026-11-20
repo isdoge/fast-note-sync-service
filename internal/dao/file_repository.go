@@ -16,6 +16,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/query"
 	"github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
@@ -71,10 +72,12 @@ func (r *fileRepository) toDomain(m *model.File, uid int64) *domain.File {
 		ContentHash:      m.ContentHash,
 		SavePath:         m.SavePath,
 		Rename:           m.Rename,
+		ContentPurged:    m.ContentPurged,
 		Size:             m.Size,
 		Ctime:            m.Ctime,
 		Mtime:            m.Mtime,
 		UpdatedTimestamp: m.UpdatedTimestamp,
+		Revision:         m.Revision,
 		CreatedAt:        time.Time(m.CreatedAt),
 		UpdatedAt:        time.Time(m.UpdatedAt),
 	}
@@ -98,10 +101,12 @@ func (r *fileRepository) toModel(file *domain.File) *model.File {
 		ContentHash:      file.ContentHash,
 		SavePath:         file.SavePath,
 		Rename:           file.Rename,
+		ContentPurged:    file.ContentPurged,
 		Size:             file.Size,
 		Ctime:            file.Ctime,
 		Mtime:            file.Mtime,
 		UpdatedTimestamp: file.UpdatedTimestamp,
+		Revision:         file.Revision,
 		CreatedAt:        timex.Time(file.CreatedAt),
 		UpdatedAt:        timex.Time(file.UpdatedAt),
 	}
@@ -302,6 +307,9 @@ func (r *fileRepository) Create(ctx context.Context, file *domain.File, uid int6
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
 		m.CreatedAt = timex.Now()
 		m.UpdatedAt = timex.Now()
+		// 新建附件是新的服务端状态，必须生成新令牌。
+		// A new attachment is a new server state and must mint a token.
+		m.Revision = util.NewRevisionToken()
 
 		tempSavePath := m.SavePath
 		m.SavePath = "" // 不在数据库中保存路径
@@ -360,6 +368,9 @@ func (r *fileRepository) Update(ctx context.Context, file *domain.File, uid int6
 
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
 		m.UpdatedAt = timex.Now()
+		// 正文/状态变更（含删除墓碑、恢复、重建）一律换新令牌。
+		// Any content/state change (delete tombstone, restore, rebuild) mints a token.
+		m.Revision = util.NewRevisionToken()
 
 		tempSavePath := m.SavePath
 		m.SavePath = "" // 不在数据库中更新路径
@@ -457,37 +468,68 @@ func (r *fileRepository) Delete(ctx context.Context, id, uid int64) error {
 	})
 }
 
-// DeletePhysicalByTime physically deletes files marked as deleted by time
-// DeletePhysicalByTime 根据时间物理删除已标记删除的文件
-func (r *fileRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
+// PurgeContentByTime releases stored payloads of expired attachment tombstones while
+// keeping the lightweight metadata row. Rows are never physically deleted here (that
+// only happens when the whole vault is destroyed), so an offline device reconnecting
+// after the retention period still receives the deletion and the retained content_hash
+// keeps the tombstone gate working. The row keeps vault_id/path/path_hash/content_hash,
+// gets rename=2 and content_purged=1, loses save_path, and its updated_timestamp is left
+// untouched on purpose.
+//
+// PurgeContentByTime 清理已超过保留期的附件墓碑载荷，但保留轻量元数据行。这里绝不
+// 物理删除数据库行（只有整个仓库被销毁时才物理删除）：离线设备在保留期之后回连时
+// 仍能收到删除，保留的 content_hash 也让墓碑闸门继续生效。行内保留
+// vault_id/path/path_hash/content_hash，设置 rename=2 与 content_purged=1，清空
+// save_path，并刻意不刷新 updated_timestamp。
+func (r *fileRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.file(uid).File
 
-		// Find records to be deleted to remove folders in the file system
-		// 查找待删除的记录，以便删除文件系统中的文件夹
+		// 只处理尚未清理正文的过期墓碑，重复执行时不会再次命中。
+		// Only unpurged expired tombstones are selected, so repeated runs are no-ops.
 		mList, err := u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
+			u.Action.Eq(string(domain.FileActionDelete)),
 			u.UpdatedTimestamp.Lt(timestamp),
-		).Find()
-
-		if err == nil {
-			for _, m := range mList {
-				folderPath := r.dao.GetFileFolderPath(uid, m.ID)
-				_ = r.dao.RemoveContentFolder(folderPath)
-			}
+			u.ContentPurged.Eq(0),
+		).Select(u.ID).Find()
+		if err != nil {
+			return err
+		}
+		if len(mList) == 0 {
+			return nil
 		}
 
-		_, err = u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
-			u.UpdatedTimestamp.Lt(timestamp),
-		).Delete()
-		return err
+		ids := make([]int64, 0, len(mList))
+		for _, m := range mList {
+			ids = append(ids, m.ID)
+		}
+
+		if err := forEachIDChunk(ids, func(chunk []int64) error {
+			_, err := u.WithContext(ctx).Where(
+				u.ID.In(chunk...),
+				u.ContentPurged.Eq(0),
+				u.Action.Eq(string(domain.FileActionDelete)),
+			).UpdateSimple(
+				u.ContentPurged.Value(1),
+				u.Rename.Value(2),
+				u.SavePath.Value(""),
+			)
+			return err
+		}); err != nil {
+			return err
+		}
+
+		for _, id := range ids {
+			folderPath := r.dao.GetFileFolderPath(uid, id)
+			_ = r.dao.RemoveContentFolder(folderPath)
+		}
+		return nil
 	})
 }
 
-// DeletePhysicalByTimeAll physically deletes files marked as deleted for all users by time
-// DeletePhysicalByTimeAll 根据时间物理删除所有用户的已标记删除的文件
-func (r *fileRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
+// PurgeContentByTimeAll runs PurgeContentByTime for every user
+// PurgeContentByTimeAll 对所有用户执行 PurgeContentByTime
+func (r *fileRepository) PurgeContentByTimeAll(ctx context.Context, timestamp int64) error {
 	// Get all user UIDs
 	// 获取所有用户 UID
 	uids, err := r.dao.GetAllUserUIDs()
@@ -498,7 +540,7 @@ func (r *fileRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp 
 	// Execute cleanup user by user
 	// 逐用户执行清理
 	for _, uid := range uids {
-		if err := r.DeletePhysicalByTime(ctx, timestamp, uid); err != nil {
+		if err := r.PurgeContentByTime(ctx, timestamp, uid); err != nil {
 			// 记录错误但继续处理其他用户
 			continue
 		}
@@ -515,7 +557,7 @@ func (r *fileRepository) List(ctx context.Context, vaultID int64, page, pageSize
 	)
 
 	if isRecycle {
-		q = q.Where(u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq(string(domain.FileActionDelete)))
 	}
@@ -575,7 +617,7 @@ func (r *fileRepository) ListCount(ctx context.Context, vaultID, uid int64, keyw
 	)
 
 	if isRecycle {
-		q = q.Where(u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq(string(domain.FileActionDelete)))
 	}
@@ -812,24 +854,51 @@ func (r *fileRepository) ListByIDs(ctx context.Context, ids []int64, uid int64) 
 func (r *fileRepository) RecycleClear(ctx context.Context, path, pathHash string, vaultID, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.file(uid).File
-		q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0))
-		if path != "" {
-			q = q.Where(u.Path.Eq(path))
+		build := func() query.IFileDo {
+			q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0), u.ContentPurged.Eq(0))
+			if path != "" {
+				q = q.Where(u.Path.Eq(path))
+			}
+			if pathHash != "" {
+				q = q.Where(u.PathHash.Eq(pathHash))
+			}
+			return q
 		}
-		if pathHash != "" {
-			q = q.Where(u.PathHash.Eq(pathHash))
-		}
+
 		if path == "" && pathHash != "" {
-			if err := requireUnambiguousPath(q.UnderlyingDB()); err != nil {
+			if err := requireUnambiguousPath(build().UnderlyingDB()); err != nil {
 				return err
 			}
 		}
-		_, err := q.UpdateSimple(
+
+		list, err := build().Select(u.ID).Find()
+		if err != nil {
+			return err
+		}
+
+		// 手动清空回收站 = 永久删除：释放磁盘载荷并标记不恢复，同时保留墓碑行
+		// 与 content_hash，供离线设备增量同步收到删除且不复活。
+		// Manual recycle-clear means permanent deletion: release the payload and mark it
+		// unrecoverable, while keeping the tombstone row and content_hash so offline
+		// devices still get the delete and cannot resurrect it.
+		if _, err := build().UpdateSimple(
 			u.Rename.Value(2),
+			u.ContentPurged.Value(1),
+			u.SavePath.Value(""),
 			u.UpdatedTimestamp.Value(timex.Now().UnixMilli()),
 			u.UpdatedAt.Value(timex.Now()),
-		)
-		return err
+			// 手动清空回收站改变墓碑可见状态，也要换新令牌。
+			// A manual recycle clear changes the tombstone's visible state and mints a token.
+			u.Revision.Value(util.NewRevisionToken()),
+		); err != nil {
+			return err
+		}
+
+		for _, m := range list {
+			folderPath := r.dao.GetFileFolderPath(uid, m.ID)
+			_ = r.dao.RemoveContentFolder(folderPath)
+		}
+		return nil
 	})
 }
 
@@ -980,4 +1049,120 @@ func (r *fileRepository) ListByPathHashAndPath(ctx context.Context, pathHash, pa
 		list = append(list, r.toDomain(m, uid))
 	}
 	return list, nil
+}
+
+// UpdateIfRevision applies a file update only when the row still carries
+// expectedRevision. It returns false (and moves no payload) when another device
+// changed the row between the caller's precheck and this write.
+// UpdateIfRevision 仅在行仍携带 expectedRevision 时应用附件更新；另一设备在预检与本次写入之间
+// 改过该行时返回 false，且不搬移任何载荷。
+func (r *fileRepository) UpdateIfRevision(ctx context.Context, file *domain.File, expectedRevision string, uid int64) (bool, error) {
+	updated := false
+	var updateErr error
+	var tempSavePath string
+	var finalPath string
+	var newRevision string
+	var newUpdatedTimestamp int64
+
+	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		// 事务里用 query.Use(tx) 自行构造查询对象，不再走 r.file(uid) 的
+		// QueryWithOnceInit，所以先显式触发一次建表初始化，避免首次使用时表不存在。
+		// The transaction builds its own query object from the tx, bypassing the
+		// QueryWithOnceInit path in r.file(uid); trigger that init explicitly first.
+		_ = r.file(uid)
+		// 写队列只保证同一库的写操作串行投递，本身不开事务。CAS 的 Updates 是
+		// auto-commit，若随后 os.Rename 失败，数据库无法回滚，库盘就会不一致。
+		// 因此这里显式开一个真实事务，把 Updates 与 os.Rename 绑在同一次提交里：
+		// Rename 失败返回错误触发 ROLLBACK，行保留旧 revision 与旧 content_hash。
+		// The write queue only serialises dispatch; it does not open a transaction.
+		// The CAS Updates would auto-commit, so a failing os.Rename could not roll the
+		// row back. Wrap both in a real transaction: a rename error triggers ROLLBACK
+		// and the row keeps its previous revision and content_hash.
+		return db.Transaction(func(tx *gorm.DB) error {
+			u := query.Use(tx).File
+			m := r.toModel(file)
+
+			m.UpdatedTimestamp = timex.Now().UnixMilli()
+			m.UpdatedAt = timex.Now()
+			m.Revision = util.NewRevisionToken()
+
+			tempSavePath = m.SavePath
+			m.SavePath = ""
+
+			// CAS 先行：数据库是唯一真相。行已被另一设备改动时直接返回 false，
+			// 绝不动磁盘上现有的 file.dat（否则冲突会破坏仍然有效的旧附件）。
+			// CAS first: the row is the source of truth. When another device already
+			// changed it, return false without touching the existing file.dat, which
+			// would otherwise destroy the still-valid previous payload.
+			res, err := u.WithContext(ctx).Where(
+				u.ID.Eq(m.ID),
+				u.Revision.Eq(expectedRevision),
+			).Select(
+				u.ID,
+				u.VaultID,
+				u.Action,
+				u.FID,
+				u.Path,
+				u.PathHash,
+				u.ContentHash,
+				u.SavePath,
+				u.Rename,
+				u.ContentPurged,
+				u.Size,
+				u.Ctime,
+				u.Mtime,
+				u.UpdatedTimestamp,
+				u.UpdatedAt,
+				u.Revision,
+			).Updates(m)
+			if err != nil {
+				updateErr = err
+				return err
+			}
+			if res.RowsAffected == 0 {
+				// 冲突：磁盘保持原样，临时文件由调用方清理。事务正常结束（没有写入）。
+				// Conflict: the disk stays untouched; the caller cleans the temp file.
+				// The transaction ends normally with no write.
+				return nil
+			}
+
+			// 行已确认属于本次提交，才把临时文件搬进正式位置。搬移失败必须回滚事务，
+			// 让数据库保持旧内容哈希与旧令牌，而不是声称新内容已落地。
+			// Only after the row is proven ours do we move the temp payload into place.
+			// A move failure rolls the transaction back so the row keeps the old hash.
+			if tempSavePath != "" && file.Action != domain.FileActionDelete {
+				folderPath := r.dao.GetFileFolderPath(uid, m.ID)
+				_ = os.MkdirAll(folderPath, 0755)
+				finalPath = filepath.Join(folderPath, "file.dat")
+				if moveErr := os.Rename(tempSavePath, finalPath); moveErr != nil {
+					r.dao.Logger().Error("failed to move uploaded file into place during UpdateIfRevision, rolling back",
+						zap.Int64("uid", uid),
+						zap.Int64("fileId", m.ID),
+						zap.String("tempSavePath", tempSavePath),
+						zap.String("finalPath", finalPath),
+						zap.Error(moveErr),
+					)
+					updateErr = moveErr
+					return moveErr
+				}
+			}
+
+			updated = true
+			newRevision = m.Revision
+			newUpdatedTimestamp = m.UpdatedTimestamp
+			return nil
+		})
+	})
+
+	if err != nil {
+		return false, err
+	}
+	// 只有事务真正提交成功后才把新令牌回写到入参，提交失败时调用方看到的仍是旧状态。
+	// Only reflect the new token on the caller's struct after the transaction commits;
+	// a failed commit must leave it on the previous state.
+	if updated {
+		file.Revision = newRevision
+		file.UpdatedTimestamp = newUpdatedTimestamp
+	}
+	return updated, updateErr
 }

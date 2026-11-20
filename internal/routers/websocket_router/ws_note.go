@@ -105,6 +105,11 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	// 检查并创建仓库，内部使用SF合并并发请求, 避免重复创建问题
 	h.App.VaultService.GetOrCreate(ctx, c.User.UID, params.Vault)
 
+	// 基线模式连接：附加条件提交契约（旧连接为 nil，保持无条件写入）。
+	// Baseline-mode connections attach the conditional-commit contract; legacy
+	// connections stay nil and keep the unconditional write.
+	params.Baseline = baselineCommitFromNote(c, params.BaseHash, params.BaseHashMissing, params.BaseRevision, params.IsConflictResolved)
+
 	checkParams := convert.StructAssign(params, &dto.NoteUpdateCheckRequest{}).(*dto.NoteUpdateCheckRequest)
 	updateMode, checkedNote, nodeCheck, err := noteSvc.UpdateCheckWithNote(ctx, c.User.UID, checkParams)
 
@@ -137,9 +142,11 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				// 内容已存在，仍需发 NoteModifyAck 以便客户端消费 pendingNoteModifies，避免无限重传
 				// Content already exists; still send NoteModifyAck so client can consume pendingNoteModifies and avoid infinite re-upload
 				c.ToResponse(code.Success.WithData(dto.NoteModifyAckMessage{
-					LastTime: nodeCheck.UpdatedTimestamp,
-					Path:     params.Path,
-					PathHash: params.PathHash,
+					LastTime:    nodeCheck.UpdatedTimestamp,
+					Path:        params.Path,
+					PathHash:    params.PathHash,
+					ContentHash: nodeCheck.ContentHash,
+					Revision:    nodeCheck.Revision,
 				}).WithVault(params.Vault).WithContext(params.Context), string(NoteModifyAck))
 				return
 			}
@@ -425,6 +432,10 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 
 		_, note, err := noteSvc.ModifyOrCreate(ctx, c.User.UID, params, true, checkedNote)
 		if err != nil {
+			if conflict, ok := isBaselineConflict(err); ok {
+				h.respondBaselineConflict(c, dto.SyncConflictKindNote, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+				return
+			}
 			// 陈旧重报被墓碑闸门拒绝：仅静默确认以清理客户端 pending 状态
 			// （不广播、不推进同步水位），并补发删除指令让该客户端清理本地残留。
 			// 闸门只拒绝内容与墓碑一致的原样重报，补发删除不会丢失未同步的修改。
@@ -466,9 +477,11 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		// 通知发送方上传已确认，携带 lastTime 和 path 供客户端更新 hashManager
 		// Notify sender of successful write with lastTime and path for client hashManager update
 		c.ToResponse(code.Success.WithData(dto.NoteModifyAckMessage{
-			LastTime: note.UpdatedTimestamp,
-			Path:     note.Path,
-			PathHash: note.PathHash,
+			LastTime:    note.UpdatedTimestamp,
+			Path:        note.Path,
+			PathHash:    note.PathHash,
+			ContentHash: note.ContentHash,
+			Revision:    note.Revision,
 		}).WithVault(params.Vault).WithContext(params.Context), string(NoteModifyAck))
 		c.BroadcastResponse(code.Success.WithData(
 			dto.NoteSyncModifyMessage{
@@ -479,6 +492,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				Ctime:            note.Ctime,
 				Mtime:            note.Mtime,
 				UpdatedTimestamp: note.UpdatedTimestamp,
+				Revision:         note.Revision,
 			},
 		).WithVault(params.Vault), isExcludeSelf, NoteSyncModify)
 		return
@@ -492,6 +506,8 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				Ctime:            nodeCheck.Ctime,
 				Mtime:            nodeCheck.Mtime,
 				UpdatedTimestamp: nodeCheck.UpdatedTimestamp,
+				ContentHash:      nodeCheck.ContentHash,
+				Revision:         nodeCheck.Revision,
 			},
 		).WithVault(params.Vault).WithContext(params.Context), NoteSyncMtime)
 		return
@@ -636,9 +652,15 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	// 检查并创建仓库，内部使用SF合并并发请求, 避免重复创建问题
 	h.App.VaultService.GetOrCreate(ctx, c.User.UID, params.Vault)
 
+	params.Baseline = baselineCommitFromNote(c, params.BaseHash, params.BaseHashMissing, params.BaseRevision, false)
+
 	note, err := noteSvc.Delete(ctx, c.User.UID, params)
 
 	if err != nil {
+		if conflict, ok := isBaselineConflict(err); ok {
+			h.respondBaselineConflict(c, dto.SyncConflictKindNote, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			return
+		}
 		h.respondErrorWithPath(c, code.ErrorNoteDeleteFailed, err, slotPath, msg.Type, "websocket_router.note.handleNoteDelete.Delete")
 		return
 	}
@@ -647,6 +669,7 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		LastTime: note.UpdatedTimestamp,
 		Path:     note.Path,
 		PathHash: note.PathHash,
+		Revision: note.Revision,
 	}).WithVault(params.Vault).WithContext(params.Context), string(NoteDeleteAck))
 	// 记录不存在或已删除（幂等重复删除）：只回 Ack，不广播，避免向其他设备重复下发删除
 	if note.Unchanged {
@@ -660,6 +683,8 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			Mtime:            note.Mtime,
 			Size:             note.Size,
 			UpdatedTimestamp: note.UpdatedTimestamp,
+			Revision:         note.Revision,
+			ContentHash:      note.ContentHash,
 		},
 	).WithVault(params.Vault), true, NoteSyncDelete)
 }
@@ -697,6 +722,17 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	// 仅按段拒绝越界与 NUL
 	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path").WithData(errPathData(slotPath)))
+		return
+	}
+
+	// 基线模式统一走「创建目标 + 条件删除源」：原生 Rename 没有基线契约，会绕过
+	// 版本令牌直接改写两条记录。旧连接（版本 0）保持原行为。
+	// Baseline mode uses create-target + conditional-delete-source instead: a native
+	// rename has no baseline contract and would rewrite both rows unchecked.
+	if baselineModeEnabled(c) {
+		h.respondErrorWithPath(c, code.ErrorRenameNoteTargetExist,
+			code.ErrorRenameNoteTargetExist.WithDetails("rename is not supported in baseline mode; create the target and delete the source"),
+			slotPath, msg.Type, "websocket_router.note.NoteRename.BaselineMode")
 		return
 	}
 
@@ -767,6 +803,7 @@ func (h *NoteWSHandler) NoteRePush(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 				Ctime:            note.Ctime,
 				Mtime:            note.Mtime,
 				UpdatedTimestamp: note.UpdatedTimestamp,
+				Revision:         note.Revision,
 			},
 		).WithVault(params.Vault), NoteSyncModify)
 	} else {
@@ -864,6 +901,14 @@ func (h *NoteWSHandler) NoteSync(c *pkgapp.WebsocketClient, msg *pkgapp.WebSocke
 			allMissingNotes = append(allMissingNotes, item.(dto.NoteSyncDelNote))
 		}
 		params.MissingNotes = allMissingNotes
+	}
+
+	// 基线模式连接走新的决策引擎；其余连接（老插件、第三方 CLI）保持原逻辑逐字节不变。
+	// Baseline-mode connections run the new decision engine; every other connection
+	// (old plugins, third-party CLIs) keeps the legacy path byte-for-byte.
+	if baselineModeEnabled(c) {
+		h.doNoteSyncBaseline(c, params)
+		return
 	}
 
 	// 执行原有的差量同步核心逻辑（单批次直接进入，多批次集齐后也进入）

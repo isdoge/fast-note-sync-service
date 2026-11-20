@@ -152,8 +152,14 @@ func (r *gitSyncRepository) toDomain(m *model.GitSyncConfig) *domain.GitSyncConf
 			_ = json.Unmarshal([]byte(m.ConfigSyncRules), &rules)
 			return rules
 		}(),
-		CreatedAt: time.Time(m.CreatedAt),
-		UpdatedAt: time.Time(m.UpdatedAt),
+		SourceDir:           m.SourceDir,
+		TargetSubdir:        m.TargetSubdir,
+		RequireFrontmatter:  m.RequireFrontmatter,
+		ValidateFrontmatter: m.ValidateFrontmatter == 1,
+		BundleAssets:        m.BundleAssets == 1,
+		WebhookURL:          m.WebhookURL,
+		CreatedAt:           time.Time(m.CreatedAt),
+		UpdatedAt:           time.Time(m.UpdatedAt),
 	}
 }
 
@@ -193,9 +199,22 @@ func (r *gitSyncRepository) toModel(d *domain.GitSyncConfig) *model.GitSyncConfi
 			b, _ := json.Marshal(d.ConfigSyncRules)
 			return string(b)
 		}(),
-		CreatedAt: timex.Time(d.CreatedAt),
-		UpdatedAt: timex.Time(d.UpdatedAt),
+		SourceDir:           d.SourceDir,
+		TargetSubdir:        d.TargetSubdir,
+		RequireFrontmatter:  d.RequireFrontmatter,
+		ValidateFrontmatter: boolToInt64(d.ValidateFrontmatter),
+		BundleAssets:        boolToInt64(d.BundleAssets),
+		WebhookURL:          d.WebhookURL,
+		CreatedAt:           timex.Time(d.CreatedAt),
+		UpdatedAt:           timex.Time(d.UpdatedAt),
 	}
+}
+
+func boolToInt64(v bool) int64 {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func (r *gitSyncRepository) GetByID(ctx context.Context, id, uid int64) (*domain.GitSyncConfig, error) {

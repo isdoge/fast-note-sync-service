@@ -51,6 +51,7 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.IsLinux = pbMsg.IsLinux
 			dest.OfflineSyncStrategy = pbMsg.OfflineSyncStrategy
 			dest.Protobuf = pbMsg.Protobuf
+			dest.SyncBaselineVersion = pbMsg.SyncBaselineVersion
 			return true, nil
 		}
 
@@ -70,25 +71,34 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Notes = make([]dto.NoteSyncCheckRequest, len(pbMsg.Notes))
 			for i, v := range pbMsg.Notes {
 				dest.Notes[i] = dto.NoteSyncCheckRequest{
-					Path:        v.Path,
-					PathHash:    v.PathHash,
-					ContentHash: v.ContentHash,
-					Mtime:       v.Mtime,
-					Ctime:       v.Ctime,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					ContentHash:     v.ContentHash,
+					Mtime:           v.Mtime,
+					Ctime:           v.Ctime,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			dest.DelNotes = make([]dto.NoteSyncDelNote, len(pbMsg.DelNotes))
 			for i, v := range pbMsg.DelNotes {
 				dest.DelNotes[i] = dto.NoteSyncDelNote{
-					Path:     v.Path,
-					PathHash: v.PathHash,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			dest.MissingNotes = make([]dto.NoteSyncDelNote, len(pbMsg.MissingNotes))
 			for i, v := range pbMsg.MissingNotes {
 				dest.MissingNotes[i] = dto.NoteSyncDelNote{
-					Path:     v.Path,
-					PathHash: v.PathHash,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			return true, nil
@@ -112,6 +122,7 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.CreateOnly = pbMsg.CreateOnly
 			dest.Context = pbMsg.Context
 			dest.IsConflictResolved = pbMsg.IsConflictResolved
+			dest.BaseRevision = pbMsg.BaseRevision
 			return true, nil
 		}
 	// "NoteCheck"
@@ -127,6 +138,9 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.ContentHash = pbMsg.ContentHash
 			dest.Ctime = pbMsg.Ctime
 			dest.Mtime = pbMsg.Mtime
+			dest.BaseHash = pbMsg.BaseHash
+			dest.BaseHashMissing = pbMsg.BaseHashMissing
+			dest.BaseRevision = pbMsg.BaseRevision
 			return true, nil
 		}
 	// "NoteDelete"
@@ -140,6 +154,9 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Path = pbMsg.Path
 			dest.PathHash = pbMsg.PathHash
 			dest.Context = pbMsg.Context
+			dest.BaseHash = pbMsg.BaseHash
+			dest.BaseHashMissing = pbMsg.BaseHashMissing
+			dest.BaseRevision = pbMsg.BaseRevision
 			return true, nil
 		}
 	// "NoteRename"
@@ -187,26 +204,35 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Files = make([]dto.FileSyncCheckRequest, len(pbMsg.Files))
 			for i, v := range pbMsg.Files {
 				dest.Files[i] = dto.FileSyncCheckRequest{
-					Path:        v.Path,
-					PathHash:    v.PathHash,
-					ContentHash: v.ContentHash,
-					Size:        v.Size,
-					Mtime:       v.Mtime,
-					Ctime:       v.Ctime,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					ContentHash:     v.ContentHash,
+					Size:            v.Size,
+					Mtime:           v.Mtime,
+					Ctime:           v.Ctime,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			dest.DelFiles = make([]dto.FileSyncDelFile, len(pbMsg.DelFiles))
 			for i, v := range pbMsg.DelFiles {
 				dest.DelFiles[i] = dto.FileSyncDelFile{
-					Path:     v.Path,
-					PathHash: v.PathHash,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			dest.MissingFiles = make([]dto.FileSyncDelFile, len(pbMsg.MissingFiles))
 			for i, v := range pbMsg.MissingFiles {
 				dest.MissingFiles[i] = dto.FileSyncDelFile{
-					Path:     v.Path,
-					PathHash: v.PathHash,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			return true, nil
@@ -226,6 +252,10 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Ctime = pbMsg.Ctime
 			dest.Mtime = pbMsg.Mtime
 			dest.Context = pbMsg.Context
+			dest.BaseHash = pbMsg.BaseHash
+			dest.BaseHashMissing = pbMsg.BaseHashMissing
+			dest.BaseRevision = pbMsg.BaseRevision
+			dest.IsConflictResolved = pbMsg.IsConflictResolved
 			return true, nil
 		}
 	// "FileDelete"
@@ -239,6 +269,9 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Path = pbMsg.Path
 			dest.PathHash = pbMsg.PathHash
 			dest.Context = pbMsg.Context
+			dest.BaseHash = pbMsg.BaseHash
+			dest.BaseHashMissing = pbMsg.BaseHashMissing
+			dest.BaseRevision = pbMsg.BaseRevision
 			return true, nil
 		}
 	// "FileRename"
@@ -294,29 +327,40 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Context = pbMsg.Context
 			dest.Vault = pbMsg.Vault
 			dest.LastTime = pbMsg.LastTime
+			dest.Cover = pbMsg.Cover
 			dest.BatchIndex = int(pbMsg.BatchIndex)
 			dest.TotalBatches = int(pbMsg.TotalBatches)
 			dest.Settings = make([]dto.SettingSyncCheckRequest, len(pbMsg.Settings))
 			for i, v := range pbMsg.Settings {
 				dest.Settings[i] = dto.SettingSyncCheckRequest{
-					Path:        v.Path,
-					PathHash:    v.PathHash,
-					ContentHash: v.ContentHash,
-					Mtime:       v.Mtime,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					ContentHash:     v.ContentHash,
+					Mtime:           v.Mtime,
+					Ctime:           v.Ctime,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			dest.DelSettings = make([]dto.SettingSyncDelSetting, len(pbMsg.DelSettings))
 			for i, v := range pbMsg.DelSettings {
 				dest.DelSettings[i] = dto.SettingSyncDelSetting{
-					Path:     v.Path,
-					PathHash: v.PathHash,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			dest.MissingSettings = make([]dto.SettingSyncDelSetting, len(pbMsg.MissingSettings))
 			for i, v := range pbMsg.MissingSettings {
 				dest.MissingSettings[i] = dto.SettingSyncDelSetting{
-					Path:     v.Path,
-					PathHash: v.PathHash,
+					Path:            v.Path,
+					PathHash:        v.PathHash,
+					BaseHash:        v.BaseHash,
+					BaseHashMissing: v.BaseHashMissing,
+					BaseRevision:    v.BaseRevision,
 				}
 			}
 			return true, nil
@@ -336,6 +380,10 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Ctime = pbMsg.Ctime
 			dest.Mtime = pbMsg.Mtime
 			dest.Context = pbMsg.Context
+			dest.BaseHash = pbMsg.BaseHash
+			dest.BaseHashMissing = pbMsg.BaseHashMissing
+			dest.BaseRevision = pbMsg.BaseRevision
+			dest.IsConflictResolved = pbMsg.IsConflictResolved
 			return true, nil
 		}
 	// "SettingCheck"
@@ -351,6 +399,9 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.ContentHash = pbMsg.ContentHash
 			dest.Ctime = pbMsg.Ctime
 			dest.Mtime = pbMsg.Mtime
+			dest.BaseHash = pbMsg.BaseHash
+			dest.BaseHashMissing = pbMsg.BaseHashMissing
+			dest.BaseRevision = pbMsg.BaseRevision
 			return true, nil
 		}
 	// "SettingDelete"
@@ -364,6 +415,9 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Path = pbMsg.Path
 			dest.PathHash = pbMsg.PathHash
 			dest.Context = pbMsg.Context
+			dest.BaseHash = pbMsg.BaseHash
+			dest.BaseHashMissing = pbMsg.BaseHashMissing
+			dest.BaseRevision = pbMsg.BaseRevision
 			return true, nil
 		}
 	// "SettingClear"
@@ -403,23 +457,26 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Folders = make([]dto.FolderSyncCheckRequest, len(pbMsg.Folders))
 			for i, f := range pbMsg.Folders {
 				dest.Folders[i] = dto.FolderSyncCheckRequest{
-					Path:     f.Path,
-					PathHash: f.PathHash,
-					Mtime:    f.Mtime,
+					Path:         f.Path,
+					PathHash:     f.PathHash,
+					Mtime:        f.Mtime,
+					BaseRevision: f.BaseRevision,
 				}
 			}
 			dest.DelFolders = make([]dto.FolderSyncDelFolder, len(pbMsg.DelFolders))
 			for i, f := range pbMsg.DelFolders {
 				dest.DelFolders[i] = dto.FolderSyncDelFolder{
-					Path:     f.Path,
-					PathHash: f.PathHash,
+					Path:         f.Path,
+					PathHash:     f.PathHash,
+					BaseRevision: f.BaseRevision,
 				}
 			}
 			dest.MissingFolders = make([]dto.FolderSyncDelFolder, len(pbMsg.MissingFolders))
 			for i, f := range pbMsg.MissingFolders {
 				dest.MissingFolders[i] = dto.FolderSyncDelFolder{
-					Path:     f.Path,
-					PathHash: f.PathHash,
+					Path:         f.Path,
+					PathHash:     f.PathHash,
+					BaseRevision: f.BaseRevision,
 				}
 			}
 			return true, nil
@@ -435,6 +492,8 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Path = pbMsg.Path
 			dest.PathHash = pbMsg.PathHash
 			dest.Context = pbMsg.Context
+			dest.BaseRevision = pbMsg.BaseRevision
+			dest.IsConflictResolved = pbMsg.IsConflictResolved
 			return true, nil
 		}
 	// "FolderDelete"
@@ -448,6 +507,7 @@ func DeReceiveProtobufToDTO(action WebSocketReceiveAction, data []byte, obj any)
 			dest.Path = pbMsg.Path
 			dest.PathHash = pbMsg.PathHash
 			dest.Context = pbMsg.Context
+			dest.BaseRevision = pbMsg.BaseRevision
 			return true, nil
 		}
 	// "FolderRename"
@@ -629,6 +689,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				SyncDownChunkNum:                 int32(src.SyncDownChunkNum),
 				PipelineWindowUp:                 int32(src.PipelineWindowUp),
 				PipelineWindowDown:               int32(src.PipelineWindowDown),
+				SyncBaselineVersion:              src.SyncBaselineVersion,
 			}
 			pbMsg.VersionHistory = make([]*v1.HistoricalVersion, len(src.VersionHistory))
 			for i, v := range src.VersionHistory {
@@ -659,6 +720,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				Ctime:       src.Ctime,
 				Mtime:       src.Mtime,
 				LastTime:    src.UpdatedTimestamp,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -666,12 +728,14 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case NoteSyncDelete:
 		if src, ok := data.(dto.NoteSyncDeleteMessage); ok {
 			pbMsg := &v1.NoteSyncDeleteMessage{
-				Path:     src.Path,
-				PathHash: src.PathHash,
-				Ctime:    src.Ctime,
-				Mtime:    src.Mtime,
-				Size:     src.Size,
-				LastTime: src.UpdatedTimestamp,
+				Path:        src.Path,
+				PathHash:    src.PathHash,
+				Ctime:       src.Ctime,
+				Mtime:       src.Mtime,
+				Size:        src.Size,
+				LastTime:    src.UpdatedTimestamp,
+				Revision:    src.Revision,
+				ContentHash: src.ContentHash,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -711,10 +775,12 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case NoteSyncMtime:
 		if src, ok := data.(dto.NoteSyncMtimeMessage); ok {
 			pbMsg := &v1.NoteSyncMtimeMessage{
-				Path:     src.Path,
-				Ctime:    src.Ctime,
-				Mtime:    src.Mtime,
-				LastTime: src.UpdatedTimestamp,
+				Path:        src.Path,
+				Ctime:       src.Ctime,
+				Mtime:       src.Mtime,
+				LastTime:    src.UpdatedTimestamp,
+				ContentHash: src.ContentHash,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -727,6 +793,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				NeedModifyCount:    src.NeedModifyCount,
 				NeedSyncMtimeCount: src.NeedSyncMtimeCount,
 				NeedDeleteCount:    src.NeedDeleteCount,
+				NeedConflictCount:  src.NeedConflictCount,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -737,10 +804,12 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 		if src, isOk := data.(dto.NoteSyncNeedPushMessage); isOk {
 			pbMsg.Path = src.Path
 			pbMsg.PathHash = src.PathHash
+			pbMsg.BaseMissing = src.BaseMissing
 			ok = true
 		} else if srcPtr, isOk := data.(*dto.NoteSyncNeedPushMessage); isOk && srcPtr != nil {
 			pbMsg.Path = srcPtr.Path
 			pbMsg.PathHash = srcPtr.PathHash
+			pbMsg.BaseMissing = srcPtr.BaseMissing
 			ok = true
 		} else if srcMap, isOk := data.(map[string]interface{}); isOk {
 			if path, isOk := srcMap["path"].(string); isOk {
@@ -758,6 +827,9 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 			if serverHash, isOk := srcMap["serverHash"].(string); isOk {
 				pbMsg.ServerHash = serverHash
 			}
+			if baseMissing, isOk := srcMap["baseMissing"].(bool); isOk {
+				pbMsg.BaseMissing = baseMissing
+			}
 			ok = true
 		}
 		if ok {
@@ -767,9 +839,11 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case NoteModifyAck:
 		if src, ok := data.(dto.NoteModifyAckMessage); ok {
 			pbMsg := &v1.NoteModifyAckMessage{
-				LastTime: src.LastTime,
-				Path:     src.Path,
-				PathHash: src.PathHash,
+				LastTime:    src.LastTime,
+				Path:        src.Path,
+				PathHash:    src.PathHash,
+				ContentHash: src.ContentHash,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -790,6 +864,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				LastTime: src.LastTime,
 				Path:     src.Path,
 				PathHash: src.PathHash,
+				Revision: src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -806,6 +881,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				Ctime:       src.Ctime,
 				Mtime:       src.Mtime,
 				LastTime:    src.UpdatedTimestamp,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -813,12 +889,14 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case FileSyncDelete:
 		if src, ok := data.(dto.FileSyncDeleteMessage); ok {
 			pbMsg := &v1.FileSyncDeleteMessage{
-				Path:     src.Path,
-				PathHash: src.PathHash,
-				Ctime:    src.Ctime,
-				Mtime:    src.Mtime,
-				Size:     src.Size,
-				LastTime: src.UpdatedTimestamp,
+				Path:        src.Path,
+				PathHash:    src.PathHash,
+				Ctime:       src.Ctime,
+				Mtime:       src.Mtime,
+				Size:        src.Size,
+				LastTime:    src.UpdatedTimestamp,
+				Revision:    src.Revision,
+				ContentHash: src.ContentHash,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -858,10 +936,12 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case FileSyncMtime:
 		if src, ok := data.(dto.FileSyncMtimeMessage); ok {
 			pbMsg := &v1.FileSyncMtimeMessage{
-				Path:     src.Path,
-				Ctime:    src.Ctime,
-				Mtime:    src.Mtime,
-				LastTime: src.UpdatedTimestamp,
+				Path:        src.Path,
+				Ctime:       src.Ctime,
+				Mtime:       src.Mtime,
+				LastTime:    src.UpdatedTimestamp,
+				ContentHash: src.ContentHash,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -874,6 +954,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				NeedModifyCount:    src.NeedModifyCount,
 				NeedSyncMtimeCount: src.NeedSyncMtimeCount,
 				NeedDeleteCount:    src.NeedDeleteCount,
+				NeedConflictCount:  src.NeedConflictCount,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -917,9 +998,11 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case FileUploadAck:
 		if src, ok := data.(dto.FileUploadAckMessage); ok {
 			pbMsg := &v1.FileUploadAckMessage{
-				LastTime: src.LastTime,
-				Path:     src.Path,
-				PathHash: src.PathHash,
+				LastTime:    src.LastTime,
+				Path:        src.Path,
+				PathHash:    src.PathHash,
+				ContentHash: src.ContentHash,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -930,6 +1013,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				LastTime: src.LastTime,
 				Path:     src.Path,
 				PathHash: src.PathHash,
+				Revision: src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -947,6 +1031,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				Ctime:       src.Ctime,
 				Mtime:       src.Mtime,
 				LastTime:    src.UpdatedTimestamp,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -954,11 +1039,13 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case SettingSyncDelete:
 		if src, ok := data.(dto.SettingSyncDeleteMessage); ok {
 			pbMsg := &v1.SettingSyncDeleteMessage{
-				Path:     src.Path,
-				PathHash: src.PathHash,
-				Ctime:    src.Ctime,
-				Mtime:    src.Mtime,
-				LastTime: src.UpdatedTimestamp,
+				Path:        src.Path,
+				PathHash:    src.PathHash,
+				Ctime:       src.Ctime,
+				Mtime:       src.Mtime,
+				LastTime:    src.UpdatedTimestamp,
+				Revision:    src.Revision,
+				ContentHash: src.ContentHash,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -966,10 +1053,12 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case SettingSyncMtime:
 		if src, ok := data.(dto.SettingSyncMtimeMessage); ok {
 			pbMsg := &v1.SettingSyncMtimeMessage{
-				Path:     src.Path,
-				Ctime:    src.Ctime,
-				Mtime:    src.Mtime,
-				LastTime: src.UpdatedTimestamp,
+				Path:        src.Path,
+				Ctime:       src.Ctime,
+				Mtime:       src.Mtime,
+				LastTime:    src.UpdatedTimestamp,
+				ContentHash: src.ContentHash,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -982,6 +1071,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				NeedModifyCount:    src.NeedModifyCount,
 				NeedSyncMtimeCount: src.NeedSyncMtimeCount,
 				NeedDeleteCount:    src.NeedDeleteCount,
+				NeedConflictCount:  src.NeedConflictCount,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -1000,9 +1090,11 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 	case SettingModifyAck:
 		if src, ok := data.(dto.SettingModifyAckMessage); ok {
 			pbMsg := &v1.SettingModifyAckMessage{
-				LastTime: src.LastTime,
-				Path:     src.Path,
-				PathHash: src.PathHash,
+				LastTime:    src.LastTime,
+				Path:        src.Path,
+				PathHash:    src.PathHash,
+				ContentHash: src.ContentHash,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -1013,6 +1105,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				LastTime: src.LastTime,
 				Path:     src.Path,
 				PathHash: src.PathHash,
+				Revision: src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -1033,6 +1126,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				Ctime:    src.Ctime,
 				Mtime:    src.Mtime,
 				LastTime: src.UpdatedTimestamp,
+				Revision: src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -1053,6 +1147,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				Ctime:    src.Ctime,
 				Mtime:    src.Mtime,
 				LastTime: src.UpdatedTimestamp,
+				Revision: src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -1106,9 +1201,10 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 		}
 		if ok {
 			pbMsg := &v1.FolderSyncEndMessage{
-				LastTime:        src.LastTime,
-				NeedModifyCount: src.NeedModifyCount,
-				NeedDeleteCount: src.NeedDeleteCount,
+				LastTime:          src.LastTime,
+				NeedModifyCount:   src.NeedModifyCount,
+				NeedDeleteCount:   src.NeedDeleteCount,
+				NeedConflictCount: src.NeedConflictCount,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -1127,6 +1223,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				LastTime: src.LastTime,
 				Path:     src.Path,
 				PathHash: src.PathHash,
+				Revision: src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}
@@ -1145,7 +1242,24 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				LastTime: src.LastTime,
 				Path:     src.Path,
 				PathHash: src.PathHash,
+				Revision: src.Revision,
 			}
+			return proto.Marshal(pbMsg)
+		}
+	// "SyncConflict"
+	case SyncConflict:
+		var pbMsg *v1.SyncConflictMessage
+		switch src := data.(type) {
+		case dto.SyncConflictMessage:
+			pbMsg = syncConflictToPB(&src)
+		case *dto.SyncConflictMessage:
+			if src != nil {
+				pbMsg = syncConflictToPB(src)
+			}
+		case map[string]interface{}:
+			pbMsg = syncConflictMapToPB(src)
+		}
+		if pbMsg != nil {
 			return proto.Marshal(pbMsg)
 		}
 	// "FolderRenameAck"
@@ -1180,4 +1294,46 @@ func formatString(v any) string {
 		return str
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+// syncConflictToPB maps the unified conflict DTO onto its protobuf twin without loss.
+// syncConflictToPB 把统一冲突 DTO 无损映射到对应 Protobuf 消息。
+func syncConflictToPB(src *dto.SyncConflictMessage) *v1.SyncConflictMessage {
+	return &v1.SyncConflictMessage{
+		Kind:           src.Kind,
+		Path:           src.Path,
+		PathHash:       src.PathHash,
+		Reason:         src.Reason,
+		ServerHash:     src.ServerHash,
+		ServerRevision: src.ServerRevision,
+		ServerDeleted:  src.ServerDeleted,
+		BaseHash:       src.BaseHash,
+		BaseContent:    src.BaseContent,
+		BaseMissing:    src.BaseMissing,
+		ServerContent:  src.ServerContent,
+	}
+}
+
+// syncConflictMapToPB maps a loosely-typed conflict payload (legacy map call sites).
+// syncConflictMapToPB 映射松散类型的冲突载荷（旧 map 调用点）。
+func syncConflictMapToPB(src map[string]interface{}) *v1.SyncConflictMessage {
+	boolValue := func(key string) bool {
+		if v, ok := src[key].(bool); ok {
+			return v
+		}
+		return false
+	}
+	return &v1.SyncConflictMessage{
+		Kind:           formatString(src["kind"]),
+		Path:           formatString(src["path"]),
+		PathHash:       formatString(src["pathHash"]),
+		Reason:         formatString(src["reason"]),
+		ServerHash:     formatString(src["serverHash"]),
+		ServerRevision: formatString(src["serverRevision"]),
+		ServerDeleted:  boolValue("serverDeleted"),
+		BaseHash:       formatString(src["baseHash"]),
+		BaseContent:    formatString(src["baseContent"]),
+		BaseMissing:    boolValue("baseMissing"),
+		ServerContent:  formatString(src["serverContent"]),
+	}
 }

@@ -139,4 +139,7 @@ var (
 
 	// --- Stale Revive Related (531) ---
 	ErrorStaleReviveRejected = NewError(531)
+
+	// --- Purged Tombstone Content (532) ---
+	ErrorContentPurged = NewError(532)
 )

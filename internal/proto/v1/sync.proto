@@ -38,6 +38,7 @@ message ClientInfoMessage {
     bool isLinux = 10;
     string offlineSyncStrategy = 11;
     bool protobuf = 12;   // Request to upgrade to protobuf // 客户端请求启用 Protobuf
+    uint32 syncBaselineVersion = 13; // Requested sync baseline protocol version; 0 = legacy // 客户端请求的同步基线协议版本；0 = 旧模式
 }
 
 message HistoricalVersion {
@@ -63,6 +64,7 @@ message CheckVersionInfo {
     int32 syncDownChunkNum = 15;
     int32 pipelineWindowUp = 16;   // Negotiated upload pipeline window; 0 = stop-and-wait // 上行流水线窗口协商值；0 = stop-and-wait
     int32 pipelineWindowDown = 17; // Negotiated download pipeline window; 0 = stop-and-wait // 下行流水线窗口协商值；0 = stop-and-wait
+    uint32 syncBaselineVersion = 18; // Sync baseline version accepted by this connection; 0 = legacy // 本连接实际接受的同步基线版本；0 = 旧模式
 }
 
 // ------------------------------------
@@ -75,11 +77,17 @@ message NoteSyncCheckRequest {
     string contentHash = 3;
     int64 mtime = 4;
     int64 ctime = 5;
+    string baseHash = 6;        // Last confirmed content hash // 最后一次确认对齐的内容哈希
+    bool baseHashMissing = 7;   // Explicitly no trusted content baseline // 明确表示没有可信内容基线
+    string baseRevision = 8;    // Server revision token at the confirmed version // 客户端确认该版本时获得的服务端版本令牌
 }
 
 message NoteSyncDelNote {
     string path = 1;
     string pathHash = 2;
+    string baseHash = 3;
+    bool baseHashMissing = 4;
+    string baseRevision = 5;
 }
 
 message NoteSyncRequest {
@@ -106,6 +114,7 @@ message NoteModifyOrCreateRequest {
     bool createOnly = 10;
     string context = 11;
     bool isConflictResolved = 12;
+    string baseRevision = 13;
 }
 
 message NoteUpdateCheckRequest {
@@ -115,6 +124,9 @@ message NoteUpdateCheckRequest {
     string contentHash = 4;
     int64 ctime = 5;
     int64 mtime = 6;
+    string baseHash = 7;
+    bool baseHashMissing = 8;
+    string baseRevision = 9;
 }
 
 message NoteDeleteRequest {
@@ -122,6 +134,9 @@ message NoteDeleteRequest {
     string path = 2;
     string pathHash = 3;
     string context = 4;
+    string baseHash = 5;
+    bool baseHashMissing = 6;
+    string baseRevision = 7;
 }
 
 message NoteRenameRequest {
@@ -150,6 +165,7 @@ message NoteSyncModifyMessage {
     int64 ctime = 5;
     int64 mtime = 6;
     int64 lastTime = 7;
+    string revision = 8; // Server revision token of the confirmed state // 已确认状态的服务端版本令牌
 }
 
 message NoteSyncDeleteMessage {
@@ -159,6 +175,8 @@ message NoteSyncDeleteMessage {
     int64 mtime = 4;
     int64 size = 5;
     int64 lastTime = 6;
+    string revision = 7;    // Revision token of the tombstone state // 墓碑状态的版本令牌
+    string contentHash = 8; // Last content hash before deletion // 删除前最后内容哈希
 }
 
 message NoteSyncRenameMessage {
@@ -178,6 +196,8 @@ message NoteSyncMtimeMessage {
     int64 ctime = 2;
     int64 mtime = 3;
     int64 lastTime = 4;
+    string contentHash = 5; // Confirmed content hash // 确认一致的内容哈希
+    string revision = 6;    // Confirmed server revision token // 确认的服务端版本令牌
 }
 
 message NoteSyncEndMessage {
@@ -186,6 +206,7 @@ message NoteSyncEndMessage {
     int64 needModifyCount = 3;
     int64 needSyncMtimeCount = 4;
     int64 needDeleteCount = 5;
+    int64 needConflictCount = 6; // Persisted conflicts in this round // 本轮已持久化的冲突数量
 }
 
 message NoteSyncNeedPushMessage {
@@ -194,12 +215,15 @@ message NoteSyncNeedPushMessage {
     string serverContent = 3;
     string baseContent = 4;
     string serverHash = 5;
+    bool baseMissing = 6; // No verifiable base content is available // 没有可证实的共同祖先内容
 }
 
 message NoteModifyAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string contentHash = 4;
+    string revision = 5;
 }
 
 message NoteRenameAckMessage {
@@ -212,6 +236,7 @@ message NoteDeleteAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string revision = 4;
 }
 
 // ------------------------------------
@@ -236,11 +261,17 @@ message FileSyncCheckRequest {
     int64 size = 4;
     int64 mtime = 5;
     int64 ctime = 6;
+    string baseHash = 7;
+    bool baseHashMissing = 8;
+    string baseRevision = 9;
 }
 
 message FileSyncDelFile {
     string path = 1;
     string pathHash = 2;
+    string baseHash = 3;
+    bool baseHashMissing = 4;
+    string baseRevision = 5;
 }
 
 message FileUploadCheckRequest {
@@ -252,6 +283,10 @@ message FileUploadCheckRequest {
     int64 ctime = 6;
     int64 mtime = 7;
     string context = 8;
+    string baseHash = 9;
+    bool baseHashMissing = 10;
+    string baseRevision = 11;
+    bool isConflictResolved = 12;
 }
 
 message FileDeleteRequest {
@@ -259,6 +294,9 @@ message FileDeleteRequest {
     string path = 2;
     string pathHash = 3;
     string context = 4;
+    string baseHash = 5;
+    bool baseHashMissing = 6;
+    string baseRevision = 7;
 }
 
 message FileRenameRequest {
@@ -297,6 +335,7 @@ message FileSyncModifyMessage {
     int64 ctime = 5;
     int64 mtime = 6;
     int64 lastTime = 7;
+    string revision = 8;
 }
 
 message FileSyncDeleteMessage {
@@ -306,6 +345,8 @@ message FileSyncDeleteMessage {
     int64 mtime = 4;
     int64 size = 5;
     int64 lastTime = 6;
+    string revision = 7;
+    string contentHash = 8;
 }
 
 message FileSyncRenameMessage {
@@ -325,6 +366,8 @@ message FileSyncMtimeMessage {
     int64 ctime = 2;
     int64 mtime = 3;
     int64 lastTime = 4;
+    string contentHash = 5;
+    string revision = 6;
 }
 
 message FileSyncEndMessage {
@@ -333,6 +376,7 @@ message FileSyncEndMessage {
     int64 needModifyCount = 3;
     int64 needSyncMtimeCount = 4;
     int64 needDeleteCount = 5;
+    int64 needConflictCount = 6;
 }
 
 message FileSyncUploadMessage {
@@ -363,12 +407,15 @@ message FileUploadAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string contentHash = 4;
+    string revision = 5;
 }
 
 message FileDeleteAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string revision = 4;
 }
 
 // ------------------------------------
@@ -384,6 +431,7 @@ message SettingSyncRequest {
     repeated SettingSyncDelSetting missingSettings = 6;
     int32 batchIndex = 7;
     int32 totalBatches = 8;
+    bool cover = 9; // Aligns with the JSON DTO's cover; never bypasses baseline protection // 与 JSON DTO 的 cover 对齐；不得绕过基线保护
 }
 
 message SettingSyncCheckRequest {
@@ -392,11 +440,17 @@ message SettingSyncCheckRequest {
     string contentHash = 3;
     int64 mtime = 4;
     int64 ctime = 5;
+    string baseHash = 6;
+    bool baseHashMissing = 7;
+    string baseRevision = 8;
 }
 
 message SettingSyncDelSetting {
     string path = 1;
     string pathHash = 2;
+    string baseHash = 3;
+    bool baseHashMissing = 4;
+    string baseRevision = 5;
 }
 
 message SettingModifyOrCreateRequest {
@@ -408,6 +462,10 @@ message SettingModifyOrCreateRequest {
     int64 ctime = 6;
     int64 mtime = 7;
     string context = 8;
+    string baseHash = 9;
+    bool baseHashMissing = 10;
+    string baseRevision = 11;
+    bool isConflictResolved = 12;
 }
 
 message SettingUpdateCheckRequest {
@@ -417,6 +475,9 @@ message SettingUpdateCheckRequest {
     string contentHash = 4;
     int64 ctime = 5;
     int64 mtime = 6;
+    string baseHash = 7;
+    bool baseHashMissing = 8;
+    string baseRevision = 9;
 }
 
 message SettingDeleteRequest {
@@ -424,6 +485,9 @@ message SettingDeleteRequest {
     string path = 2;
     string pathHash = 3;
     string context = 4;
+    string baseHash = 5;
+    bool baseHashMissing = 6;
+    string baseRevision = 7;
 }
 
 message SettingGetRequest {
@@ -447,6 +511,7 @@ message SettingSyncModifyMessage {
     int64 ctime = 6;
     int64 mtime = 7;
     int64 lastTime = 8;
+    string revision = 9;
 }
 
 message SettingSyncDeleteMessage {
@@ -455,6 +520,8 @@ message SettingSyncDeleteMessage {
     int64 ctime = 3;
     int64 mtime = 4;
     int64 lastTime = 5;
+    string revision = 6;
+    string contentHash = 7;
 }
 
 message SettingSyncMtimeMessage {
@@ -462,6 +529,8 @@ message SettingSyncMtimeMessage {
     int64 ctime = 2;
     int64 mtime = 3;
     int64 lastTime = 4;
+    string contentHash = 5;
+    string revision = 6;
 }
 
 message SettingSyncEndMessage {
@@ -470,6 +539,7 @@ message SettingSyncEndMessage {
     int64 needModifyCount = 3;
     int64 needSyncMtimeCount = 4;
     int64 needDeleteCount = 5;
+    int64 needConflictCount = 6;
 }
 
 message SettingSyncNeedUploadMessage {
@@ -480,12 +550,15 @@ message SettingModifyAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string contentHash = 4;
+    string revision = 5;
 }
 
 message SettingDeleteAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string revision = 4;
 }
 
 // ------------------------------------
@@ -496,11 +569,13 @@ message FolderSyncCheckRequest {
     string path = 1;
     string pathHash = 2;
     int64 mtime = 3;
+    string baseRevision = 4;
 }
 
 message FolderSyncDelFolder {
     string path = 1;
     string pathHash = 2;
+    string baseRevision = 3;
 }
 
 message FolderSyncRequest {
@@ -519,6 +594,8 @@ message FolderCreateRequest {
     string path = 2;
     string pathHash = 3;
     string context = 4;
+    string baseRevision = 5;
+    bool isConflictResolved = 6;
 }
 
 message FolderDeleteRequest {
@@ -526,6 +603,7 @@ message FolderDeleteRequest {
     string path = 2;
     string pathHash = 3;
     string context = 4;
+    string baseRevision = 5;
 }
 
 message FolderRenameRequest {
@@ -545,6 +623,7 @@ message FolderSyncModifyMessage {
     int64 ctime = 3;
     int64 mtime = 4;
     int64 lastTime = 5;
+    string revision = 6;
 }
 
 message FolderSyncDeleteMessage {
@@ -553,6 +632,7 @@ message FolderSyncDeleteMessage {
     int64 ctime = 3;
     int64 mtime = 4;
     int64 lastTime = 5;
+    string revision = 6;
 }
 
 message FolderSyncRenameMessage {
@@ -569,12 +649,14 @@ message FolderSyncEndMessage {
     int64 lastTime = 1;
     int64 needModifyCount = 2;
     int64 needDeleteCount = 3;
+    int64 needConflictCount = 4;
 }
 
 message FolderModifyAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string revision = 4;
 }
 
 message FolderRenameAckMessage {
@@ -587,6 +669,29 @@ message FolderDeleteAckMessage {
     int64 lastTime = 1;
     string path = 2;
     string pathHash = 3;
+    string revision = 4;
+}
+
+// ------------------------------------
+// 4.5 Unified Baseline Conflict Message (SyncConflict)
+// ------------------------------------
+
+// SyncConflictMessage is the single payload for baseline conflicts across all four
+// resource kinds. Only sent to connections that negotiated syncBaselineVersion >= 1.
+// SyncConflictMessage 是四类资源共用的基线冲突载荷，仅发送给已协商
+// syncBaselineVersion >= 1 的连接。
+message SyncConflictMessage {
+    string kind = 1;            // note | file | setting | folder // 资源类型
+    string path = 2;            // Full path // 完整路径
+    string pathHash = 3;        // Existing path hash // 现有路径哈希
+    string reason = 4;          // both_modified | remote_deleted | local_deleted | no_baseline | baseline_unverified | server_missing | revision_changed // 冲突原因
+    string serverHash = 5;      // Server active content hash; empty when not applicable // 服务端活跃内容哈希；不适用时为空
+    string serverRevision = 6;  // Current server state revision token // 当前服务端状态令牌
+    bool serverDeleted = 7;     // Current state is a tombstone // 当前是墓碑
+    string baseHash = 8;        // Content baseline used for this decision // 本次判断使用的内容基线
+    string baseContent = 9;     // Only when a real base is proven // 能证明是真实 base 时才提供
+    bool baseMissing = 10;      // Real base content unavailable // 真实 base 内容不可用
+    string serverContent = 11;  // Remote content for notes and text settings; never inlines attachment bytes // 笔记、文本配置的远端内容；附件不内联二进制
 }
 
 // ------------------------------------

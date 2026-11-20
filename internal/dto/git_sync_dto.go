@@ -16,6 +16,15 @@ type GitSyncConfigRequest struct {
 	RetentionDays   int64    `json:"retentionDays" form:"retentionDays"`
 	IncludeConfig   bool     `json:"includeConfig" form:"includeConfig"`
 	ConfigSyncRules []string `json:"configSyncRules" form:"configSyncRules"`
+	// Blog/Astro mapping extensions (v3.8.5). Optional; zero values keep the legacy
+	// whole-vault mirror behavior.
+	// 博客/Astro 映射扩展（v3.8.5）。可选；零值即保持原有整库镜像行为。
+	SourceDir           string `json:"sourceDir" form:"sourceDir"`
+	TargetSubdir        string `json:"targetSubdir" form:"targetSubdir"`
+	RequireFrontmatter  string `json:"requireFrontmatter" form:"requireFrontmatter"`
+	ValidateFrontmatter bool   `json:"validateFrontmatter" form:"validateFrontmatter"`
+	BundleAssets        bool   `json:"bundleAssets" form:"bundleAssets"`
+	WebhookURL          string `json:"webhookUrl" form:"webhookUrl"`
 }
 
 // GitSyncValidateRequest git repository sync task parameter validation request
@@ -48,23 +57,61 @@ type GitSyncDeleteRequest struct {
 // GitSyncConfigDTO git repository sync task DTO
 // GitSyncConfigDTO git 仓库同步任务 DTO
 type GitSyncConfigDTO struct {
-	ID              int64      `json:"id"`              // Task ID // 任务ID
-	UID             int64      `json:"uid"`             // User ID // 用户ID
-	Vault           string     `json:"vault"`           // Associated vault name // 关联库名称
-	RepoURL         string     `json:"repoUrl"`         // Repository URL // 仓库地址
-	Username        string     `json:"username"`        // Username // 用户名
-	Password        string     `json:"password"`        // Password // 密码
-	Branch          string     `json:"branch"`          // Branch // 分支
-	IsEnabled       bool       `json:"isEnabled"`       // Is enabled // 是否启用
-	Delay           int64      `json:"delay"`           // Delay time (seconds) // 延迟时间（秒）
-	RetentionDays   int64      `json:"retentionDays"`   // History retention days // 历史记录保留天数
-	LastSyncTime    timex.Time `json:"lastSyncTime"`    // Last sync time // 上次同步时间
-	LastStatus      int64      `json:"lastStatus"`      // Last status (0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown) // 上次状态 (0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown)
-	LastMessage     string     `json:"lastMessage"`     // Last run result message // 上次运行结果消息
-	IncludeConfig   bool       `json:"includeConfig"`   // Include config sync // 是否开启配置同步
-	ConfigSyncRules []string   `json:"configSyncRules"` // Config sync rules // 配置同步规则
-	CreatedAt       timex.Time `json:"createdAt"`       // Created at // 创建时间
-	UpdatedAt       timex.Time `json:"updatedAt"`       // Updated at // 更新时间
+	ID                  int64      `json:"id"`                  // Task ID // 任务ID
+	UID                 int64      `json:"uid"`                 // User ID // 用户ID
+	Vault               string     `json:"vault"`               // Associated vault name // 关联库名称
+	RepoURL             string     `json:"repoUrl"`             // Repository URL // 仓库地址
+	Username            string     `json:"username"`            // Username // 用户名
+	Password            string     `json:"password"`            // Password // 密码
+	Branch              string     `json:"branch"`              // Branch // 分支
+	IsEnabled           bool       `json:"isEnabled"`           // Is enabled // 是否启用
+	Delay               int64      `json:"delay"`               // Delay time (seconds) // 延迟时间（秒）
+	RetentionDays       int64      `json:"retentionDays"`       // History retention days // 历史记录保留天数
+	LastSyncTime        timex.Time `json:"lastSyncTime"`        // Last sync time // 上次同步时间
+	LastStatus          int64      `json:"lastStatus"`          // Last status (0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown) // 上次状态 (0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown)
+	LastMessage         string     `json:"lastMessage"`         // Last run result message // 上次运行结果消息
+	IncludeConfig       bool       `json:"includeConfig"`       // Include config sync // 是否开启配置同步
+	ConfigSyncRules     []string   `json:"configSyncRules"`     // Config sync rules // 配置同步规则
+	SourceDir           string     `json:"sourceDir"`           // Source directory prefix // 源目录前缀
+	TargetSubdir        string     `json:"targetSubdir"`        // Target repo subdirectory sandbox // 目标仓库子目录沙箱
+	RequireFrontmatter  string     `json:"requireFrontmatter"`  // Frontmatter filter expression // Frontmatter 过滤条件
+	ValidateFrontmatter bool       `json:"validateFrontmatter"` // Validate Astro frontmatter // 是否预检 Astro Frontmatter
+	BundleAssets        bool       `json:"bundleAssets"`        // Bundle referenced assets // 是否汇聚引用附件
+	WebhookURL          string     `json:"webhookUrl"`          // Deploy webhook URL // 部署回调地址
+	CreatedAt           timex.Time `json:"createdAt"`           // Created at // 创建时间
+	UpdatedAt           timex.Time `json:"updatedAt"`           // Updated at // 更新时间
+}
+
+// GitSyncVaultStatusRequest asks for the public sync status of the configs bound to a vault.
+// Used by restricted client tokens (note_r), so the response must never carry repo URLs or credentials.
+// GitSyncVaultStatusRequest 查询某个库绑定的 Git 同步配置的公开状态。
+// 供受限客户端令牌（note_r）使用，因此响应绝不能携带仓库地址或凭据。
+type GitSyncVaultStatusRequest struct {
+	Vault string `json:"vault" form:"vault" binding:"required"`
+}
+
+// GitSyncVaultTriggerRequest manually triggers the sync configs of a vault.
+// ConfigID = 0 means every enabled config bound to the vault.
+// GitSyncVaultTriggerRequest 手动触发某个库的 Git 同步配置。ConfigID 为 0 表示该库全部启用配置。
+type GitSyncVaultTriggerRequest struct {
+	Vault    string `json:"vault" form:"vault" binding:"required"`
+	ConfigID int64  `json:"configId" form:"configId"`
+}
+
+// GitSyncPublicStatusDTO is the client-safe status view: no RepoURL, Username, Password or
+// WebhookURL, so a vault-scoped plugin token cannot learn private endpoints.
+// GitSyncPublicStatusDTO 是客户端安全的状态视图：不含 RepoURL、Username、Password、WebhookURL，
+// 限定库的插件令牌无法借此获知私有地址。
+type GitSyncPublicStatusDTO struct {
+	ID           int64      `json:"id"`
+	Vault        string     `json:"vault"`
+	Branch       string     `json:"branch"`
+	TargetSubdir string     `json:"targetSubdir"`
+	IsEnabled    bool       `json:"isEnabled"`
+	LastSyncTime timex.Time `json:"lastSyncTime"`
+	LastStatus   int64      `json:"lastStatus"`
+	LastMessage  string     `json:"lastMessage"`
+	UpdatedAt    timex.Time `json:"updatedAt"`
 }
 
 // GitSyncHistoryRequest get sync history request

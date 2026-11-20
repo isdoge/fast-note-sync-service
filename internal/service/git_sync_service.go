@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -29,6 +31,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/safego"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -54,6 +57,12 @@ type GitSyncService interface {
 	DeleteConfig(ctx context.Context, uid int64, id int64) error
 	Validate(ctx context.Context, params *dto.GitSyncValidateRequest) error
 	ExecuteSync(ctx context.Context, uid int64, id int64) error
+	// GetVaultStatuses / TriggerByVault back the client-safe (vault-scoped) endpoints used
+	// by the Obsidian plugin. They never expose repo URLs, credentials or webhook URLs.
+	// GetVaultStatuses / TriggerByVault 支撑插件使用的库级安全接口，绝不暴露仓库地址、
+	// 凭据或 Webhook 地址。
+	GetVaultStatuses(ctx context.Context, uid int64, vaultName string) ([]*dto.GitSyncPublicStatusDTO, error)
+	TriggerByVault(ctx context.Context, uid int64, vaultName string, configID int64) error
 	CleanWorkspace(ctx context.Context, uid int64, configID int64) error
 	ListHistory(ctx context.Context, uid int64, configID int64, pager *pkgapp.Pager) ([]*dto.GitSyncHistoryDTO, int64, error)
 	NotifyUpdated(uid int64, vaultID int64)
@@ -96,6 +105,24 @@ type gitSyncService struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
+	// pendingRedo records configIDs that asked for another run while one was already
+	// in flight. The running task re-runs itself once at the end instead of letting a
+	// second goroutine race on the same workspace (invariant 5).
+	// pendingRedo 记录运行期间又收到同步请求的 configID：当前任务收尾后自行补跑一轮，
+	// 而不是并发启动第二个 goroutine 争抢同一个工作区（不变量 5）。
+	pendingRedo map[int64]bool
+	// runReports carries per-run results (skipped-post warnings, remote hook receipts)
+	// from doSync back to syncTask without widening doSync's signature.
+	// runReports 在单次运行内从 doSync 回传结果（跳过告警、远端 hook 回执）给 syncTask，
+	// 避免改动 doSync 的签名。
+	runReports map[int64]*gitSyncRunReport
+	// webhookRetry records configIDs whose current run was explicitly asked to retry the
+	// deploy webhook (manual trigger). Background runs never set it, so an idle vault
+	// does not hammer the remote build on every scheduled tick.
+	// webhookRetry 记录本轮被显式要求重试 Webhook 的 configID（手动触发）。后台运行不会设置，
+	// 空闲库因此不会在每次定时同步时反复触发远端构建。
+	webhookRetryMu sync.Mutex
+	webhookRetry   map[int64]bool
 	// Only _test.go enables local remotes, per service instance; production always rejects them.
 	// 仅 _test.go 按实例开启本地远端；生产环境始终拒绝。
 	allowLocalRepoPathsForTest atomic.Bool
@@ -114,18 +141,21 @@ type gitSyncService struct {
 func NewGitSyncService(repo domain.GitSyncRepository, noteRepo domain.NoteRepository, folderRepo domain.FolderRepository, fileRepo domain.FileRepository, vaultRepo domain.VaultRepository, settingRepo domain.SettingRepository, gitConf *appconfig.GitConfig, logger *zap.Logger) GitSyncService {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &gitSyncService{
-		repo:        repo,
-		noteRepo:    noteRepo,
-		folderRepo:  folderRepo,
-		fileRepo:    fileRepo,
-		vaultRepo:   vaultRepo,
-		settingRepo: settingRepo,
-		gitConf:     gitConf,
-		logger:      logger,
-		running:     make(map[int64]context.CancelFunc),
-		timers:      make(map[int64]*time.Timer),
-		ctx:         ctx,
-		cancel:      cancel,
+		repo:         repo,
+		noteRepo:     noteRepo,
+		folderRepo:   folderRepo,
+		fileRepo:     fileRepo,
+		vaultRepo:    vaultRepo,
+		settingRepo:  settingRepo,
+		gitConf:      gitConf,
+		logger:       logger,
+		running:      make(map[int64]context.CancelFunc),
+		timers:       make(map[int64]*time.Timer),
+		pendingRedo:  make(map[int64]bool),
+		runReports:   make(map[int64]*gitSyncRunReport),
+		webhookRetry: make(map[int64]bool),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 }
 
@@ -134,21 +164,27 @@ func (s *gitSyncService) domainToDTO(conf *domain.GitSyncConfig) *dto.GitSyncCon
 		return nil
 	}
 	res := &dto.GitSyncConfigDTO{
-		ID:              conf.ID,
-		UID:             conf.UID,
-		RepoURL:         conf.RepoURL,
-		Username:        conf.Username,
-		Password:        "", // Do not expose Git password to frontend / 不回显 Git 密码给前端
-		Branch:          conf.Branch,
-		IsEnabled:       conf.IsEnabled,
-		Delay:           conf.Delay,
-		RetentionDays:   conf.RetentionDays,
-		LastStatus:      conf.LastStatus,
-		LastMessage:     conf.LastMessage,
-		IncludeConfig:   conf.IncludeConfig,
-		ConfigSyncRules: conf.ConfigSyncRules,
-		CreatedAt:       timex.Time(conf.CreatedAt),
-		UpdatedAt:       timex.Time(conf.UpdatedAt),
+		ID:                  conf.ID,
+		UID:                 conf.UID,
+		RepoURL:             conf.RepoURL,
+		Username:            conf.Username,
+		Password:            "", // Do not expose Git password to frontend / 不回显 Git 密码给前端
+		Branch:              conf.Branch,
+		IsEnabled:           conf.IsEnabled,
+		Delay:               conf.Delay,
+		RetentionDays:       conf.RetentionDays,
+		LastStatus:          conf.LastStatus,
+		LastMessage:         conf.LastMessage,
+		IncludeConfig:       conf.IncludeConfig,
+		ConfigSyncRules:     conf.ConfigSyncRules,
+		SourceDir:           conf.SourceDir,
+		TargetSubdir:        conf.TargetSubdir,
+		RequireFrontmatter:  conf.RequireFrontmatter,
+		ValidateFrontmatter: conf.ValidateFrontmatter,
+		BundleAssets:        conf.BundleAssets,
+		WebhookURL:          conf.WebhookURL,
+		CreatedAt:           timex.Time(conf.CreatedAt),
+		UpdatedAt:           timex.Time(conf.UpdatedAt),
 	}
 	if conf.LastSyncTime != nil {
 		res.LastSyncTime = timex.Time(*conf.LastSyncTime)
@@ -195,6 +231,24 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 		return nil, err
 	}
 
+	// 子目录映射参数先清洗校验，再落库；Webhook 地址与仓库地址走同一套协议/私网校验。
+	// Normalize the subdirectory mapping up front and validate the webhook URL with the
+	// same protocol/private-host rules as the repo URL.
+	sourceDir, mapErr := normalizeRelativeSubdir(params.SourceDir)
+	if mapErr != nil {
+		return nil, code.ErrorGitSyncValidateFailed.WithDetails("sourceDir: " + mapErr.Error())
+	}
+	targetSubdir, mapErr := normalizeRelativeSubdir(params.TargetSubdir)
+	if mapErr != nil {
+		return nil, code.ErrorGitSyncValidateFailed.WithDetails("targetSubdir: " + mapErr.Error())
+	}
+	webhookURL := strings.TrimSpace(params.WebhookURL)
+	if webhookURL != "" {
+		if err := s.repoURLValidator().validateRepoURL(webhookURL); err != nil {
+			return nil, code.ErrorGitSyncValidateFailed.WithDetails("webhookUrl: " + err.Error())
+		}
+	}
+
 	var conf *domain.GitSyncConfig
 	var err error
 
@@ -215,6 +269,11 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 	oldVaultID := conf.VaultID
 	oldRepoURL := conf.RepoURL
 	oldBranch := conf.Branch
+	oldSourceDir := conf.SourceDir
+	oldTargetSubdir := conf.TargetSubdir
+	oldRequireFrontmatter := conf.RequireFrontmatter
+	oldValidateFrontmatter := conf.ValidateFrontmatter
+	oldBundleAssets := conf.BundleAssets
 
 	if params.Vault != "" {
 		v, err := s.vaultRepo.GetByName(ctx, params.Vault, uid)
@@ -242,19 +301,29 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 	conf.RetentionDays = params.RetentionDays
 	conf.IncludeConfig = params.IncludeConfig
 	conf.ConfigSyncRules = params.ConfigSyncRules
+	conf.SourceDir = sourceDir
+	conf.TargetSubdir = targetSubdir
+	conf.RequireFrontmatter = strings.TrimSpace(params.RequireFrontmatter)
+	conf.ValidateFrontmatter = params.ValidateFrontmatter
+	conf.BundleAssets = params.BundleAssets
+	conf.WebhookURL = webhookURL
 
-	// 仓库地址或分支变更后，已有工作区里残留的是旧远端/旧分支的状态。直接复用会让
-	// 下一轮同步继续操作旧分支（service#428）。最稳的做法是丢弃工作区镜像并重置同步
-	// 游标，让下一次同步在新基线上完整重新导出。工作区只是 DB 内容的缓存，删除安全；
-	// 远端仓库的提交不做任何改动。
-	// Repo/branch changes invalidate the cached workspace: the next sync must clone the new
-	// target from scratch and re-export the full DB content (service#428).
+	// 仓库地址、分支或子目录映射变更后，已有工作区里残留的是旧远端/旧分支/旧映射的状态。
+	// 直接复用会让下一轮同步继续按旧规则导出（service#428）。最稳的做法是丢弃工作区镜像
+	// 并重置同步游标，让下一次同步在新基线上完整重新导出。工作区只是 DB 内容的缓存，
+	// 删除安全；远端仓库的提交不做任何改动。
+	// Repo/branch/mapping changes invalidate the cached workspace: the next sync must clone
+	// the new target from scratch and re-export the full DB content (service#428).
 	saved, err := s.repo.Save(ctx, conf, uid)
 	if err != nil {
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
 	}
 
-	if params.ID > 0 && (oldRepoURL != saved.RepoURL || oldBranch != saved.Branch) {
+	if params.ID > 0 && (oldRepoURL != saved.RepoURL || oldBranch != saved.Branch ||
+		oldSourceDir != saved.SourceDir || oldTargetSubdir != saved.TargetSubdir ||
+		oldRequireFrontmatter != saved.RequireFrontmatter ||
+		oldValidateFrontmatter != saved.ValidateFrontmatter ||
+		oldBundleAssets != saved.BundleAssets) {
 		s.resetWorkspaceAfterTargetChange(uid, saved.ID)
 		// 重置同步游标，让下一轮同步把 DB 里现有的笔记/附件/配置完整重新导出，
 		// 而不是只导出自上次游标以来的增量。
@@ -280,6 +349,9 @@ func (s *gitSyncService) UpdateConfig(ctx context.Context, uid int64, params *dt
 func (s *gitSyncService) resetWorkspaceAfterTargetChange(uid, configID int64) {
 	s.mu.Lock()
 	cancel, running := s.running[configID]
+	// 目标变更时丢弃排队的补跑：它只会在旧映射下再跑一轮，且会让下面的等待多等一整轮。
+	// Drop any queued follow-up: it would re-run under the old mapping and extend the wait.
+	delete(s.pendingRedo, configID)
 	s.mu.Unlock()
 
 	if running {
@@ -423,6 +495,22 @@ func isPrivateOrLocalIP(ip net.IP) bool {
 }
 
 func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) error {
+	return s.executeSync(ctx, uid, id, false)
+}
+
+// TriggerSync starts a manual sync: identical to ExecuteSync except that the run is
+// allowed to fire the deploy webhook even when it produces no push. Background and
+// scheduled runs use ExecuteSync and never hammer the remote build.
+// TriggerSync 手动触发同步：与 ExecuteSync 相同，但即使本轮没有推送也允许触发部署 Webhook。
+// 后台与定时运行走 ExecuteSync，不会反复触发远端构建。
+func (s *gitSyncService) TriggerSync(ctx context.Context, uid int64, id int64) error {
+	return s.executeSync(ctx, uid, id, true)
+}
+
+func (s *gitSyncService) executeSync(ctx context.Context, uid int64, id int64, manual bool) error {
+	if manual {
+		s.requestWebhookRetry(id)
+	}
 	conf, err := s.repo.GetByID(ctx, id, uid)
 	if err != nil {
 		return code.ErrorDBQuery.WithDetails(err.Error())
@@ -437,13 +525,20 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) e
 		return err
 	}
 
-	// Strategy: For sync/mirror sync, directly cancel the old task and start a new one
-	// 策略：同步/镜像同步直接取消旧任务，启动新任务
+	// Per-config single-flight: a run that is already pushing (possibly waiting on a
+	// remote post-receive build) must not be cancelled mid-flight, and a second
+	// goroutine must never touch the same workspace concurrently (invariant 5).
+	// Instead the request is recorded and the running task re-runs once it finishes.
+	// 单飞串行：正在 push（可能还在等远端 post-receive 构建）的任务不能被中途强杀，
+	// 也不允许第二个 goroutine 并发操作同一个工作区（不变量 5）。请求登记后由当前
+	// 任务收尾时补跑一轮。
 	s.mu.Lock()
-	if oldCancel, running := s.running[id]; running {
-		s.logger.Info("Cancelling existing Git sync task to start a newer one", zap.Int64("uid", uid), zap.Int64("configId", id))
-		oldCancel()
-		delete(s.running, id)
+	if _, running := s.running[id]; running {
+		s.pendingRedo[id] = true
+		s.mu.Unlock()
+		s.logger.Info("Git sync already running, scheduling a follow-up run",
+			zap.Int64("uid", uid), zap.Int64("configId", id))
+		return nil
 	}
 
 	// Create context for new task
@@ -457,14 +552,25 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) e
 	safego.Go(s.logger, func() {
 		defer func() {
 			s.mu.Lock()
-			// Ensure only the current cancel function is cleaned up
-			// 确保只清理当前的 cancel 函数
-			if _, ok := s.running[id]; ok {
-				// 虽然 sync 策略下会先 cancel 再 set，但为了闭包内引用的严谨
-				delete(s.running, id)
-			}
+			delete(s.running, id)
+			redo := s.pendingRedo[id]
+			delete(s.pendingRedo, id)
+			shuttingDown := s.ctx.Err() != nil
 			s.mu.Unlock()
 			taskCancel()
+
+			// 补跑一轮最新增量；关停时不续跑。
+			// 先登记补跑（内部会 wg.Add）再 Done，避免 WaitGroup 计数短暂归零让
+			// Shutdown 提前返回。补跑本身不再算“手动”：若排队期间用户又点了一次
+			// TriggerSync，requestWebhookRetry 会重新置位，由补跑消费一次即可，
+			// 不能沿用本轮的 manual 让 Webhook 被重复触发。
+			// Re-run the latest increment unless shutting down; the follow-up registers
+			// on the WaitGroup before this one is released. The follow-up is not manual
+			// itself: a TriggerSync received while queued re-sets the flag and the
+			// follow-up consumes it once, so carrying `manual` would double-fire.
+			if redo && !shuttingDown {
+				_ = s.executeSync(context.Background(), uid, id, false)
+			}
 			s.wg.Done()
 		}()
 
@@ -473,6 +579,112 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) e
 		s.syncTask(taskCtx, conf)
 	})
 
+	return nil
+}
+
+// GetVaultStatuses returns the client-safe status of every git sync config bound to the
+// named vault. The DTO intentionally omits RepoURL, Username, Password and WebhookURL so a
+// vault-scoped plugin token cannot learn private endpoints.
+// GetVaultStatuses 返回某个库绑定配置的客户端安全状态；DTO 不含仓库地址、凭据与 Webhook。
+func (s *gitSyncService) GetVaultStatuses(ctx context.Context, uid int64, vaultName string) ([]*dto.GitSyncPublicStatusDTO, error) {
+	vaultName = strings.TrimSpace(vaultName)
+	if vaultName == "" {
+		return nil, code.ErrorInvalidParams.WithDetails("vault is required")
+	}
+	v, err := s.vaultRepo.GetByName(ctx, vaultName, uid)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, code.ErrorVaultNotFound
+		}
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+	if v == nil {
+		return nil, code.ErrorVaultNotFound
+	}
+
+	configs, err := s.repo.ListByVaultID(ctx, v.ID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	res := make([]*dto.GitSyncPublicStatusDTO, 0, len(configs))
+	for _, conf := range configs {
+		item := &dto.GitSyncPublicStatusDTO{
+			ID:           conf.ID,
+			Vault:        v.Name,
+			Branch:       conf.Branch,
+			TargetSubdir: conf.TargetSubdir,
+			IsEnabled:    conf.IsEnabled,
+			LastStatus:   conf.LastStatus,
+			LastMessage:  conf.LastMessage,
+			UpdatedAt:    timex.Time(conf.UpdatedAt),
+		}
+		if conf.LastSyncTime != nil {
+			item.LastSyncTime = timex.Time(*conf.LastSyncTime)
+		}
+		res = append(res, item)
+	}
+	return res, nil
+}
+
+// TriggerByVault starts a manual sync for the vault's configs. configID = 0 triggers every
+// enabled config bound to the vault; a non-zero id must belong to that same vault, so a
+// restricted token cannot address another vault's config by id.
+// TriggerByVault 手动触发库内配置；configID 为 0 时触发该库全部启用配置，非 0 时必须属于该库。
+func (s *gitSyncService) TriggerByVault(ctx context.Context, uid int64, vaultName string, configID int64) error {
+	vaultName = strings.TrimSpace(vaultName)
+	if vaultName == "" {
+		return code.ErrorInvalidParams.WithDetails("vault is required")
+	}
+	v, err := s.vaultRepo.GetByName(ctx, vaultName, uid)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return code.ErrorVaultNotFound
+		}
+		return code.ErrorDBQuery.WithDetails(err.Error())
+	}
+	if v == nil {
+		return code.ErrorVaultNotFound
+	}
+
+	if configID > 0 {
+		conf, err := s.repo.GetByID(ctx, configID, uid)
+		if err != nil {
+			return code.ErrorDBQuery.WithDetails(err.Error())
+		}
+		if conf == nil {
+			return code.ErrorGitSyncNotFound
+		}
+		// 按 ID 触发必须同时校验归属与启用状态：受限令牌不能借 configID 指向另一个库
+		// 的配置，也不应把用户明确停用的配置拉起来跑。
+		// Triggering by id must check both ownership and the enabled flag: a restricted
+		// token cannot address another vault's config, and a disabled config must stay idle.
+		if conf.VaultID != v.ID {
+			return code.ErrorGitSyncNotFound.WithDetails("config does not belong to the requested vault")
+		}
+		if !conf.IsEnabled {
+			return code.ErrorGitSyncNotFound.WithDetails("git sync config is not enabled")
+		}
+		return s.TriggerSync(ctx, uid, conf.ID)
+	}
+
+	configs, err := s.repo.ListByVaultID(ctx, v.ID, uid)
+	if err != nil {
+		return code.ErrorDBQuery.WithDetails(err.Error())
+	}
+	triggered := 0
+	for _, conf := range configs {
+		if !conf.IsEnabled {
+			continue
+		}
+		if err := s.TriggerSync(ctx, uid, conf.ID); err != nil {
+			return err
+		}
+		triggered++
+	}
+	if triggered == 0 {
+		return code.ErrorGitSyncNotFound.WithDetails("no enabled git sync config for this vault")
+	}
 	return nil
 }
 
@@ -554,7 +766,16 @@ func (s *gitSyncService) Shutdown(ctx context.Context) error {
 	for _, timer := range s.timers {
 		timer.Stop()
 	}
+	// 关停后不再补跑任何一轮 pendingRedo。
+	// No pending follow-up may run after shutdown starts.
+	s.pendingRedo = make(map[int64]bool)
 	s.mu.Unlock()
+
+	// 手动触发标记随服务关闭一起清空，避免测试/重启实例之间串味。
+	// Manual-trigger flags are cleared on shutdown so they never leak across instances.
+	s.webhookRetryMu.Lock()
+	s.webhookRetry = make(map[int64]bool)
+	s.webhookRetryMu.Unlock()
 
 	s.gcMu.Lock()
 	if s.gcTimer != nil {
@@ -613,7 +834,12 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 	conf.LastStatus = domain.GitSyncStatusRunning
 	_, _ = s.repo.Save(ctx, conf, conf.UID)
 
+	// 每轮开始时挂一份新的运行报告，导出层与 push 层往里写告警/回执。
+	// A fresh per-run report collects export warnings and remote hook receipts.
+	s.setRunReport(conf.ID, &gitSyncRunReport{})
+
 	err := s.doSync(ctx, conf)
+	report := s.takeRunReport(conf.ID)
 
 	// No changes: restore original status, trigger Save only to update updated_at
 	// Without writing history, without changing last_sync_time / last_status / last_message
@@ -622,6 +848,12 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 	if errors.Is(err, errNoChanges) {
 		s.logger.Info("No changes found, skipping history and status update", zap.Int64("configId", conf.ID))
 		conf.LastStatus = prevStatus
+		// 没有新提交但存在被跳过的文章时，不能静默：把原因留在 LastMessage 里，
+		// 否则用户会以为全部导出成功。
+		// Skipped posts must stay visible even when nothing was committed.
+		if report != nil && len(report.skipped) > 0 {
+			conf.LastMessage = report.skipSummary()
+		}
 		_, _ = s.repo.Save(context.Background(), conf, conf.UID)
 		return
 	}
@@ -640,10 +872,21 @@ func (s *gitSyncService) syncTask(ctx context.Context, conf *domain.GitSyncConfi
 		s.logger.Error("Git sync task failed", zap.Int64("configId", conf.ID), zap.Error(err))
 		finalStatus = domain.GitSyncStatusFailed
 		message = err.Error()
+		if report != nil && len(report.skipped) > 0 {
+			message += " | " + report.skipSummary()
+		}
 	} else {
 		s.logger.Info("Git sync task success", zap.Int64("configId", conf.ID))
 		finalStatus = domain.GitSyncStatusSuccess
 		message = "Sync completed at " + endTime.Format("2006-01-02 15:04:05")
+		if report != nil {
+			if receipt := report.hookReceipt; receipt != "" {
+				message += " | " + receipt
+			}
+			if len(report.skipped) > 0 {
+				message += " | " + report.skipSummary()
+			}
+		}
 		// 游标取本次运行开始时间：运行期间写入的笔记/附件时间戳晚于 startTime，下一轮仍会导出；
 		// 取结束时间会让运行窗口内的写入永久漏导（#474）。重复导出未变内容不产生提交。
 		// Cursor = run start: writes during the run are newer than startTime and get exported next run;
@@ -716,10 +959,20 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 	if err := s.repoURLValidator().validateRepoURL(conf.RepoURL); err != nil {
 		return err
 	}
-	restoreClients := s.repoURLValidator().installHTTPClients()
+	// 传输层捕获 receive-pack 响应，用来读取 post-receive 的 sideband 回执。
+	// Capture receive-pack responses at the transport layer for post-receive receipts.
+	capture := &sidebandCapture{}
+	validator := s.repoURLValidator()
+	validator.pushCapture = capture
+	restoreClients := validator.installHTTPClients()
 	defer restoreClients()
 
 	wsPath := s.getWorkspacePath(conf.UID, conf.ID)
+	// 子目录映射配置非法时整轮失败：宁可不同步，也不能在错误路径上写文件。
+	// An invalid subdirectory mapping fails the whole run instead of writing to a wrong path.
+	if _, _, err := fireflySandbox(wsPath, conf); err != nil {
+		return fmt.Errorf("invalid sync mapping: %w", err)
+	}
 	auth := &githttp.BasicAuth{
 		Username: conf.Username,
 		Password: conf.Password,
@@ -822,11 +1075,59 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 	}
 	if !pushNeeded {
 		s.logger.Info("No notes or attachments updated, skipping Git operations", zap.Int64("configId", conf.ID), zap.Bool("changed", committed))
+		// 没有新提交可推时不打 Webhook：后台定时同步在空闲库上会反复触发远端重建，
+		// 既浪费构建配额又制造噪音。只有用户显式手动触发（手动标记在本次运行期间
+		// 一直有效）才调用一次。
+		// Never fire the webhook when there is nothing to push: the background scheduler
+		// would rebuild the remote on every idle tick. Only an explicit manual trigger
+		// (the flag stays set for the whole run) may call it.
+		if s.consumeWebhookRetry(conf.ID) {
+			s.fireDeployWebhook(ctx, conf)
+		}
 		return errNoChanges
 	}
 
 	s.logger.Info("Pushing changes", zap.Int64("configId", conf.ID))
-	return s.pushWithRecovery(ctx, r, wt, conf, auth, wsPath)
+	pushErr := s.pushWithRecovery(ctx, r, wt, conf, auth, wsPath, capture)
+	if pushErr == nil && s.consumeWebhookRetry(conf.ID) {
+		// 手动触发且本轮确实推送成功：再让远端重建一次，与“无新提交时手动重试”对齐。
+		// A successful manual run also pokes the remote once, matching the no-change retry.
+		s.fireDeployWebhook(ctx, conf)
+	}
+	return pushErr
+}
+
+// requestWebhookRetry marks a configID as explicitly asked to (re)fire the deploy
+// webhook in its next run. Manual triggers set it; the background scheduler never does.
+// requestWebhookRetry 标记某配置在本轮需要显式触发部署 Webhook；仅手动触发设置。
+func (s *gitSyncService) requestWebhookRetry(configID int64) {
+	if configID <= 0 {
+		return
+	}
+	s.webhookRetryMu.Lock()
+	s.webhookRetry[configID] = true
+	s.webhookRetryMu.Unlock()
+}
+
+// consumeWebhookRetry atomically reads and clears the manual-trigger flag for configID.
+// Consumption (not a plain read) is what keeps a manual trigger to exactly one webhook
+// call: the flag is set by requestWebhookRetry at the start of a manual run, used once
+// by whichever run reaches the webhook decision, and then gone. A later background
+// NotifyUpdated run therefore cannot keep re-poking the remote on every idle tick.
+// A manual trigger that arrives while a run is already in flight sets the flag again,
+// so the next run (including the pendingRedo follow-up) still gets one fresh call.
+// consumeWebhookRetry 原子读取并清除该配置的手动触发标记。必须“消费”而不是只读，
+// 手动触发才会恰好触发一次 Webhook：标记由 requestWebhookRetry 在手动运行开始时置位，
+// 被最先到达 Webhook 判定的那一轮用掉后即消失，后续后台 NotifyUpdated 运行就不会在
+// 每次空闲同步时反复打远端。运行期间再次手动触发会重新置位，下一轮仍能再触发一次。
+func (s *gitSyncService) consumeWebhookRetry(configID int64) bool {
+	s.webhookRetryMu.Lock()
+	defer s.webhookRetryMu.Unlock()
+	if !s.webhookRetry[configID] {
+		return false
+	}
+	delete(s.webhookRetry, configID)
+	return true
 }
 
 // gitSyncPushMaxAttempts bounds push retries within one sync run: the first attempt plus one
@@ -909,14 +1210,28 @@ func (s *gitSyncService) localAheadOfRemote(r *git.Repository, branch string) (b
 // pushWithRecovery 执行 push；当远端以 non-fast-forward 拒绝时（pull 与 push 之间远端被推进，
 // 或 push 会话拿到过时的期望 SHA），先对齐到刚抓取的远端 head、在其上重新导出 DB 内容后重试
 // 一次。全程不强推：远端已有提交始终保留。
-func (s *gitSyncService) pushWithRecovery(ctx context.Context, r *git.Repository, wt *git.Worktree, conf *domain.GitSyncConfig, auth transport.AuthMethod, wsPath string) error {
+func (s *gitSyncService) pushWithRecovery(ctx context.Context, r *git.Repository, wt *git.Worktree, conf *domain.GitSyncConfig, auth transport.AuthMethod, wsPath string, capture *sidebandCapture) error {
 	var err error
 	for attempt := 1; attempt <= gitSyncPushMaxAttempts; attempt++ {
 		// 显式指定目标分支 refspec，避免依赖本地 HEAD 与远端分支名的隐式匹配
 		// （分支变更后工作区重建可能短暂 HEAD 未对齐）。普通 fast-forward push，不强推。
 		refSpec := config.RefSpec(fmt.Sprintf("refs/heads/%s:refs/heads/%s", conf.Branch, conf.Branch))
-		err = r.Push(&git.PushOptions{Auth: auth, RefSpecs: []config.RefSpec{refSpec}})
+		// Progress 捕获远端 sideband 输出（post-receive 钩子的构建回执），容量受限。
+		// Progress captures the remote sideband output (post-receive build receipts), bounded.
+		progress := &boundedProgressBuffer{limit: gitSyncHookOutputLimit}
+		err = r.Push(&git.PushOptions{Auth: auth, RefSpecs: []config.RefSpec{refSpec}, Progress: progress})
 		if err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {
+			// 传输层捕获优先：go-git 解码在状态报告的 flush 处结束，hook 输出通常落在其后。
+			// Transport capture wins: go-git stops decoding at the status flush.
+			hookOutput := progress.String()
+			if capture != nil {
+				if text := capture.get(); text != "" {
+					hookOutput += text
+				}
+			}
+			if hookErr := s.applyRemoteHookOutput(conf.ID, hookOutput); hookErr != nil {
+				return hookErr
+			}
 			return nil
 		}
 		if !isNonFastForwardPushErr(err) || attempt == gitSyncPushMaxAttempts {
@@ -932,6 +1247,11 @@ func (s *gitSyncService) pushWithRecovery(ctx context.Context, r *git.Repository
 		if inSync {
 			return nil
 		}
+	}
+	// push 彻底失败时把远端拒绝原因摘要一并带上，便于在状态里直接看到。
+	// Include the remote rejection summary so the failure is actionable from the status.
+	if summary := summarizeGitError(err); summary != "" {
+		return fmt.Errorf("git push failed: %s", summary)
 	}
 	return fmt.Errorf("git push failed: %w", err)
 }
@@ -1034,7 +1354,7 @@ func (s *gitSyncService) mirrorNotesToWorkspace(ctx context.Context, conf *domai
 			break
 		}
 
-		batchChanged, err := s.processNotesBatch(notes, wsPath)
+		batchChanged, err := s.processNotesBatch(notes, conf, wsPath)
 		if err != nil {
 			return false, err
 		}
@@ -1069,7 +1389,10 @@ func (s *gitSyncService) mirrorNotesToWorkspace(ctx context.Context, conf *domai
 		}
 	}
 
-	if conf.IncludeConfig && len(conf.ConfigSyncRules) > 0 {
+	// 子目录挂载模式下不把 .obsidian/* 等配置写到 Astro 仓库根：仓库根不属于本配置，
+	// 配置导出只在无 TargetSubdir 的整库镜像模式下生效（不变量 2）。
+	// With TargetSubdir set the repo root is off-limits, so config export stays disabled.
+	if conf.IncludeConfig && len(conf.ConfigSyncRules) > 0 && normalizeTargetSubdirForConfig(conf) == "" {
 		settingsChanged, err := s.mirrorSettingsToWorkspace(ctx, conf, wsPath, lastSyncTime)
 		if err != nil {
 			return false, fmt.Errorf("mirror settings to workspace failed: %w", err)
@@ -1157,17 +1480,31 @@ func (s *gitSyncService) processSettingsBatch(settings []*domain.Setting, conf *
 
 		_ = os.MkdirAll(filepath.Dir(fullPath), 0755)
 
+		// 二进制配置（fns-bin-v1: 前缀，如主题壁纸图片、.fonts 字体）导出到工作区时
+		// 写解码后的原始字节，Git 仓库里得到真实可用的文件而不是 base64 文本；
+		// 普通文本配置解码结果就是原字符串，行为不变。
+		// Binary settings (fns-bin-v1: prefix, e.g. theme wallpapers and .fonts files)
+		// are exported as their decoded raw bytes so the Git workspace holds real
+		// files instead of base64 text; plain text decodes to itself and is unchanged.
+		fileContent, _, decodeErr := util.DecodeSettingContentBytes(st.Content)
+		if decodeErr != nil {
+			s.logger.Warn("Skipping setting whose content cannot be decoded",
+				zap.String("path", st.Path), zap.Error(decodeErr))
+			continue
+		}
+
 		// Check if content is different before writing
-		if oldFile, err := os.Open(fullPath); err == nil {
-			defer oldFile.Close()
-			if oldContent, err := io.ReadAll(oldFile); err == nil {
-				if string(oldContent) == st.Content {
-					continue // Skip writing if content is identical
-				}
+		// 立即读取并关闭旧文件：defer 在循环里会一直累积句柄，直到整批配置处理完
+		// 才释放，长批量同步时可能耗尽文件描述符。
+		// Read and close immediately: a deferred close inside the loop would accumulate
+		// handles until the whole batch finishes and could exhaust descriptors.
+		if oldContent, readErr := os.ReadFile(fullPath); readErr == nil {
+			if bytes.Equal(oldContent, fileContent) {
+				continue // Skip writing if content is identical
 			}
 		}
 
-		if err := os.WriteFile(fullPath, []byte(st.Content), 0644); err != nil {
+		if err := os.WriteFile(fullPath, fileContent, 0644); err != nil {
 			return false, fmt.Errorf("failed to write setting to workspace: %w", err)
 		} else {
 			actuallyChanged = true
@@ -1181,62 +1518,142 @@ func (s *gitSyncService) processSettingsBatch(settings []*domain.Setting, conf *
 	return actuallyChanged, nil
 }
 
-func (s *gitSyncService) processNotesBatch(notes []*domain.Note, wsPath string) (bool, error) {
+// processNotesBatch exports one page of notes into the workspace, honoring the configured
+// SourceDir prefix, TargetSubdir sandbox, frontmatter filter and Astro preflight.
+// processNotesBatch 导出分页笔记，遵守 SourceDir 前缀、TargetSubdir 沙箱、Frontmatter 过滤与 Astro 预检。
+func (s *gitSyncService) processNotesBatch(notes []*domain.Note, conf *domain.GitSyncConfig, wsPath string) (bool, error) {
 	var actuallyChanged bool
 
+	sandboxRoot, targetSubdir, err := fireflySandbox(wsPath, conf)
+	if err != nil {
+		return false, fmt.Errorf("invalid sync mapping: %w", err)
+	}
+	// 沙箱根必须先存在：safeWorkspacePath 的符号链接校验要求工作区根可解析。
+	// The sandbox root must exist: safeWorkspacePath resolves the workspace root.
+	if err := os.MkdirAll(sandboxRoot, 0755); err != nil {
+		return false, fmt.Errorf("create sandbox directory: %w", err)
+	}
+
 	for _, n := range notes {
-		targetPath := n.Path
-		if filepath.Ext(targetPath) == "" {
-			targetPath += ".md"
+		notePath := n.Path
+		if filepath.Ext(notePath) == "" {
+			notePath += ".md"
 		}
-		fullPath, pathErr := safeWorkspacePath(wsPath, targetPath)
+
+		// 子目录挂载模式下不把 .obsidian 配置带进 Astro 内容目录（不变量 2）。
+		// With a subdirectory sandbox, .obsidian config never enters the content dir.
+		if targetSubdir != "" && isObsidianConfigPath(notePath) {
+			continue
+		}
+		relToRepo, relInTarget, matched := mapSourceToTargetPath(notePath, conf.SourceDir, targetSubdir)
+		if !matched {
+			continue
+		}
+		if isProtectedFireflyPath(relToRepo) {
+			s.logger.Warn("Skipping note targeting a protected repository path",
+				zap.String("path", n.Path), zap.String("repoPath", relToRepo))
+			continue
+		}
+
+		fullPath, pathErr := safeWorkspacePath(sandboxRoot, filepath.FromSlash(relInTarget))
 		if pathErr != nil {
 			s.logger.Warn("Skipping note whose path escapes the workspace",
 				zap.String("path", n.Path), zap.Error(pathErr))
 			continue
 		}
 
-		if n.Action == domain.NoteActionDelete {
-			if _, err := os.Stat(fullPath); err == nil {
+		// 删除、或不再满足 Frontmatter 过滤（如用户移除了 type: share）：撤下已导出的文件。
+		// Delete, or no longer matching the frontmatter filter: withdraw the exported file.
+		if n.Action == domain.NoteActionDelete || (conf.RequireFrontmatter != "" && !matchFrontmatterFilter(n.Content, conf.RequireFrontmatter)) {
+			if _, statErr := os.Stat(fullPath); statErr == nil {
 				_ = os.Remove(fullPath)
 				actuallyChanged = true
 			}
 			continue
 		}
 
+		// 先把引用附件汇聚到 ./assets/，再校验本地相对图片是否存在：刚复制过来的图片
+		// 必须参与存在性检查（设计稿要求顺序）。
+		// Bundle referenced assets first, then validate local images: freshly copied files
+		// must participate in the existence check.
+		content := n.Content
+		fileExists := func(repoRel string) bool {
+			return fireflyRepoFileExists(sandboxRoot, targetSubdir, repoRel)
+		}
 		_ = os.MkdirAll(filepath.Dir(fullPath), 0755)
+		bundled, assetsChanged, bundleErr := s.bundleNoteAssets(context.Background(), conf, notePath, content, fullPath, sandboxRoot)
+		if bundleErr != nil {
+			s.logger.Warn("Bundling note assets failed", zap.String("path", n.Path), zap.Error(bundleErr))
+		} else if assetsChanged {
+			actuallyChanged = true
+		}
+		content = bundled
 
-		// Check if content is different before writing
-		if oldFile, err := os.Open(fullPath); err == nil {
-			defer oldFile.Close()
-			// For notes, we still compare strings as they are typically small
-			// and this maintains simple logic for .md files.
-			if oldContent, err := io.ReadAll(oldFile); err == nil {
-				if string(oldContent) == n.Content {
-					continue // Skip writing if content is identical
-				}
+		// Astro 预检失败：跳过写入，保留工作区已有旧合法版本，并把原因记入本轮告警。
+		// Preflight failure: skip the write, keep the previous valid version, record the reason.
+		if conf.ValidateFrontmatter {
+			targetNoteDir := path.Dir(relToRepo)
+			if targetNoteDir == "." {
+				targetNoteDir = ""
+			}
+			if valErr := validateAstroPostFrontmatter(notePath, content, targetNoteDir, fileExists); valErr != nil {
+				s.logger.Warn("Skipping note that fails Astro frontmatter validation",
+					zap.String("path", n.Path), zap.Error(valErr))
+				s.recordSkippedPost(conf.ID, notePath, valErr.Error())
+				continue
 			}
 		}
 
-		if err := os.WriteFile(fullPath, []byte(n.Content), 0644); err != nil {
-			return false, fmt.Errorf("failed to write note to workspace: %w", err)
-		} else {
-			actuallyChanged = true
-			if n.Mtime > 0 {
-				mt := time.UnixMilli(n.Mtime)
-				_ = os.Chtimes(fullPath, mt, mt)
+		// Check if content is different before writing
+		if oldContent, readErr := os.ReadFile(fullPath); readErr == nil {
+			if string(oldContent) == content {
+				continue // Skip writing if content is identical
 			}
+		}
+
+		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+			return false, fmt.Errorf("failed to write note to workspace: %w", err)
+		}
+		actuallyChanged = true
+		if n.Mtime > 0 {
+			mt := time.UnixMilli(n.Mtime)
+			_ = os.Chtimes(fullPath, mt, mt)
 		}
 	}
 
 	return actuallyChanged, nil
 }
 
+// processFilesBatch exports one page of attachments. With TargetSubdir configured the
+// attachment is mapped into the sandbox (SourceDir prefix stripped) and anything that
+// would land outside it is skipped.
+// processFilesBatch 导出分页附件；配置 TargetSubdir 时映射进沙箱，越界一律跳过。
 func (s *gitSyncService) processFilesBatch(files []*domain.File, conf *domain.GitSyncConfig, wsPath string) (bool, error) {
 	var actuallyChanged bool
 
+	sandboxRoot, targetSubdir, err := fireflySandbox(wsPath, conf)
+	if err != nil {
+		return false, fmt.Errorf("invalid sync mapping: %w", err)
+	}
+	if err := os.MkdirAll(sandboxRoot, 0755); err != nil {
+		return false, fmt.Errorf("create sandbox directory: %w", err)
+	}
+
 	for _, f := range files {
-		fullPath, pathErr := safeWorkspacePath(wsPath, f.Path)
+		if targetSubdir != "" && isObsidianConfigPath(f.Path) {
+			continue
+		}
+		relToRepo, relInTarget, matched := mapSourceToTargetPath(f.Path, conf.SourceDir, targetSubdir)
+		if !matched {
+			continue
+		}
+		if isProtectedFireflyPath(relToRepo) {
+			s.logger.Warn("Skipping attachment targeting a protected repository path",
+				zap.String("path", f.Path), zap.String("repoPath", relToRepo))
+			continue
+		}
+
+		fullPath, pathErr := safeWorkspacePath(sandboxRoot, filepath.FromSlash(relInTarget))
 		if pathErr != nil {
 			s.logger.Warn("Skipping attachment whose path escapes the workspace",
 				zap.String("path", f.Path), zap.Error(pathErr))

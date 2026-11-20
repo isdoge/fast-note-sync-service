@@ -99,12 +99,12 @@ func (m *MockFileRepository) Delete(ctx context.Context, id, uid int64) error {
 	return args.Error(0)
 }
 
-func (m *MockFileRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
+func (m *MockFileRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) error {
 	args := m.Called(ctx, timestamp, uid)
 	return args.Error(0)
 }
 
-func (m *MockFileRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
+func (m *MockFileRepository) PurgeContentByTimeAll(ctx context.Context, timestamp int64) error {
 	args := m.Called(ctx, timestamp)
 	return args.Error(0)
 }
@@ -232,4 +232,11 @@ func (m *MockFileRepository) ListByPathHashAndPath(ctx context.Context, pathHash
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]*domain.File), args.Error(1)
+}
+
+// UpdateIfRevision is a CAS update used by the baseline-mode conditional commit.
+// UpdateIfRevision 是基线模式条件提交使用的 CAS 更新。
+func (m *MockFileRepository) UpdateIfRevision(ctx context.Context, file *domain.File, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, file, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
 }

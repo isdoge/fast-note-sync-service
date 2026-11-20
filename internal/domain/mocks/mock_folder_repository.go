@@ -76,6 +76,14 @@ func (m *MockFolderRepository) ListByUpdatedTimestamp(ctx context.Context, times
 	return args.Get(0).([]*domain.Folder), args.Error(1)
 }
 
+func (m *MockFolderRepository) ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*domain.Folder, error) {
+	args := m.Called(ctx, paths, vaultID, uid)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[string]*domain.Folder), args.Error(1)
+}
+
 func (m *MockFolderRepository) ListByPathPrefix(ctx context.Context, pathPrefix string, vaultID, uid int64) ([]*domain.Folder, error) {
 	args := m.Called(ctx, pathPrefix, vaultID, uid)
 	if args.Get(0) == nil {
@@ -123,4 +131,11 @@ func (m *MockFolderRepository) GetAllByPathHashAndPath(ctx context.Context, path
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]*domain.Folder), args.Error(1)
+}
+
+// UpdateIfRevision is a CAS update used by the baseline-mode conditional commit.
+// UpdateIfRevision 是基线模式条件提交使用的 CAS 更新。
+func (m *MockFolderRepository) UpdateIfRevision(ctx context.Context, folder *domain.Folder, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, folder, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
 }

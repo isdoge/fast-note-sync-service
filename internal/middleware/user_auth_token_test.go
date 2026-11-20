@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -519,4 +520,188 @@ func TestRevalidateUserToken(t *testing.T) {
 		require.NotNil(t, appErr)
 		require.Equal(t, code.ErrorNotUserAuthToken.Code(), appErr.Code())
 	})
+}
+
+// 限定库的插件令牌：/api/git-sync/status 与 /api/git-sync/trigger 按 note_r / note_w 归类，
+// 且 vault 白名单校验把它们限制在授权库内；其它 /api/git-sync/* 仍要求 config 权限。
+func TestUserAuthTokenWithConfig_GitSyncVaultRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tokenService := &fakeMiddlewareTokenService{}
+	router := gin.New()
+	router.Use(UserAuthTokenWithConfig("test-secret", tokenService))
+	okHandler := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	}
+	router.GET("/api/git-sync/status", okHandler)
+	router.POST("/api/git-sync/trigger", okHandler)
+	router.GET("/api/git-sync/configs", okHandler)
+
+	call := func(scope, vaults, method, target string) app.Res {
+		tokenService.activeToken = &domain.AuthToken{
+			ID:          2,
+			UID:         1,
+			TokenString: "nonce-ok",
+			Status:      1,
+			Scope:       scope,
+			Vaults:      vaults,
+			IssueType:   2,
+			ExpiredAt:   time.Now().Add(time.Hour),
+		}
+		token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
+
+		req := httptest.NewRequest(method, target, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("x-client", "ObsidianPlugin")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+
+		require.Equal(t, http.StatusOK, recorder.Code)
+		var res app.Res
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &res))
+		return res
+	}
+
+	const readScope = "p:rest c:ObsidianPlugin f:note_r"
+	const writeScope = "p:rest c:ObsidianPlugin f:note_w"
+
+	// 限定到 doge：可查、可触发
+	assert.Equal(t, code.Success.Code(), call(readScope, "doge", http.MethodGet, "/api/git-sync/status?vault=doge").Code)
+	assert.Equal(t, code.Success.Code(), call(writeScope, "doge", http.MethodPost, "/api/git-sync/trigger?vault=doge").Code)
+
+	// 其它库被拒
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(readScope, "doge", http.MethodGet, "/api/git-sync/status?vault=other").Code)
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(writeScope, "doge", http.MethodPost, "/api/git-sync/trigger?vault=other").Code)
+
+	// 只读令牌不能触发
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(readScope, "doge", http.MethodPost, "/api/git-sync/trigger?vault=doge").Code)
+
+	// 其它 git-sync 路由仍要求 config 权限，即使库在授权范围内
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(readScope, "doge", http.MethodGet, "/api/git-sync/configs?vault=doge").Code)
+}
+
+// TestUserAuthTokenWithConfig_RejectsVaultShadowing 覆盖 P1-01：受限令牌在 query 里声明
+// 授权库、却在 JSON Body 里指向另一个库时，必须整体拒绝；Body 与 query 一致时以 Body 为准
+// 正常放行。
+// A restricted token that names one vault in the query and another in the JSON body must
+// be rejected outright; agreeing values pass with the body taking precedence.
+func TestUserAuthTokenWithConfig_RejectsVaultShadowing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tokenService := &fakeMiddlewareTokenService{}
+	router := gin.New()
+	router.Use(UserAuthTokenWithConfig("test-secret", tokenService))
+	okHandler := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	}
+	router.POST("/api/git-sync/trigger", okHandler)
+	router.POST("/api/note", okHandler)
+
+	call := func(scope, vaults, target, body string) app.Res {
+		tokenService.activeToken = &domain.AuthToken{
+			ID: 2, UID: 1, TokenString: "nonce-ok", Status: 1,
+			Scope: scope, Vaults: vaults, IssueType: 2, ExpiredAt: time.Now().Add(time.Hour),
+		}
+		token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("x-client", "ObsidianPlugin")
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusOK, recorder.Code)
+		var res app.Res
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &res))
+		return res
+	}
+
+	const writeScope = "p:rest c:ObsidianPlugin f:note_w"
+
+	// ?vault=A + {"Vault":"B"}：越权尝试必须被 403 拦截（键名大小写不敏感）。
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger?vault=A", `{"vault":"B"}`).Code)
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger?vault=A", `{"Vault":"B"}`).Code)
+
+	// Body 指向授权库、query 指向未授权库：同样拒绝。
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger?vault=B", `{"vault":"A"}`).Code)
+
+	// 两处一致：放行。
+	assert.Equal(t, code.Success.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger?vault=A", `{"vault":"A"}`).Code)
+
+	// 仅 Body 声明授权库：放行；仅 Body 声明未授权库：拒绝。
+	assert.Equal(t, code.Success.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger", `{"vault":"A"}`).Code)
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger", `{"vault":"B"}`).Code)
+
+	// 笔记写入同样受遮蔽保护。
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/note?vault=A", `{"vault":"B","path":"x.md","content":"hi"}`).Code)
+}
+
+// TestUserAuthTokenWithConfig_RejectsSameSourceVaultShadowing 覆盖 B-05：同源大小写双键与
+// 多值遮蔽。查询串里 ?VAULT=Allowed&vault=Secret、重复的 ?vault=Allowed&vault=Secret、
+// JSON 里 {"VAULT":"Allowed","vault":"Secret"} 以及非字符串值 {"vault":["Secret"]} 都必须
+// 100% 稳定返回 403，绝不能因为 map 遍历顺序碰巧先验了 Allowed 就放行。
+// Same-source case-variant and multi-value vault shadowing must always be rejected;
+// -count=20 guards against map iteration order making the test pass by luck.
+func TestUserAuthTokenWithConfig_RejectsSameSourceVaultShadowing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tokenService := &fakeMiddlewareTokenService{}
+	router := gin.New()
+	router.Use(UserAuthTokenWithConfig("test-secret", tokenService))
+	okHandler := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	}
+	router.POST("/api/git-sync/trigger", okHandler)
+
+	call := func(target, body string) int {
+		tokenService.activeToken = &domain.AuthToken{
+			ID: 2, UID: 1, TokenString: "nonce-ok", Status: 1,
+			Scope: "p:rest c:ObsidianPlugin f:note_w", Vaults: "Allowed",
+			IssueType: 2, ExpiredAt: time.Now().Add(time.Hour),
+		}
+		token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("x-client", "ObsidianPlugin")
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusOK, recorder.Code)
+		var res app.Res
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &res))
+		return res.Code
+	}
+
+	vectors := []struct {
+		name   string
+		target string
+		body   string
+	}{
+		// 大小写不同的两个键，其中一个指向未授权库。
+		{"query case-variant keys", "/api/git-sync/trigger?VAULT=Allowed&vault=Secret", `{}`},
+		// 同一个键重复两次，第二个值越权。
+		{"query repeated key", "/api/git-sync/trigger?vault=Allowed&vault=Secret", `{}`},
+		// JSON Body 里大小写不同的两个键。
+		{"json case-variant keys", "/api/git-sync/trigger", `{"VAULT":"Allowed","vault":"Secret"}`},
+		// JSON 值为数组：绑定层可能取到 Secret，中间件必须直接拒绝。
+		{"json array value", "/api/git-sync/trigger", `{"vault":["Secret"]}`},
+	}
+
+	for i := 0; i < 20; i++ {
+		for _, v := range vectors {
+			require.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(v.target, v.body),
+				"绕过向量必须 403：%s（第 %d 轮）", v.name, i+1)
+		}
+	}
+
+	// 唯一非空值仍在授权范围内：照常放行，确认不是一律拒绝。
+	require.Equal(t, code.Success.Code(), call("/api/git-sync/trigger?vault=Allowed", `{}`))
+	require.Equal(t, code.Success.Code(), call("/api/git-sync/trigger", `{"vault":"Allowed"}`))
+	require.Equal(t, code.Success.Code(), call("/api/git-sync/trigger?VAULT=Allowed&vault=Allowed", `{}`))
 }

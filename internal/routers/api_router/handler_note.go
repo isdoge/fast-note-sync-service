@@ -2,6 +2,7 @@ package api_router
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -414,20 +415,26 @@ func (h *NoteHandler) Restore(c *gin.Context) {
 
 	noteSvc := h.App.GetNoteService(h.getClientInfo(c))
 
-	// Check if note exists in trash
-	// 检查笔记是否存在于回收站
+	// 回收站预查只覆盖可恢复的墓碑（rename=0 且 content_purged=0）。查不到时不能再
+	// 直接回 430：该路径的墓碑可能已被保留期清理，必须交给 noteService.Restore 判定并
+	// 返回 532 ErrorContentPurged，否则调用方会误以为记录不存在而反复重试。
+	// The recycle pre-check only covers restorable tombstones (rename=0,
+	// content_purged=0). A miss must not short-circuit to 430: the tombstone may have
+	// been purged, and noteService.Restore has to decide and answer 532.
 	noteSrc, err := noteSvc.Get(ctx, uid, &dto.NoteGetRequest{
 		Vault:     params.Vault,
 		Path:      params.Path,
 		PathHash:  params.PathHash,
 		IsRecycle: true,
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, code.ErrorNoteNotFound) {
 		h.logError(ctx, "NoteHandler.Restore.NoteGet", err)
 		apperrors.ErrorResponse(c, err)
 		return
 	}
-	if noteSrc == nil || noteSrc.Action != "delete" {
+	// 命中回收站行但不是删除态：不是可恢复的墓碑，保持原有 430 语义。
+	// A recycle hit that is not a tombstone is not restorable: keep the 430 answer.
+	if err == nil && (noteSrc == nil || noteSrc.Action != "delete") {
 		response.ToResponse(code.ErrorNoteNotFound)
 		return
 	}
