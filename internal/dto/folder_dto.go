@@ -21,34 +21,39 @@ type FolderListRequest struct {
 // FolderCreateRequest Request parameters for creating a folder
 // 创建文件夹请求参数
 type FolderCreateRequest struct {
-	Vault    string `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
-	Path     string `json:"path" form:"path" binding:"required" example:"NewFolder"` // Folder path // 文件夹路径
-	PathHash string `json:"pathHash" form:"pathHash" example:"fhash456"`             // Path hash // 路径哈希
-	Context  string `json:"context" form:"context" example:"ctx123"`                 // Context // 同步上下文
+	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
+	Path               string `json:"path" form:"path" binding:"required" example:"NewFolder"` // Folder path // 文件夹路径
+	PathHash           string `json:"pathHash" form:"pathHash" example:"fhash456"`             // Path hash // 路径哈希
+	Context            string `json:"context" form:"context" example:"ctx123"`                 // Context // 同步上下文
+	BaseRevision       string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"` // Marks if conflict is resolved manually // 标记是否为手动解决冲突
 }
 
 // FolderDeleteRequest Request parameters for deleting a folder
 // 删除文件夹请求参数
 type FolderDeleteRequest struct {
-	Vault    string `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
-	Path     string `json:"path" form:"path" binding:"required" example:"OldFolder"` // Folder path // 文件夹路径
-	PathHash string `json:"pathHash" form:"pathHash" example:"fhash789"`             // Path hash // 路径哈希
-	Context  string `json:"context" form:"context" example:"ctx123"`                 // Context // 同步上下文
+	Vault        string `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
+	Path         string `json:"path" form:"path" binding:"required" example:"OldFolder"` // Folder path // 文件夹路径
+	PathHash     string `json:"pathHash" form:"pathHash" example:"fhash789"`             // Path hash // 路径哈希
+	Context      string `json:"context" form:"context" example:"ctx123"`                 // Context // 同步上下文
+	BaseRevision string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
 // FolderSyncCheckRequest Parameters for single record check during synchronization
 // 同步检查单条记录的参数
 type FolderSyncCheckRequest struct {
-	Path     string `json:"path" form:"path" example:"FolderA"`                             // Folder path // 文件夹路径
-	PathHash string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash012"` // Path hash // 路径哈希
-	Mtime    int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`     // Modification timestamp // 修改时间戳
+	Path         string `json:"path" form:"path" example:"FolderA"`                             // Folder path // 文件夹路径
+	PathHash     string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash012"` // Path hash // 路径哈希
+	Mtime        int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`     // Modification timestamp // 修改时间戳
+	BaseRevision string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
 // FolderSyncDelFolder Parameters for deleting/missing folder during synchronization
 // 同步删除/缺失文件夹的参数
 type FolderSyncDelFolder struct {
-	Path     string `json:"path" form:"path" binding:"required" example:"DeletedFolder"`     // Folder path // 文件夹路径
-	PathHash string `json:"pathHash" form:"pathHash" binding:"required" example:"dfhash345"` // Path hash // 路径哈希
+	Path         string `json:"path" form:"path" binding:"required" example:"DeletedFolder"`     // Folder path // 文件夹路径
+	PathHash     string `json:"pathHash" form:"pathHash" binding:"required" example:"dfhash345"` // Path hash // 路径哈希
+	BaseRevision string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
 // FolderSyncRequest Synchronization request body

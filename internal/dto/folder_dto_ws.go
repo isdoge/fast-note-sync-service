@@ -6,6 +6,7 @@ type FolderSyncEndMessage struct {
 	LastTime        int64 `json:"lastTime" example:"1700000000"` // Current sync update time // 本次同步更新时间
 	NeedModifyCount int64 `json:"needModifyCount" example:"3"`   // Number of folders needing modification // 需要修改的文件夹数量
 	NeedDeleteCount int64 `json:"needDeleteCount" example:"0"`   // Number of folders needing deletion // 需要删除的文件夹数量
+	NeedConflictCount int64 `json:"needConflictCount" example:"0"` // Persisted conflicts in this round // 本轮已持久化的冲突数量
 }
 
 // FolderSyncRenameMessage message structure for folder rename during sync
@@ -28,6 +29,7 @@ type FolderSyncDeleteMessage struct {
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	Revision         string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Revision token of the tombstone state // 墓碑状态的版本令牌
 }
 
 // FolderSyncModifyMessage message content for folder modification or creation during sync
@@ -38,6 +40,7 @@ type FolderSyncModifyMessage struct {
 	Ctime            int64  `json:"ctime" form:"ctime" example:"1700000000"`               // Creation timestamp // 创建时间戳
 	Mtime            int64  `json:"mtime" form:"mtime" example:"1700000000"`               // Modification timestamp // 修改时间戳
 	UpdatedTimestamp int64  `json:"lastTime" form:"updatedTimestamp" example:"1700000000"` // Record update timestamp // 记录更新时间戳
+	Revision         string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the confirmed state // 已确认状态的服务端版本令牌
 }
 
 // FolderModifyAckMessage folder modify operation ACK
@@ -46,6 +49,7 @@ type FolderModifyAckMessage struct {
 	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
 	Path     string `json:"path"`     // Folder path // 文件夹路径
 	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	Revision string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Confirmed server revision token // 确认的服务端版本令牌
 }
 
 // FolderRenameAckMessage folder rename operation ACK
@@ -62,4 +66,5 @@ type FolderDeleteAckMessage struct {
 	LastTime int64  `json:"lastTime"` // Server write timestamp // 服务端写入时间戳
 	Path     string `json:"path"`     // Folder path // 文件夹路径
 	PathHash string `json:"pathHash"` // Path hash // 路径哈希值
+	Revision string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Revision token after deletion // 删除后的版本令牌
 }
