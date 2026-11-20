@@ -561,10 +561,15 @@ func (s *gitSyncService) executeSync(ctx context.Context, uid int64, id int64, m
 
 			// 补跑一轮最新增量；关停时不续跑。
 			// 先登记补跑（内部会 wg.Add）再 Done，避免 WaitGroup 计数短暂归零让
-			// Shutdown 提前返回。Re-run the latest increment unless shutting down;
-			// the follow-up registers on the WaitGroup before this one is released.
+			// Shutdown 提前返回。补跑本身不再算“手动”：若排队期间用户又点了一次
+			// TriggerSync，requestWebhookRetry 会重新置位，由补跑消费一次即可，
+			// 不能沿用本轮的 manual 让 Webhook 被重复触发。
+			// Re-run the latest increment unless shutting down; the follow-up registers
+			// on the WaitGroup before this one is released. The follow-up is not manual
+			// itself: a TriggerSync received while queued re-sets the flag and the
+			// follow-up consumes it once, so carrying `manual` would double-fire.
 			if redo && !shuttingDown {
-				_ = s.executeSync(context.Background(), uid, id, manual)
+				_ = s.executeSync(context.Background(), uid, id, false)
 			}
 			s.wg.Done()
 		}()
@@ -1076,7 +1081,7 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 		// Never fire the webhook when there is nothing to push: the background scheduler
 		// would rebuild the remote on every idle tick. Only an explicit manual trigger
 		// (the flag stays set for the whole run) may call it.
-		if s.webhookRetryRequested(conf.ID) {
+		if s.consumeWebhookRetry(conf.ID) {
 			s.fireDeployWebhook(ctx, conf)
 		}
 		return errNoChanges
@@ -1084,7 +1089,7 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 
 	s.logger.Info("Pushing changes", zap.Int64("configId", conf.ID))
 	pushErr := s.pushWithRecovery(ctx, r, wt, conf, auth, wsPath, capture)
-	if pushErr == nil && s.webhookRetryRequested(conf.ID) {
+	if pushErr == nil && s.consumeWebhookRetry(conf.ID) {
 		// 手动触发且本轮确实推送成功：再让远端重建一次，与“无新提交时手动重试”对齐。
 		// A successful manual run also pokes the remote once, matching the no-change retry.
 		s.fireDeployWebhook(ctx, conf)
@@ -1104,15 +1109,25 @@ func (s *gitSyncService) requestWebhookRetry(configID int64) {
 	s.webhookRetryMu.Unlock()
 }
 
-// webhookRetryRequested reports whether the configID is flagged for a webhook call.
-// The flag is left set until Shutdown so a manual trigger that got queued behind a
-// running task (pendingRedo) still pokes the remote on the follow-up run.
-// webhookRetryRequested 报告该配置是否被标记需要触发 Webhook。标记保留到服务关闭，
-// 这样被单飞队列排到补跑的手动触发也能在补跑时生效。
-func (s *gitSyncService) webhookRetryRequested(configID int64) bool {
+// consumeWebhookRetry atomically reads and clears the manual-trigger flag for configID.
+// Consumption (not a plain read) is what keeps a manual trigger to exactly one webhook
+// call: the flag is set by requestWebhookRetry at the start of a manual run, used once
+// by whichever run reaches the webhook decision, and then gone. A later background
+// NotifyUpdated run therefore cannot keep re-poking the remote on every idle tick.
+// A manual trigger that arrives while a run is already in flight sets the flag again,
+// so the next run (including the pendingRedo follow-up) still gets one fresh call.
+// consumeWebhookRetry 原子读取并清除该配置的手动触发标记。必须“消费”而不是只读，
+// 手动触发才会恰好触发一次 Webhook：标记由 requestWebhookRetry 在手动运行开始时置位，
+// 被最先到达 Webhook 判定的那一轮用掉后即消失，后续后台 NotifyUpdated 运行就不会在
+// 每次空闲同步时反复打远端。运行期间再次手动触发会重新置位，下一轮仍能再触发一次。
+func (s *gitSyncService) consumeWebhookRetry(configID int64) bool {
 	s.webhookRetryMu.Lock()
 	defer s.webhookRetryMu.Unlock()
-	return s.webhookRetry[configID]
+	if !s.webhookRetry[configID] {
+		return false
+	}
+	delete(s.webhookRetry, configID)
+	return true
 }
 
 // gitSyncPushMaxAttempts bounds push retries within one sync run: the first attempt plus one

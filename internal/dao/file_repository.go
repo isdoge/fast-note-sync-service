@@ -1061,83 +1061,108 @@ func (r *fileRepository) UpdateIfRevision(ctx context.Context, file *domain.File
 	var updateErr error
 	var tempSavePath string
 	var finalPath string
+	var newRevision string
+	var newUpdatedTimestamp int64
 
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
-		u := r.file(uid).File
-		m := r.toModel(file)
+		// 事务里用 query.Use(tx) 自行构造查询对象，不再走 r.file(uid) 的
+		// QueryWithOnceInit，所以先显式触发一次建表初始化，避免首次使用时表不存在。
+		// The transaction builds its own query object from the tx, bypassing the
+		// QueryWithOnceInit path in r.file(uid); trigger that init explicitly first.
+		_ = r.file(uid)
+		// 写队列只保证同一库的写操作串行投递，本身不开事务。CAS 的 Updates 是
+		// auto-commit，若随后 os.Rename 失败，数据库无法回滚，库盘就会不一致。
+		// 因此这里显式开一个真实事务，把 Updates 与 os.Rename 绑在同一次提交里：
+		// Rename 失败返回错误触发 ROLLBACK，行保留旧 revision 与旧 content_hash。
+		// The write queue only serialises dispatch; it does not open a transaction.
+		// The CAS Updates would auto-commit, so a failing os.Rename could not roll the
+		// row back. Wrap both in a real transaction: a rename error triggers ROLLBACK
+		// and the row keeps its previous revision and content_hash.
+		return db.Transaction(func(tx *gorm.DB) error {
+			u := query.Use(tx).File
+			m := r.toModel(file)
 
-		m.UpdatedTimestamp = timex.Now().UnixMilli()
-		m.UpdatedAt = timex.Now()
-		m.Revision = util.NewRevisionToken()
+			m.UpdatedTimestamp = timex.Now().UnixMilli()
+			m.UpdatedAt = timex.Now()
+			m.Revision = util.NewRevisionToken()
 
-		tempSavePath = m.SavePath
-		m.SavePath = ""
+			tempSavePath = m.SavePath
+			m.SavePath = ""
 
-		// CAS 先行：数据库是唯一真相。行已被另一设备改动时直接返回 false，
-		// 绝不动磁盘上现有的 file.dat（否则冲突会破坏仍然有效的旧附件）。
-		// CAS first: the row is the source of truth. When another device already
-		// changed it, return false without touching the existing file.dat, which
-		// would otherwise destroy the still-valid previous payload.
-		res, err := u.WithContext(ctx).Where(
-			u.ID.Eq(m.ID),
-			u.Revision.Eq(expectedRevision),
-		).Select(
-			u.ID,
-			u.VaultID,
-			u.Action,
-			u.FID,
-			u.Path,
-			u.PathHash,
-			u.ContentHash,
-			u.SavePath,
-			u.Rename,
-			u.ContentPurged,
-			u.Size,
-			u.Ctime,
-			u.Mtime,
-			u.UpdatedTimestamp,
-			u.UpdatedAt,
-			u.Revision,
-		).Updates(m)
-		if err != nil {
-			updateErr = err
-			return err
-		}
-		if res.RowsAffected == 0 {
-			// 冲突：磁盘保持原样，临时文件由调用方清理。
-			// Conflict: the disk stays untouched; the caller cleans the temp file.
-			return nil
-		}
-
-		// 行已确认属于本次提交，才把临时文件搬进正式位置。搬移失败必须回滚事务，
-		// 让数据库保持旧内容哈希与旧令牌，而不是声称新内容已落地。
-		// Only after the row is proven ours do we move the temp payload into place.
-		// A move failure rolls the transaction back so the row keeps the old hash.
-		if tempSavePath != "" && file.Action != domain.FileActionDelete {
-			folderPath := r.dao.GetFileFolderPath(uid, m.ID)
-			_ = os.MkdirAll(folderPath, 0755)
-			finalPath = filepath.Join(folderPath, "file.dat")
-			if moveErr := os.Rename(tempSavePath, finalPath); moveErr != nil {
-				r.dao.Logger().Error("failed to move uploaded file into place during UpdateIfRevision, rolling back",
-					zap.Int64("uid", uid),
-					zap.Int64("fileId", m.ID),
-					zap.String("tempSavePath", tempSavePath),
-					zap.String("finalPath", finalPath),
-					zap.Error(moveErr),
-				)
-				updateErr = moveErr
-				return moveErr
+			// CAS 先行：数据库是唯一真相。行已被另一设备改动时直接返回 false，
+			// 绝不动磁盘上现有的 file.dat（否则冲突会破坏仍然有效的旧附件）。
+			// CAS first: the row is the source of truth. When another device already
+			// changed it, return false without touching the existing file.dat, which
+			// would otherwise destroy the still-valid previous payload.
+			res, err := u.WithContext(ctx).Where(
+				u.ID.Eq(m.ID),
+				u.Revision.Eq(expectedRevision),
+			).Select(
+				u.ID,
+				u.VaultID,
+				u.Action,
+				u.FID,
+				u.Path,
+				u.PathHash,
+				u.ContentHash,
+				u.SavePath,
+				u.Rename,
+				u.ContentPurged,
+				u.Size,
+				u.Ctime,
+				u.Mtime,
+				u.UpdatedTimestamp,
+				u.UpdatedAt,
+				u.Revision,
+			).Updates(m)
+			if err != nil {
+				updateErr = err
+				return err
 			}
-		}
+			if res.RowsAffected == 0 {
+				// 冲突：磁盘保持原样，临时文件由调用方清理。事务正常结束（没有写入）。
+				// Conflict: the disk stays untouched; the caller cleans the temp file.
+				// The transaction ends normally with no write.
+				return nil
+			}
 
-		updated = true
-		file.Revision = m.Revision
-		file.UpdatedTimestamp = m.UpdatedTimestamp
-		return nil
+			// 行已确认属于本次提交，才把临时文件搬进正式位置。搬移失败必须回滚事务，
+			// 让数据库保持旧内容哈希与旧令牌，而不是声称新内容已落地。
+			// Only after the row is proven ours do we move the temp payload into place.
+			// A move failure rolls the transaction back so the row keeps the old hash.
+			if tempSavePath != "" && file.Action != domain.FileActionDelete {
+				folderPath := r.dao.GetFileFolderPath(uid, m.ID)
+				_ = os.MkdirAll(folderPath, 0755)
+				finalPath = filepath.Join(folderPath, "file.dat")
+				if moveErr := os.Rename(tempSavePath, finalPath); moveErr != nil {
+					r.dao.Logger().Error("failed to move uploaded file into place during UpdateIfRevision, rolling back",
+						zap.Int64("uid", uid),
+						zap.Int64("fileId", m.ID),
+						zap.String("tempSavePath", tempSavePath),
+						zap.String("finalPath", finalPath),
+						zap.Error(moveErr),
+					)
+					updateErr = moveErr
+					return moveErr
+				}
+			}
+
+			updated = true
+			newRevision = m.Revision
+			newUpdatedTimestamp = m.UpdatedTimestamp
+			return nil
+		})
 	})
 
 	if err != nil {
 		return false, err
+	}
+	// 只有事务真正提交成功后才把新令牌回写到入参，提交失败时调用方看到的仍是旧状态。
+	// Only reflect the new token on the caller's struct after the transaction commits;
+	// a failed commit must leave it on the previous state.
+	if updated {
+		file.Revision = newRevision
+		file.UpdatedTimestamp = newUpdatedTimestamp
 	}
 	return updated, updateErr
 }

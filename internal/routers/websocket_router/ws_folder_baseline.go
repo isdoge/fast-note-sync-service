@@ -179,7 +179,10 @@ func (h *FolderWSHandler) doFolderSyncBaseline(c *pkgapp.WebsocketClient, params
 				h.logWarn(c, "websocket_router.folder.FolderSync.baseline.Delete", zap.String(logpkg.FieldPath, path), zap.Error(delErr))
 				break
 			}
-			if deleted != nil {
+			// 幂等命中（目录已不存在或已是墓碑）不广播删除：与笔记/附件一致。
+			// An idempotent hit (missing or already tombstoned) is not broadcast,
+			// matching note/file deletion.
+			if deleted != nil && !deleted.Unchanged {
 				c.BroadcastResponse(code.Success.WithData(dto.FolderSyncDeleteMessage{
 					Path:             deleted.Path,
 					PathHash:         deleted.PathHash,

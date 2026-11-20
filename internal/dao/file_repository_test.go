@@ -268,3 +268,48 @@ func TestFileRepository_UpdateIfRevision_MatchReplacesPayload(t *testing.T) {
 	require.Equal(t, "H2", updated.ContentHash)
 	require.NotEqual(t, created.Revision, updated.Revision, "成功提交必须换新令牌")
 }
+
+// TestFileRepository_UpdateIfRevision_RenameFailureRollsBackRow 覆盖 B-03：CAS 命中后
+// os.Rename 失败必须触发真实 SQL 回滚，数据库里的 revision 与 content_hash 保持原值，
+// 而不是留下"新哈希已写入、磁盘还是旧内容"的库盘不一致。
+// A rename failure after a successful CAS must roll the row back: revision and
+// content_hash keep their previous values instead of claiming the new payload landed.
+func TestFileRepository_UpdateIfRevision_RenameFailureRollsBackRow(t *testing.T) {
+	fileRepo, cleanup := setupFileRepoTestEnv(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	const uid = int64(1)
+
+	tmpDir := t.TempDir()
+	initialPayload := filepath.Join(tmpDir, "initial.dat")
+	require.NoError(t, os.WriteFile(initialPayload, []byte("ORIGINAL-BYTES"), 0644))
+	created, err := fileRepo.Create(ctx, &domain.File{
+		VaultID: 1, Path: "c.png", PathHash: "ph-c", ContentHash: "H1",
+		SavePath: initialPayload, Size: 14, Mtime: 1000, Ctime: 1000, Action: domain.FileActionCreate,
+	}, uid)
+	require.NoError(t, err)
+	stored, err := fileRepo.GetByID(ctx, created.ID, uid)
+	require.NoError(t, err)
+	require.Equal(t, "H1", stored.ContentHash)
+
+	// 不存在的临时路径：CAS 成功之后 os.Rename 必然失败，用于验证事务回滚。
+	// A missing temp path makes os.Rename fail deterministically after the CAS hits.
+	missing := filepath.Join(tmpDir, "missing-dir", "never.dat")
+	ok, err := fileRepo.UpdateIfRevision(ctx, &domain.File{
+		ID: created.ID, VaultID: 1, Path: "c.png", PathHash: "ph-c", ContentHash: "H2",
+		SavePath: missing, Size: 17, Mtime: 2000, Ctime: 1000, Action: domain.FileActionCreate,
+	}, created.Revision, uid)
+	require.Error(t, err, "os.Rename 失败必须向调用方返回错误")
+	require.False(t, ok, "回滚后不得声称更新成功")
+
+	still, err := fileRepo.GetByID(ctx, created.ID, uid)
+	require.NoError(t, err)
+	require.Equal(t, "H1", still.ContentHash, "Rename 失败后 content_hash 必须回滚为原值")
+	require.Equal(t, created.Revision, still.Revision, "Rename 失败后 revision 必须回滚为原值")
+
+	// 磁盘上的旧附件保持原样。
+	afterBytes, err := os.ReadFile(stored.SavePath)
+	require.NoError(t, err)
+	require.Equal(t, []byte("ORIGINAL-BYTES"), afterBytes)
+}

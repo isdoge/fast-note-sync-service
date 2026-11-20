@@ -697,7 +697,7 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 		}
 		if !ok {
 			latest, _ := s.noteRepo.GetAllByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
-			return nil, baselineConflictFromNote(dto.BaselineRejectRevisionMoved, latest)
+			return nil, baselineConflictFromNote(dto.SyncConflictReasonLocalDeleted, latest)
 		}
 	} else {
 		err = s.noteRepo.UpdateDelete(ctx, note, uid)

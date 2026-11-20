@@ -641,3 +641,67 @@ func TestUserAuthTokenWithConfig_RejectsVaultShadowing(t *testing.T) {
 	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
 		call(writeScope, "A", "/api/note?vault=A", `{"vault":"B","path":"x.md","content":"hi"}`).Code)
 }
+
+// TestUserAuthTokenWithConfig_RejectsSameSourceVaultShadowing 覆盖 B-05：同源大小写双键与
+// 多值遮蔽。查询串里 ?VAULT=Allowed&vault=Secret、重复的 ?vault=Allowed&vault=Secret、
+// JSON 里 {"VAULT":"Allowed","vault":"Secret"} 以及非字符串值 {"vault":["Secret"]} 都必须
+// 100% 稳定返回 403，绝不能因为 map 遍历顺序碰巧先验了 Allowed 就放行。
+// Same-source case-variant and multi-value vault shadowing must always be rejected;
+// -count=20 guards against map iteration order making the test pass by luck.
+func TestUserAuthTokenWithConfig_RejectsSameSourceVaultShadowing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tokenService := &fakeMiddlewareTokenService{}
+	router := gin.New()
+	router.Use(UserAuthTokenWithConfig("test-secret", tokenService))
+	okHandler := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	}
+	router.POST("/api/git-sync/trigger", okHandler)
+
+	call := func(target, body string) int {
+		tokenService.activeToken = &domain.AuthToken{
+			ID: 2, UID: 1, TokenString: "nonce-ok", Status: 1,
+			Scope: "p:rest c:ObsidianPlugin f:note_w", Vaults: "Allowed",
+			IssueType: 2, ExpiredAt: time.Now().Add(time.Hour),
+		}
+		token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("x-client", "ObsidianPlugin")
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusOK, recorder.Code)
+		var res app.Res
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &res))
+		return res.Code
+	}
+
+	vectors := []struct {
+		name   string
+		target string
+		body   string
+	}{
+		// 大小写不同的两个键，其中一个指向未授权库。
+		{"query case-variant keys", "/api/git-sync/trigger?VAULT=Allowed&vault=Secret", `{}`},
+		// 同一个键重复两次，第二个值越权。
+		{"query repeated key", "/api/git-sync/trigger?vault=Allowed&vault=Secret", `{}`},
+		// JSON Body 里大小写不同的两个键。
+		{"json case-variant keys", "/api/git-sync/trigger", `{"VAULT":"Allowed","vault":"Secret"}`},
+		// JSON 值为数组：绑定层可能取到 Secret，中间件必须直接拒绝。
+		{"json array value", "/api/git-sync/trigger", `{"vault":["Secret"]}`},
+	}
+
+	for i := 0; i < 20; i++ {
+		for _, v := range vectors {
+			require.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(v.target, v.body),
+				"绕过向量必须 403：%s（第 %d 轮）", v.name, i+1)
+		}
+	}
+
+	// 唯一非空值仍在授权范围内：照常放行，确认不是一律拒绝。
+	require.Equal(t, code.Success.Code(), call("/api/git-sync/trigger?vault=Allowed", `{}`))
+	require.Equal(t, code.Success.Code(), call("/api/git-sync/trigger", `{"vault":"Allowed"}`))
+	require.Equal(t, code.Success.Code(), call("/api/git-sync/trigger?VAULT=Allowed&vault=Allowed", `{}`))
+}

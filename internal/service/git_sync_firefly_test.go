@@ -936,3 +936,54 @@ func TestProcessSettingsBatch_LargeBatchDoesNotAccumulateHandles(t *testing.T) {
 		require.True(t, legacyExhausted, "旧实现（循环内 defer）在低软上限下必须耗尽句柄，证明本测试有效")
 	}
 }
+
+// TestDoSync_ManualWebhookConsumedOnce 覆盖 B-04：手动触发在一次空闲运行里打一次 Webhook
+// 后，标记必须被消费；紧接着的后台运行即使无变更也不得再打第二次。
+// A manual trigger must consume the flag: the next background idle run must not fire
+// the webhook a second time.
+func TestDoSync_ManualWebhookConsumedOnce(t *testing.T) {
+	t.Chdir(t.TempDir())
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	_, err := git.PlainInit(remote, true)
+	require.NoError(t, err)
+
+	var webhookHits int32
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&webhookHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(webhook.Close)
+
+	repo := new(domainmocks.MockGitSyncRepository)
+	repo.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(&domain.GitSyncConfig{}, nil)
+	repo.On("CreateHistory", mock.Anything, mock.Anything, mock.Anything).Return(&domain.GitSyncHistory{}, nil)
+	svc := newTestGitSyncService(repo)
+	enableLocalGitRepoPaths(t, svc)
+	svc.gitConf.AllowedPrivateHosts = []string{"127.0.0.1"}
+
+	noteRepo := svc.noteRepo.(*domainmocks.MockNoteRepository)
+	noteRepo.On("ListByUpdatedTimestampPage", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return([]*domain.Note{}, nil)
+	svc.fileRepo.(*domainmocks.MockFileRepository).
+		On("ListByUpdatedTimestampPage", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return([]*domain.File{}, nil)
+
+	conf := &domain.GitSyncConfig{
+		ID: 1, UID: 1, VaultID: 1, RepoURL: remote, Branch: "master",
+		WebhookURL: webhook.URL,
+	}
+
+	// 手动触发：空跑也应打一次 Webhook。
+	svc.requestWebhookRetry(conf.ID)
+	svc.syncTask(context.Background(), conf)
+	require.Equal(t, int32(1), atomic.LoadInt32(&webhookHits), "手动触发应打一次 Webhook")
+
+	// 紧随其后的普通后台运行：标记已被消费，不得再打。
+	svc.syncTask(context.Background(), conf)
+	require.Equal(t, int32(1), atomic.LoadInt32(&webhookHits), "后台运行不得重复触发已消费的 Webhook")
+
+	// 再次手动触发仍然可以打一次（消费不是永久禁用）。
+	svc.requestWebhookRetry(conf.ID)
+	svc.syncTask(context.Background(), conf)
+	require.Equal(t, int32(2), atomic.LoadInt32(&webhookHits), "新的手动触发应重新打一次 Webhook")
+}

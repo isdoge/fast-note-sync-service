@@ -245,9 +245,11 @@ class GitHTTPHandler(http.server.BaseHTTPRequestHandler):
         try:
             content_length = int(raw_length)
         except ValueError:
+            self.close_connection = True
             self._send_plain(400, "invalid content length")
             return None
         if content_length < 0:
+            self.close_connection = True
             self._send_plain(400, "invalid content length")
             return None
         if content_length > MAX_REQUEST_BODY:
@@ -264,16 +266,28 @@ class GitHTTPHandler(http.server.BaseHTTPRequestHandler):
         while True:
             size_line = self.rfile.readline(1024)
             if not size_line:
+                # 400 之后连接里可能还有未读数据，必须显式关闭，否则残留字节会被
+                # 当成下一个请求。400 after an unread/truncated body: close the socket.
+                self.close_connection = True
                 self._send_plain(400, "truncated chunked body")
+                return None
+            if not size_line.endswith(b"\n"):
+                # 没有换行说明这一行本身就超长或被截断，分块边界不可信，直接断开。
+                # No newline means the size line was truncated; the chunk framing is
+                # untrustworthy, so drop the connection instead of resyncing.
+                self.close_connection = True
+                self._send_plain(400, "invalid chunk size")
                 return None
             # 分块大小可能带 chunk-ext（';key=value'），只取前面的十六进制部分。
             size_field = size_line.split(b";", 1)[0].strip()
             try:
                 chunk_size = int(size_field, 16)
             except ValueError:
+                self.close_connection = True
                 self._send_plain(400, "invalid chunk size")
                 return None
             if chunk_size < 0:
+                self.close_connection = True
                 self._send_plain(400, "invalid chunk size")
                 return None
             if chunk_size == 0:
@@ -289,12 +303,14 @@ class GitHTTPHandler(http.server.BaseHTTPRequestHandler):
                 return None
             data = self.rfile.read(chunk_size)
             if len(data) != chunk_size:
+                self.close_connection = True
                 self._send_plain(400, "truncated chunked body")
                 return None
             chunks.append(data)
             # 每个 chunk 后面必须紧跟 CRLF（容错接受裸 LF）。
             terminator = self.rfile.readline(2)
             if terminator not in (b"\r\n", b"\n"):
+                self.close_connection = True
                 self._send_plain(400, "invalid chunk terminator")
                 return None
 

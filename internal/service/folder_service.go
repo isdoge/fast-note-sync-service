@@ -269,17 +269,31 @@ func (s *folderService) Delete(ctx context.Context, uid int64, params *dto.Folde
 	f, err := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 基线模式删除必须幂等：目录不存在（上传未完成或已物理清理）也返回成功，
+			// 与 note/file 的删除语义对齐，否则客户端会一直重试。
+			// Baseline deletes must be idempotent: a missing folder (upload not finished or
+			// physically cleaned) is still a success, matching note/file deletion.
+			if params.Baseline != nil {
+				return &dto.FolderDTO{Path: params.Path, PathHash: params.PathHash, Unchanged: true}, nil
+			}
 			return nil, code.ErrorFolderNotFound
 		}
 		return nil, code.ErrorFolderGetFailed.WithDetails(err.Error())
 	}
 
-	// 基线模式实时删除：目录活跃行只有在携带匹配的 BaseRevision 时才能条件删除。
-	// Baseline realtime delete: a live folder may only be conditionally deleted with a
-	// matching BaseRevision.
+	// 基线模式实时删除：已是墓碑即幂等成功；活跃行只有在携带匹配的 BaseRevision 时
+	// 才能条件删除，令牌不匹配统一按 local_deleted 报告。
+	// Baseline realtime delete: an existing tombstone is an idempotent success; a live
+	// folder may only be conditionally deleted with a matching BaseRevision, and a token
+	// mismatch is reported as local_deleted.
 	if params.Baseline != nil {
+		if f.Action == domain.FolderActionDelete {
+			res := s.domainToDTO(f)
+			res.Unchanged = true
+			return res, nil
+		}
 		if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != f.Revision {
-			return nil, baselineConflictFromFolder(dto.BaselineRejectRevisionMoved, f)
+			return nil, baselineConflictFromFolder(dto.SyncConflictReasonLocalDeleted, f)
 		}
 	}
 
@@ -294,7 +308,7 @@ func (s *folderService) Delete(ctx context.Context, uid int64, params *dto.Folde
 		}
 		if !ok {
 			latest, _ := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
-			return nil, baselineConflictFromFolder(dto.BaselineRejectRevisionMoved, latest)
+			return nil, baselineConflictFromFolder(dto.SyncConflictReasonLocalDeleted, latest)
 		}
 	} else {
 		_, err = s.folderRepo.Update(ctx, f, uid)

@@ -513,7 +513,7 @@ func (s *fileService) Delete(ctx context.Context, uid int64, params *dto.FileDel
 		}
 		if !ok {
 			latest, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
-			return nil, baselineConflictFromFile(dto.BaselineRejectRevisionMoved, latest)
+			return nil, baselineConflictFromFile(dto.SyncConflictReasonLocalDeleted, latest)
 		}
 		updated, err = s.fileRepo.GetByID(ctx, file.ID, uid)
 		if err != nil {

@@ -272,77 +272,102 @@ func RevalidateUserToken(c *gin.Context, secretKey string, tokenService service.
 	return nil
 }
 
-// extractRequestedVault resolves the vault a request addresses, checking the URL
-// query/form parameters (keys compared case-insensitively) and the JSON body's
-// top-level "vault" field (also case-insensitive). It reports mismatch=true when
-// both sources are present and disagree, which the caller must reject.
+// extractRequestedVault resolves the vault a request addresses. It collects every
+// non-empty vault string from the URL query, the form body and the top-level JSON
+// body fields, comparing keys case-insensitively. If more than one distinct vault
+// name appears the request is rejected with mismatch=true: a caller must never be
+// able to get one value checked while the handler binds a different one (e.g.
+// ?VAULT=Allowed&vault=Secret). A JSON value that is neither a string nor null
+// (array, object, number) is also a mismatch, since binding could coerce it into
+// a vault the middleware never validated.
 //
-// The JSON body takes precedence over the query string when they agree, because
-// binding happens against the body; the query copy is only a compatibility path.
-// extractRequestedVault 解析请求指向的库：同时检查 URL query/form（键名不区分大小写）
-// 与 JSON Body 顶层 vault 字段（同样不区分大小写）。两处都存在且不一致时返回
-// mismatch=true，由调用方拒绝；一致时以 JSON Body 为准（参数绑定读的是 Body）。
+// The /api/webgui/events endpoint is exempt from the query collection: it takes one
+// complete vault name per repeated vault= parameter and checks each one separately
+// in the caller, so multiple values there are legitimate.
+// extractRequestedVault 解析请求指向的库：收集 URL query、表单 body 与 JSON Body 顶层
+// 所有大小写不敏感匹配的 vault 非空字符串。出现两个及以上不同的库名即返回
+// mismatch=true —— 绝不允许"校验一个、绑定另一个"（如 ?VAULT=Allowed&vault=Secret）。
+// JSON 中匹配键的值若不是字符串或 null（数组/对象/数字），同样判为 mismatch，因为
+// 绑定层可能把它强制转换成中间件从未校验过的库名。
+// /api/webgui/events 不参与 query 收集：该端点每个重复的 vault= 参数是一个完整库名，
+// 由调用方逐个校验，多值在此合法。
 func extractRequestedVault(c *gin.Context) (vault string, mismatch bool) {
-	queryVault := ""
-	for key, values := range c.Request.URL.Query() {
-		if strings.EqualFold(key, "vault") && len(values) > 0 {
-			queryVault = values[0]
-			break
-		}
-	}
-	if queryVault == "" && c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
-		queryVault = formValueFold(c, "vault")
+	if c.Request == nil {
+		return "", false
 	}
 
-	bodyVault := jsonBodyVault(c)
-	if queryVault != "" && bodyVault != "" && queryVault != bodyVault {
+	values := make(map[string]struct{})
+	add := func(v string) {
+		if v != "" {
+			values[v] = struct{}{}
+		}
+	}
+
+	if c.Request.URL.Path != "/api/webgui/events" {
+		for key, list := range c.Request.URL.Query() {
+			if strings.EqualFold(key, "vault") {
+				for _, v := range list {
+					add(v)
+				}
+			}
+		}
+	}
+
+	if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead && c.Request.Form != nil {
+		for key, list := range c.Request.Form {
+			if strings.EqualFold(key, "vault") {
+				for _, v := range list {
+					add(v)
+				}
+			}
+		}
+	}
+
+	if jsonBodyVaults(c, add) {
 		return "", true
 	}
-	if bodyVault != "" {
-		return bodyVault, false
+	if len(values) > 1 {
+		return "", true
 	}
-	return queryVault, false
+	for v := range values {
+		return v, false
+	}
+	return "", false
 }
 
-// formValueFold reads a form value with a case-insensitive key.
-// formValueFold 以不区分大小写的键读取表单值。
-func formValueFold(c *gin.Context, key string) string {
-	if c.Request == nil || c.Request.Form == nil {
-		return ""
-	}
-	for k, values := range c.Request.Form {
-		if strings.EqualFold(k, key) && len(values) > 0 {
-			return values[0]
-		}
-	}
-	return ""
-}
-
-// jsonBodyVault reads the top-level "vault" field of a JSON body, restoring the
-// body afterwards so the handler can still bind it.
-// jsonBodyVault 读取 JSON Body 顶层的 vault 字段，并复原 Body 供后续绑定使用。
-func jsonBodyVault(c *gin.Context) string {
+// jsonBodyVaults feeds every top-level case-insensitive "vault" field of a JSON
+// body into add, restoring the body afterwards so the handler can still bind it.
+// It reports invalid=true when a matching key holds a value that is neither a
+// string nor null.
+// jsonBodyVaults 将 JSON Body 顶层所有大小写不敏感 vault 字段的值交给 add，并复原
+// Body 供后续绑定；匹配键的值既非字符串也非 null 时返回 invalid=true。
+func jsonBodyVaults(c *gin.Context, add func(string)) (invalid bool) {
 	if c.Request == nil || c.Request.Body == nil || !strings.Contains(c.ContentType(), "application/json") {
-		return ""
+		return false
 	}
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		return ""
+		return false
 	}
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 	var body map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
-		return ""
+		return false
 	}
 	for key, value := range body {
 		if !strings.EqualFold(key, "vault") {
 			continue
 		}
-		if strVal, ok := value.(string); ok {
-			return strVal
+		switch v := value.(type) {
+		case nil:
+			// null 视作未提供。
+		case string:
+			add(v)
+		default:
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func isHeaderlessLoginTokenResourceRead(c *gin.Context) bool {

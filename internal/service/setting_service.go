@@ -462,7 +462,7 @@ func (s *settingService) Delete(ctx context.Context, uid int64, params *dto.Sett
 		}
 		if !ok {
 			latest, _ := s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
-			return nil, baselineConflictFromSetting(dto.BaselineRejectRevisionMoved, latest)
+			return nil, baselineConflictFromSetting(dto.SyncConflictReasonLocalDeleted, latest)
 		}
 		updated, err = s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
 		if err != nil {

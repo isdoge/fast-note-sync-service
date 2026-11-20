@@ -128,6 +128,9 @@ type FolderDTO struct {
 	UpdatedAt        timex.Time `json:"updatedAt"`                        // Updated at time // 更新时间
 	CreatedAt        timex.Time `json:"createdAt"`                        // Created at time // 创建时间
 	Revision         string     `json:"revision,omitempty"`               // Server revision token // 服务端版本令牌
+	// Unchanged is set by Delete when the record was missing or already deleted (no write happened)
+	// Unchanged 由 Delete 设置：记录不存在或已是删除状态，本次未写库（调用方据此不广播）
+	Unchanged bool `json:"-" form:"-"`
 }
 
 // FolderTreeNode Folder tree node
