@@ -116,6 +116,13 @@ type gitSyncService struct {
 	// runReports 在单次运行内从 doSync 回传结果（跳过告警、远端 hook 回执）给 syncTask，
 	// 避免改动 doSync 的签名。
 	runReports map[int64]*gitSyncRunReport
+	// webhookRetry records configIDs whose current run was explicitly asked to retry the
+	// deploy webhook (manual trigger). Background runs never set it, so an idle vault
+	// does not hammer the remote build on every scheduled tick.
+	// webhookRetry 记录本轮被显式要求重试 Webhook 的 configID（手动触发）。后台运行不会设置，
+	// 空闲库因此不会在每次定时同步时反复触发远端构建。
+	webhookRetryMu sync.Mutex
+	webhookRetry   map[int64]bool
 	// Only _test.go enables local remotes, per service instance; production always rejects them.
 	// 仅 _test.go 按实例开启本地远端；生产环境始终拒绝。
 	allowLocalRepoPathsForTest atomic.Bool
@@ -134,20 +141,21 @@ type gitSyncService struct {
 func NewGitSyncService(repo domain.GitSyncRepository, noteRepo domain.NoteRepository, folderRepo domain.FolderRepository, fileRepo domain.FileRepository, vaultRepo domain.VaultRepository, settingRepo domain.SettingRepository, gitConf *appconfig.GitConfig, logger *zap.Logger) GitSyncService {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &gitSyncService{
-		repo:        repo,
-		noteRepo:    noteRepo,
-		folderRepo:  folderRepo,
-		fileRepo:    fileRepo,
-		vaultRepo:   vaultRepo,
-		settingRepo: settingRepo,
-		gitConf:     gitConf,
-		logger:      logger,
-		running:     make(map[int64]context.CancelFunc),
-		timers:      make(map[int64]*time.Timer),
-		pendingRedo: make(map[int64]bool),
-		runReports:  make(map[int64]*gitSyncRunReport),
-		ctx:         ctx,
-		cancel:      cancel,
+		repo:         repo,
+		noteRepo:     noteRepo,
+		folderRepo:   folderRepo,
+		fileRepo:     fileRepo,
+		vaultRepo:    vaultRepo,
+		settingRepo:  settingRepo,
+		gitConf:      gitConf,
+		logger:       logger,
+		running:      make(map[int64]context.CancelFunc),
+		timers:       make(map[int64]*time.Timer),
+		pendingRedo:  make(map[int64]bool),
+		runReports:   make(map[int64]*gitSyncRunReport),
+		webhookRetry: make(map[int64]bool),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 }
 
@@ -487,6 +495,22 @@ func isPrivateOrLocalIP(ip net.IP) bool {
 }
 
 func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) error {
+	return s.executeSync(ctx, uid, id, false)
+}
+
+// TriggerSync starts a manual sync: identical to ExecuteSync except that the run is
+// allowed to fire the deploy webhook even when it produces no push. Background and
+// scheduled runs use ExecuteSync and never hammer the remote build.
+// TriggerSync 手动触发同步：与 ExecuteSync 相同，但即使本轮没有推送也允许触发部署 Webhook。
+// 后台与定时运行走 ExecuteSync，不会反复触发远端构建。
+func (s *gitSyncService) TriggerSync(ctx context.Context, uid int64, id int64) error {
+	return s.executeSync(ctx, uid, id, true)
+}
+
+func (s *gitSyncService) executeSync(ctx context.Context, uid int64, id int64, manual bool) error {
+	if manual {
+		s.requestWebhookRetry(id)
+	}
 	conf, err := s.repo.GetByID(ctx, id, uid)
 	if err != nil {
 		return code.ErrorDBQuery.WithDetails(err.Error())
@@ -540,7 +564,7 @@ func (s *gitSyncService) ExecuteSync(ctx context.Context, uid int64, id int64) e
 			// Shutdown 提前返回。Re-run the latest increment unless shutting down;
 			// the follow-up registers on the WaitGroup before this one is released.
 			if redo && !shuttingDown {
-				_ = s.ExecuteSync(context.Background(), uid, id)
+				_ = s.executeSync(context.Background(), uid, id, manual)
 			}
 			s.wg.Done()
 		}()
@@ -626,10 +650,17 @@ func (s *gitSyncService) TriggerByVault(ctx context.Context, uid int64, vaultNam
 		if conf == nil {
 			return code.ErrorGitSyncNotFound
 		}
+		// 按 ID 触发必须同时校验归属与启用状态：受限令牌不能借 configID 指向另一个库
+		// 的配置，也不应把用户明确停用的配置拉起来跑。
+		// Triggering by id must check both ownership and the enabled flag: a restricted
+		// token cannot address another vault's config, and a disabled config must stay idle.
 		if conf.VaultID != v.ID {
 			return code.ErrorGitSyncNotFound.WithDetails("config does not belong to the requested vault")
 		}
-		return s.ExecuteSync(ctx, uid, conf.ID)
+		if !conf.IsEnabled {
+			return code.ErrorGitSyncNotFound.WithDetails("git sync config is not enabled")
+		}
+		return s.TriggerSync(ctx, uid, conf.ID)
 	}
 
 	configs, err := s.repo.ListByVaultID(ctx, v.ID, uid)
@@ -641,7 +672,7 @@ func (s *gitSyncService) TriggerByVault(ctx context.Context, uid int64, vaultNam
 		if !conf.IsEnabled {
 			continue
 		}
-		if err := s.ExecuteSync(ctx, uid, conf.ID); err != nil {
+		if err := s.TriggerSync(ctx, uid, conf.ID); err != nil {
 			return err
 		}
 		triggered++
@@ -734,6 +765,12 @@ func (s *gitSyncService) Shutdown(ctx context.Context) error {
 	// No pending follow-up may run after shutdown starts.
 	s.pendingRedo = make(map[int64]bool)
 	s.mu.Unlock()
+
+	// 手动触发标记随服务关闭一起清空，避免测试/重启实例之间串味。
+	// Manual-trigger flags are cleared on shutdown so they never leak across instances.
+	s.webhookRetryMu.Lock()
+	s.webhookRetry = make(map[int64]bool)
+	s.webhookRetryMu.Unlock()
 
 	s.gcMu.Lock()
 	if s.gcTimer != nil {
@@ -1033,15 +1070,49 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 	}
 	if !pushNeeded {
 		s.logger.Info("No notes or attachments updated, skipping Git operations", zap.Int64("configId", conf.ID), zap.Bool("changed", committed))
-		// 没有新提交可推，但配置了 Webhook 时允许手动触发一次远端构建重试
-		// （例如上一轮 Git 已推送成功、远端 post-receive 因待确认设置失败）。
-		// No commit to push: a configured webhook still gets one controlled retry call.
-		s.fireDeployWebhook(ctx, conf)
+		// 没有新提交可推时不打 Webhook：后台定时同步在空闲库上会反复触发远端重建，
+		// 既浪费构建配额又制造噪音。只有用户显式手动触发（手动标记在本次运行期间
+		// 一直有效）才调用一次。
+		// Never fire the webhook when there is nothing to push: the background scheduler
+		// would rebuild the remote on every idle tick. Only an explicit manual trigger
+		// (the flag stays set for the whole run) may call it.
+		if s.webhookRetryRequested(conf.ID) {
+			s.fireDeployWebhook(ctx, conf)
+		}
 		return errNoChanges
 	}
 
 	s.logger.Info("Pushing changes", zap.Int64("configId", conf.ID))
-	return s.pushWithRecovery(ctx, r, wt, conf, auth, wsPath, capture)
+	pushErr := s.pushWithRecovery(ctx, r, wt, conf, auth, wsPath, capture)
+	if pushErr == nil && s.webhookRetryRequested(conf.ID) {
+		// 手动触发且本轮确实推送成功：再让远端重建一次，与“无新提交时手动重试”对齐。
+		// A successful manual run also pokes the remote once, matching the no-change retry.
+		s.fireDeployWebhook(ctx, conf)
+	}
+	return pushErr
+}
+
+// requestWebhookRetry marks a configID as explicitly asked to (re)fire the deploy
+// webhook in its next run. Manual triggers set it; the background scheduler never does.
+// requestWebhookRetry 标记某配置在本轮需要显式触发部署 Webhook；仅手动触发设置。
+func (s *gitSyncService) requestWebhookRetry(configID int64) {
+	if configID <= 0 {
+		return
+	}
+	s.webhookRetryMu.Lock()
+	s.webhookRetry[configID] = true
+	s.webhookRetryMu.Unlock()
+}
+
+// webhookRetryRequested reports whether the configID is flagged for a webhook call.
+// The flag is left set until Shutdown so a manual trigger that got queued behind a
+// running task (pendingRedo) still pokes the remote on the follow-up run.
+// webhookRetryRequested 报告该配置是否被标记需要触发 Webhook。标记保留到服务关闭，
+// 这样被单飞队列排到补跑的手动触发也能在补跑时生效。
+func (s *gitSyncService) webhookRetryRequested(configID int64) bool {
+	s.webhookRetryMu.Lock()
+	defer s.webhookRetryMu.Unlock()
+	return s.webhookRetry[configID]
 }
 
 // gitSyncPushMaxAttempts bounds push retries within one sync run: the first attempt plus one
@@ -1408,12 +1479,13 @@ func (s *gitSyncService) processSettingsBatch(settings []*domain.Setting, conf *
 		}
 
 		// Check if content is different before writing
-		if oldFile, err := os.Open(fullPath); err == nil {
-			defer oldFile.Close()
-			if oldContent, err := io.ReadAll(oldFile); err == nil {
-				if bytes.Equal(oldContent, fileContent) {
-					continue // Skip writing if content is identical
-				}
+		// 立即读取并关闭旧文件：defer 在循环里会一直累积句柄，直到整批配置处理完
+		// 才释放，长批量同步时可能耗尽文件描述符。
+		// Read and close immediately: a deferred close inside the loop would accumulate
+		// handles until the whole batch finishes and could exhaust descriptors.
+		if oldContent, readErr := os.ReadFile(fullPath); readErr == nil {
+			if bytes.Equal(oldContent, fileContent) {
+				continue // Skip writing if content is identical
 			}
 		}
 

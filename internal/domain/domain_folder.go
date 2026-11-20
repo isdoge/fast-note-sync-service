@@ -66,6 +66,9 @@ type FolderRepository interface {
 	// UpdateIfRevision 仅在行仍携带 expectedRevision 时更新目录（CAS）。
 	UpdateIfRevision(ctx context.Context, folder *Folder, expectedRevision string, uid int64) (bool, error)
 
+	// ListByPathsMeta 按完整路径批量获取目录元数据（含墓碑），用于窗口外补查。
+	ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*Folder, error)
+
 	// Delete 物理删除文件夹
 	Delete(ctx context.Context, id, uid int64) error
 

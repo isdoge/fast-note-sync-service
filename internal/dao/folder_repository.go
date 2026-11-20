@@ -124,7 +124,25 @@ func (r *folderRepository) Update(ctx context.Context, folder *domain.Folder, ui
 		// Folder delete, restore and rename always mint a new token.
 		m.Revision = util.NewRevisionToken()
 		f := r.folder(uid).Folder
-		_, err := f.WithContext(ctx).Where(f.ID.Eq(m.ID)).Updates(m)
+		// 显式 Select 全部可写列：目录移回根目录时 FID=0、Level=0，GORM 的 Updates(struct)
+		// 会跳过零值，导致父级与层级停留在旧值。目录是完整状态覆盖，必须逐列写入。
+		// Select every writable column explicitly: moving a folder back to the root
+		// (FID=0, Level=0) would otherwise be skipped as zero values by Updates(struct),
+		// leaving the old parent and level behind.
+		_, err := f.WithContext(ctx).Where(f.ID.Eq(m.ID)).Select(
+			f.ID,
+			f.VaultID,
+			f.Action,
+			f.Path,
+			f.PathHash,
+			f.Level,
+			f.FID,
+			f.Ctime,
+			f.Mtime,
+			f.UpdatedTimestamp,
+			f.UpdatedAt,
+			f.Revision,
+		).Updates(m)
 		if err != nil {
 			return err
 		}
@@ -177,6 +195,40 @@ func (r *folderRepository) ListByPathPrefix(ctx context.Context, pathPrefix stri
 		res = append(res, r.modelToDomain(m))
 	}
 	return res, nil
+}
+
+// ListByPathsMeta 按完整路径批量获取目录元数据（含墓碑，不区分状态）。
+// 用于增量同步窗口外的路径补查："不在增量结果里"绝不等于"不存在"。
+// ListByPathsMeta batch-loads folder metadata (tombstones included) for exact paths,
+// so a path outside the incremental window is never mistaken for a missing one.
+func (r *folderRepository) ListByPathsMeta(ctx context.Context, paths []string, vaultID, uid int64) (map[string]*domain.Folder, error) {
+	result := make(map[string]*domain.Folder, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	u := r.folder(uid).Folder
+	const chunkSize = 500
+	for start := 0; start < len(paths); start += chunkSize {
+		end := start + chunkSize
+		if end > len(paths) {
+			end = len(paths)
+		}
+		ms, err := u.WithContext(ctx).Where(
+			u.VaultID.Eq(vaultID),
+			u.Path.In(paths[start:end]...),
+		).Find()
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range ms {
+			f := r.modelToDomain(m)
+			if existing, ok := result[f.Path]; !ok || f.UpdatedTimestamp > existing.UpdatedTimestamp {
+				result[f.Path] = f
+			}
+		}
+	}
+	return result, nil
 }
 
 func (r *folderRepository) modelToDomain(m *model.Folder) *domain.Folder {
@@ -300,9 +352,24 @@ func (r *folderRepository) UpdateIfRevision(ctx context.Context, folder *domain.
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
 		m.Revision = util.NewRevisionToken()
 		f := r.folder(uid).Folder
+		// 同 Update：显式 Select 避免 FID/Level 的零值被跳过。
+		// Same as Update: explicit Select so FID/Level zero values are written.
 		res, err := f.WithContext(ctx).Where(
 			f.ID.Eq(m.ID),
 			f.Revision.Eq(expectedRevision),
+		).Select(
+			f.ID,
+			f.VaultID,
+			f.Action,
+			f.Path,
+			f.PathHash,
+			f.Level,
+			f.FID,
+			f.Ctime,
+			f.Mtime,
+			f.UpdatedTimestamp,
+			f.UpdatedAt,
+			f.Revision,
 		).Updates(m)
 		if err != nil {
 			return err

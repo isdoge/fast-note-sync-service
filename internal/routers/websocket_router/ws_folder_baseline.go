@@ -63,6 +63,32 @@ func (h *FolderWSHandler) doFolderSyncBaseline(c *pkgapp.WebsocketClient, params
 		}
 	}
 
+	// 窗口外的客户端路径必须补查当前元数据（含墓碑）：不在增量结果里绝不等于不存在。
+	// Client paths outside the incremental window need a metadata lookup (tombstones
+	// included): "not in the delta" never means "absent".
+	missingPaths := make([]string, 0, len(clients))
+	for path := range clients {
+		if _, ok := serverByPath[path]; !ok && path != "" {
+			missingPaths = append(missingPaths, path)
+		}
+	}
+	if len(missingPaths) > 0 {
+		meta, metaErr := folderSvc.GetPathsMetaBatch(ctx, uid, params.Vault, missingPaths)
+		if metaErr != nil {
+			// 无法确定服务端状态时不能继续：把客户端删除当作"服务端不存在"会吞掉删除
+			// 意图，把活跃目录当成新目录。让本轮同步失败。
+			// Without the server state we cannot continue: treating a client delete as
+			// "server absent" swallows delete intents and treats live folders as new.
+			h.respondError(c, code.ErrorFolderListFailed, metaErr, "websocket_router.folder.FolderSync.GetPathsMetaBatch")
+			return
+		}
+		for path, f := range meta {
+			if f != nil {
+				serverByPath[path] = f
+			}
+		}
+	}
+
 	var messageQueue []dto.WSQueuedMessage
 	var needModifyCount, needDeleteCount, needConflictCount int64
 	handled := make(map[string]struct{}, len(serverByPath))
@@ -117,6 +143,10 @@ func (h *FolderWSHandler) doFolderSyncBaseline(c *pkgapp.WebsocketClient, params
 				Path:         path,
 				PathHash:     cs.pathHash,
 				BaseRevision: cs.baseRevision,
+				// 条件提交契约必须随请求下发：服务层据此在写临界区内再校验一次令牌。
+				// The conditional-commit contract must travel with the request so the
+				// service re-checks the token inside its write critical section.
+				Baseline: baselineCommitFromFolder(c, cs.baseRevision, false),
 			}); err != nil {
 				if conflict, ok := isBaselineConflict(err); ok {
 					enqueue(SyncConflict, baselineConflictMessage(

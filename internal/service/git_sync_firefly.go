@@ -509,10 +509,20 @@ func fireflySandbox(wsPath string, conf *domain.GitSyncConfig) (root string, sub
 	if err != nil {
 		return "", "", err
 	}
-	if subdir == "" {
-		return wsPath, "", nil
+	// 工作区路径来自配置层，可能是相对路径（storage/git_workspace/...）。导出层的目标
+	// 文件路径由 safeWorkspacePath 返回绝对路径，两者混用会让 filepath.Rel 直接报错，
+	// 附件存在性校验因此找错目录并误报 missing image file。统一在这里规范化成绝对路径。
+	// The workspace path may be relative (storage/git_workspace/...), while exported
+	// target paths are absolute. Mixing both makes filepath.Rel fail, so the asset
+	// existence check looks in the wrong directory. Normalize to an absolute root here.
+	absRoot, err := filepath.Abs(wsPath)
+	if err != nil {
+		return "", "", err
 	}
-	return filepath.Join(wsPath, filepath.FromSlash(subdir)), subdir, nil
+	if subdir == "" {
+		return absRoot, "", nil
+	}
+	return filepath.Join(absRoot, filepath.FromSlash(subdir)), subdir, nil
 }
 
 // fireflyRepoFileExists 判断仓库相对路径对应的文件是否已存在于沙箱内（必须是 TargetSubdir 之内）。
@@ -675,9 +685,23 @@ func (s *gitSyncService) bundleNoteAssets(ctx context.Context, conf *domain.GitS
 		if base == "" {
 			return "", false
 		}
+		// 同名但不同源路径的图片必须各自保留：按源路径追加短哈希后缀，避免后一张
+		// 覆盖前一张（否则两篇文章的封面会互相顶替）。
+		// Same-named images from different source paths must both survive: append a short
+		// hash of the source path so a later copy cannot overwrite an earlier one.
 		if prev, exists := usedNames[base]; exists && prev != f.Path {
 			ext := path.Ext(base)
-			base = strings.TrimSuffix(base, ext) + "-" + shortAssetHash(f.Path) + ext
+			stem := strings.TrimSuffix(base, ext)
+			candidate := stem + "-" + shortAssetHash(f.Path) + ext
+			// 极端情况下源路径哈希仍可能撞名：继续加计数直到唯一。
+			// Even the source-path hash could collide in theory: append a counter until unique.
+			for i := 2; ; i++ {
+				if existing, taken := usedNames[candidate]; !taken || existing == f.Path {
+					break
+				}
+				candidate = fmt.Sprintf("%s-%s-%d%s", stem, shortAssetHash(f.Path), i, ext)
+			}
+			base = candidate
 		}
 		usedNames[base] = f.Path
 
@@ -1016,14 +1040,20 @@ func (s *gitSyncService) fireDeployWebhook(ctx context.Context, conf *domain.Git
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// 复用仓库地址校验器已经装好的安全 Transport：它在真正拨号时再次解析 DNS 并拒绝
+	// 私网/回环目标，从而防住 DNS Rebinding（校验时是公网地址、拨号时解析到内网）。
+	// Reuse the repo-URL validator's hardened Transport: it re-resolves DNS at dial time
+	// and rejects private/loopback targets, which defeats DNS rebinding.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = s.repoURLValidator().dialContext(transport.DialContext)
 	client := &http.Client{
-		Timeout: gitSyncWebhookTimeout,
+		Timeout:   gitSyncWebhookTimeout,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// 只允许同主机跳转，避免被重定向到内网其它地址。
-			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
-				return http.ErrUseLastResponse
-			}
-			return nil
+			// 一律不跟随跳转：Webhook 不需要重定向，跟随会绕过拨号期的目标校验。
+			// Never follow redirects: a webhook needs none, and following would bypass
+			// the dial-time target validation.
+			return http.ErrUseLastResponse
 		},
 	}
 	resp, err := client.Do(req)

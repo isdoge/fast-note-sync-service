@@ -26,6 +26,13 @@ var ErrBaselineConflict = errors.New("baseline conflict")
 //
 // checkBaselineCreate 实现条件提交的"新建"分支：无基线且未标记解决时，仅当服务端既无活跃行
 // 也无未确认冲突才允许（调用方已确认无活跃行）；server_missing 的"保留本地"选择同理。
+//
+// 携带基线令牌却落到"新建"分支，说明服务端该行已不存在（被清理或数据重置）。设计 §3.4
+// 要求保留本地并报 server_missing，而不是 remote_deleted：后者会让插件误以为远端做过删除，
+// 引导用户去"恢复"一个从未存在过的远端版本。
+// A carried baseline revision landing on the "create" branch means the server row is
+// gone (purged or reset). Design §3.4 reports server_missing and keeps the local copy;
+// remote_deleted would make the plugin believe the remote deleted it.
 func checkBaselineCreate(commit *dto.BaselineCommit) error {
 	if commit == nil {
 		return nil
@@ -33,13 +40,8 @@ func checkBaselineCreate(commit *dto.BaselineCommit) error {
 	if commit.BaseRevision == "" {
 		return nil
 	}
-	// 携带了基线令牌却落到"新建"分支：说明服务端行已不存在或已是墓碑，但调用方
-	// 没有先做墓碑/版本核对。保守拒绝，交由上层给出明确冲突。
-	// A carried baseline revision landing on the "create" branch means the row is gone
-	// or a tombstone without a prior revision check. Reject conservatively so the caller
-	// can report an explicit conflict.
 	if !commit.IsConflictResolved {
-		return &dto.BaselineConflictError{Reason: dto.BaselineRejectRemoteDeleted}
+		return &dto.BaselineConflictError{Reason: dto.SyncConflictReasonServerMissing}
 	}
 	return nil
 }
@@ -127,17 +129,27 @@ func checkBaselineUpdate(commit *dto.BaselineCommit, currentRevision string, cur
 // missing row is an idempotent success (handled by callers), while a live row may
 // only be soft-deleted when the client carries a matching revision (and, for content
 // resources, a matching content hash).
+//
+// Every rejection of a client delete intent reports local_deleted, exactly like the
+// batch delNotes/delFiles/delSettings/delFolders path: the client asked to delete a
+// row that moved underneath it (remote edit, same-content rebuild, stale token), and
+// the plugin must show one consistent "本地删除冲突" reason rather than mixing in
+// both_modified / revision_changed.
 // checkBaselineDelete 实现实时删除分支：已是墓碑或不存在时幂等成功（由调用方处理）；
 // 活跃行只有在客户端携带匹配的版本令牌（内容资源还需匹配内容哈希）时才能软删除。
+//
+// 所有拒绝删除意图的原因统一为 local_deleted，与批量 delNotes/delFiles/delSettings/
+// delFolders 完全一致：客户端要删的行在其脚下发生了变化（远端修改、同内容重建、令牌过期），
+// 插件只需展示同一种"本地删除冲突"，不再混入 both_modified / revision_changed。
 func checkBaselineDelete(commit *dto.BaselineCommit, currentRevision string, currentHash string, conflictErr func(string) error) error {
 	if commit == nil {
 		return nil
 	}
 	if commit.BaseRevision == "" || commit.BaseRevision != currentRevision {
-		return conflictErr(dto.BaselineRejectRevisionMoved)
+		return conflictErr(dto.SyncConflictReasonLocalDeleted)
 	}
 	if currentHash != "" && (!commit.HasBase || currentHash != commit.BaseHash) {
-		return conflictErr(dto.BaselineRejectBothModified)
+		return conflictErr(dto.SyncConflictReasonLocalDeleted)
 	}
 	return nil
 }

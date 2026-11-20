@@ -433,7 +433,7 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		_, note, err := noteSvc.ModifyOrCreate(ctx, c.User.UID, params, true, checkedNote)
 		if err != nil {
 			if conflict, ok := isBaselineConflict(err); ok {
-				h.respondBaselineConflict(c, dto.SyncConflictKindNote, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+				h.respondBaselineConflict(c, dto.SyncConflictKindNote, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
 				return
 			}
 			// 陈旧重报被墓碑闸门拒绝：仅静默确认以清理客户端 pending 状态
@@ -658,7 +658,7 @@ func (h *NoteWSHandler) NoteDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 
 	if err != nil {
 		if conflict, ok := isBaselineConflict(err); ok {
-			h.respondBaselineConflict(c, dto.SyncConflictKindNote, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			h.respondBaselineConflict(c, dto.SyncConflictKindNote, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
 			return
 		}
 		h.respondErrorWithPath(c, code.ErrorNoteDeleteFailed, err, slotPath, msg.Type, "websocket_router.note.handleNoteDelete.Delete")
@@ -722,6 +722,17 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 	// 仅按段拒绝越界与 NUL
 	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path").WithData(errPathData(slotPath)))
+		return
+	}
+
+	// 基线模式统一走「创建目标 + 条件删除源」：原生 Rename 没有基线契约，会绕过
+	// 版本令牌直接改写两条记录。旧连接（版本 0）保持原行为。
+	// Baseline mode uses create-target + conditional-delete-source instead: a native
+	// rename has no baseline contract and would rewrite both rows unchecked.
+	if baselineModeEnabled(c) {
+		h.respondErrorWithPath(c, code.ErrorRenameNoteTargetExist,
+			code.ErrorRenameNoteTargetExist.WithDetails("rename is not supported in baseline mode; create the target and delete the source"),
+			slotPath, msg.Type, "websocket_router.note.NoteRename.BaselineMode")
 		return
 	}
 

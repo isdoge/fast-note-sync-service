@@ -1,7 +1,10 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -181,7 +184,14 @@ func AuthenticateUserTokenStrict(c *gin.Context, secretKey string, tokenService 
 	}
 
 	if dbToken.Vaults != "" {
-		targetVault := app.RequestParam(c, "vault")
+		targetVault, mismatch := extractRequestedVault(c)
+		// Query/Form 与 JSON Body 指向不同库：这是典型的参数遮蔽绕过尝试，直接拒绝，
+		// 绝不挑其中一个去校验、让另一个继续生效。
+		// Query/Form and JSON body name different vaults: a classic parameter-shadowing
+		// bypass. Reject outright instead of validating one and letting the other through.
+		if mismatch {
+			return nil, "", "", nil, code.ErrorAuthTokenScopeRestricted.WithDetails("Vault access restricted: conflicting vault parameters")
+		}
 		targets := []string{targetVault}
 		// The event endpoint takes one complete vault name per repeated vault= parameter
 		// (commas are legal in vault names), so every value is checked individually.
@@ -260,6 +270,79 @@ func RevalidateUserToken(c *gin.Context, secretKey string, tokenService service.
 		return code.ErrorInvalidUserAuthToken.WithDetails("Token has been rotated")
 	}
 	return nil
+}
+
+// extractRequestedVault resolves the vault a request addresses, checking the URL
+// query/form parameters (keys compared case-insensitively) and the JSON body's
+// top-level "vault" field (also case-insensitive). It reports mismatch=true when
+// both sources are present and disagree, which the caller must reject.
+//
+// The JSON body takes precedence over the query string when they agree, because
+// binding happens against the body; the query copy is only a compatibility path.
+// extractRequestedVault 解析请求指向的库：同时检查 URL query/form（键名不区分大小写）
+// 与 JSON Body 顶层 vault 字段（同样不区分大小写）。两处都存在且不一致时返回
+// mismatch=true，由调用方拒绝；一致时以 JSON Body 为准（参数绑定读的是 Body）。
+func extractRequestedVault(c *gin.Context) (vault string, mismatch bool) {
+	queryVault := ""
+	for key, values := range c.Request.URL.Query() {
+		if strings.EqualFold(key, "vault") && len(values) > 0 {
+			queryVault = values[0]
+			break
+		}
+	}
+	if queryVault == "" && c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+		queryVault = formValueFold(c, "vault")
+	}
+
+	bodyVault := jsonBodyVault(c)
+	if queryVault != "" && bodyVault != "" && queryVault != bodyVault {
+		return "", true
+	}
+	if bodyVault != "" {
+		return bodyVault, false
+	}
+	return queryVault, false
+}
+
+// formValueFold reads a form value with a case-insensitive key.
+// formValueFold 以不区分大小写的键读取表单值。
+func formValueFold(c *gin.Context, key string) string {
+	if c.Request == nil || c.Request.Form == nil {
+		return ""
+	}
+	for k, values := range c.Request.Form {
+		if strings.EqualFold(k, key) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
+}
+
+// jsonBodyVault reads the top-level "vault" field of a JSON body, restoring the
+// body afterwards so the handler can still bind it.
+// jsonBodyVault 读取 JSON Body 顶层的 vault 字段，并复原 Body 供后续绑定使用。
+func jsonBodyVault(c *gin.Context) string {
+	if c.Request == nil || c.Request.Body == nil || !strings.Contains(c.ContentType(), "application/json") {
+		return ""
+	}
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return ""
+	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	var body map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		return ""
+	}
+	for key, value := range body {
+		if !strings.EqualFold(key, "vault") {
+			continue
+		}
+		if strVal, ok := value.(string); ok {
+			return strVal
+		}
+	}
+	return ""
 }
 
 func isHeaderlessLoginTokenResourceRead(c *gin.Context) bool {

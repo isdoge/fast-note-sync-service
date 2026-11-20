@@ -7,6 +7,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/dto"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -23,17 +24,16 @@ func baselineModeEnabled(c *pkgapp.WebsocketClient) bool {
 // baselineMeta is the server-side state of one path as seen by the decision tables.
 // baselineMeta 是决策表看到的单个路径的服务端状态。
 type baselineMeta struct {
-	Found        bool   // A row exists (live or tombstone) // 存在行（活跃或墓碑）
-	Deleted      bool   // The row is a tombstone (action=delete) // 该行是墓碑
-	ContentHash  string // Active content hash (tombstone: last pre-delete hash) // 活跃内容哈希（墓碑为删除前最后哈希）
-	Revision     string // Current revision token // 当前版本令牌
-	Path         string // Canonical full path // 完整规范路径
-	PathHash     string // Existing path hash // 现有路径哈希
-	Ctime        int64  // Creation timestamp // 创建时间戳
-	Mtime        int64  // Modification timestamp // 修改时间戳
-	Size         int64  // Size // 大小
-	LastTime     int64  // updated_timestamp // 记录更新时间戳
-	ContentPurge bool   // Body already purged // 正文已清理
+	Found       bool   // A row exists (live or tombstone) // 存在行（活跃或墓碑）
+	Deleted     bool   // The row is a tombstone (action=delete) // 该行是墓碑
+	ContentHash string // Active content hash (tombstone: last pre-delete hash) // 活跃内容哈希（墓碑为删除前最后哈希）
+	Revision    string // Current revision token // 当前版本令牌
+	Path        string // Canonical full path // 完整规范路径
+	PathHash    string // Existing path hash // 现有路径哈希
+	Ctime       int64  // Creation timestamp // 创建时间戳
+	Mtime       int64  // Modification timestamp // 修改时间戳
+	Size        int64  // Size // 大小
+	LastTime    int64  // updated_timestamp // 记录更新时间戳
 }
 
 // baselineDecision is the outcome of one decision-table cell.
@@ -263,6 +263,20 @@ func decideBaselineFolder(deletedIntent bool, baseRevision string, server baseli
 // decideBaselineFolderEntry 是带 missing*（恢复请求）标志的 decideBaselineFolder：
 // 客户端没有该目录、请求下发时，既不是删除意图，也不产生冲突。
 func decideBaselineFolderEntry(missing bool, deletedIntent bool, baseRevision string, server baselineMeta) baselineDecision {
+	// 服务端完全没有该目录：客户端删除/恢复请求幂等完成；带基线说明服务端曾有过
+	// 该目录（被清理或重置），保留本地并报 server_missing；无基线则是正常新建。
+	// No server row at all: a delete/recovery intent completes idempotently; a carried
+	// baseline means the row was purged or reset (report server_missing and keep local);
+	// no baseline is a normal new folder.
+	if !server.Found {
+		if missing || deletedIntent {
+			return baselineDecision{Action: baselineActionConfirmDelete}
+		}
+		if baseRevision == "" {
+			return baselineDecision{Action: baselineActionUpload}
+		}
+		return baselineDecision{Action: baselineActionConflict, Reason: dto.SyncConflictReasonServerMissing}
+	}
 	if server.Deleted {
 		if missing || deletedIntent {
 			return baselineDecision{Action: baselineActionConfirmDelete}
@@ -399,9 +413,13 @@ func isNotFound(err error) bool {
 // respondBaselineConflict sends a rejected conditional commit as the unified
 // SyncConflict payload with the existing 530 envelope. Only baseline-mode
 // connections ever reach this; legacy connections never receive SyncConflict.
+// The payload carries the real server content for live notes/settings and the
+// proven common-ancestor content for notes, so the plugin's conflict UI never
+// mistakes a real remote body for an empty file.
 // respondBaselineConflict 用现有 530 信封把被拒绝的条件提交作为统一 SyncConflict 载荷回发。
-// 只有基线模式连接会走到这里；旧连接永远不会收到 SyncConflict。
-func (h *WSHandler) respondBaselineConflict(c *pkgapp.WebsocketClient, kind, path, pathHash, baseHash string, conflict *dto.BaselineConflictError, slotPath string) {
+// 只有基线模式连接会走到这里；旧连接永远不会收到 SyncConflict。载荷会带上活跃笔记/配置的
+// 真实服务端正文，以及笔记可证实的共同祖先正文，避免插件冲突界面把真实远端正文误当成空文件。
+func (h *WSHandler) respondBaselineConflict(c *pkgapp.WebsocketClient, kind, vault, path, pathHash, baseHash string, conflict *dto.BaselineConflictError, slotPath string) {
 	if conflict == nil {
 		conflict = &dto.BaselineConflictError{Reason: dto.SyncConflictReasonRevisionChanged}
 	}
@@ -413,11 +431,62 @@ func (h *WSHandler) respondBaselineConflict(c *pkgapp.WebsocketClient, kind, pat
 		Path:        path,
 		PathHash:    pathHash,
 	}
-	payload := baselineConflictMessage(kind, conflict.Reason, path, pathHash, baseHash, "", true, server, "")
+	serverContent, baseContent, baseMissing := h.resolveConflictContents(c, kind, vault, path, pathHash, baseHash, conflict)
+	payload := baselineConflictMessage(kind, conflict.Reason, path, pathHash, baseHash, baseContent, baseMissing, server, serverContent)
 	h.App.Logger().Info("baseline conditional commit rejected",
 		zap.String("traceId", c.TraceID),
 		zap.String("kind", kind),
 		zap.String("path", path),
 		zap.String("reason", conflict.Reason))
 	c.ToResponse(code.ErrorSyncConflict.WithData(payload).WithVault("").WithContext("").WithPath(slotPath), string(SyncConflict))
+}
+
+// resolveConflictContents fills the remote body and the proven ancestor body of a
+// rejected conditional commit. Attachments never inline bytes; tombstones and
+// purged bodies legitimately resolve to empty text.
+// resolveConflictContents 填充被拒条件提交的远端正文与已证实的共同祖先正文。附件从不内联二进制；
+// 墓碑与已清理正文如实为空。
+func (h *WSHandler) resolveConflictContents(c *pkgapp.WebsocketClient, kind, vault, path, pathHash, baseHash string, conflict *dto.BaselineConflictError) (serverContent, baseContent string, baseMissing bool) {
+	// 默认没有可信祖先：调用方无法证明时不伪造正文。
+	// No trusted ancestor by default: never fabricate content.
+	baseMissing = true
+	if conflict == nil || conflict.ServerDeleted {
+		return "", "", baseMissing
+	}
+	ctx := c.Context()
+	uid := c.User.UID
+	// 部分客户端只上报路径：按路径补算哈希，否则精确查询必然落空。
+	// Some clients report only the path: derive the hash or the exact lookup misses.
+	if pathHash == "" && path != "" {
+		pathHash = util.EncodeHash32(path)
+	}
+
+	switch kind {
+	case dto.SyncConflictKindNote:
+		if h.App.NoteService == nil {
+			return "", "", baseMissing
+		}
+		noteSvc := h.App.GetNoteService(c.ClientType(), c.ClientName(), c.ClientVersion())
+		note, err := noteSvc.Get(ctx, uid, &dto.NoteGetRequest{Vault: vault, Path: path, PathHash: pathHash})
+		if err != nil || note == nil {
+			return "", "", baseMissing
+		}
+		serverContent = note.Content
+		if baseHash != "" {
+			found := false
+			baseContent, found = h.resolveBaseContent(ctx, uid, note.ID, baseHash, false)
+			baseMissing = !found
+		}
+	case dto.SyncConflictKindSetting:
+		if h.App.SettingService == nil {
+			return "", "", baseMissing
+		}
+		settingSvc := h.App.GetSettingService(c.ClientType(), c.ClientName(), c.ClientVersion())
+		setting, err := settingSvc.Get(ctx, uid, &dto.SettingGetRequest{Vault: vault, Path: path, PathHash: pathHash})
+		if err != nil || setting == nil {
+			return "", "", baseMissing
+		}
+		serverContent = setting.Content
+	}
+	return serverContent, baseContent, baseMissing
 }

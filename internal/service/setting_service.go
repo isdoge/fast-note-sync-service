@@ -222,7 +222,7 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 	// (fns-bin-v1: prefix) hash their decoded raw bytes while plain text keeps the
 	// legacy string hash. Corrupt base64 is rejected instead of persisted.
 	if params.ContentHash == "" {
-		hash, err := util.SettingContentHashBytes(params.Content)
+		hash, err := util.SettingContentHashBytesForPath(params.Path, params.Content)
 		if err != nil {
 			return false, nil, code.ErrorInvalidParams.WithDetails(err.Error())
 		}

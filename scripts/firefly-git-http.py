@@ -55,6 +55,12 @@ import urllib.parse
 DEFAULT_PORT = 4323
 DEFAULT_BIND = "127.0.0.1"
 MAX_REPUBLISH_SECONDS = 900
+# 请求体上限：go-git 的分片推送（尤其是首次全量）可能很大，100 MiB 足够覆盖单个
+# receive-pack 请求，同时防止未认证/异常客户端把网关内存打满。
+MAX_REQUEST_BODY = 100 * 1024 * 1024
+# 单个请求的套接字超时：读不到下一段数据（含 chunked 尾部）时直接断开，避免慢速
+# 客户端长期占住线程。
+REQUEST_TIMEOUT_SECONDS = 60
 GIT_HTTP_BACKEND_CANDIDATES = (
     "/usr/lib/git-core/git-http-backend",
     "/usr/libexec/git-core/git-http-backend",
@@ -149,6 +155,7 @@ class GitHTTPHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "firefly-git-http"
     sys_version = ""
+    timeout = REQUEST_TIMEOUT_SECONDS
     state: GatewayState  # injected by make_server
 
     # ---- logging ---------------------------------------------------------
@@ -208,6 +215,94 @@ class GitHTTPHandler(http.server.BaseHTTPRequestHandler):
             return None
         return self.state.repos[repo_name], rest
 
+    @staticmethod
+    def _sanitize_path_info(path_info: str) -> str | None:
+        """Reject NUL bytes, backslashes and '..' segments in the decoded sub-path.
+
+        Decoding happens before this check, so '%2e%2e' and '%00' are caught too.
+        Returns None when the path must be refused with 400.
+        """
+        if "\x00" in path_info or "\\" in path_info:
+            return None
+        for segment in path_info.split("/"):
+            if segment == "..":
+                return None
+        return path_info
+
+    def _read_request_body(self) -> bytes | None:
+        """Read the request body, honouring Content-Length or chunked transfer encoding.
+
+        go-git sends large pushes with ``Transfer-Encoding: chunked`` and
+        ``ContentLength == -1``, which the old Content-Length-only reader silently
+        truncated to an empty body. Returns None after already answering 400/413.
+        """
+        if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
+            return self._read_chunked_body()
+
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            return b""
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            self._send_plain(400, "invalid content length")
+            return None
+        if content_length < 0:
+            self._send_plain(400, "invalid content length")
+            return None
+        if content_length > MAX_REQUEST_BODY:
+            self._reject_too_large()
+            return None
+        if content_length == 0:
+            return b""
+        return self.rfile.read(content_length)
+
+    def _read_chunked_body(self) -> bytes | None:
+        """Decode a chunked body: '<hex>\\r\\n<data>\\r\\n' ... '0\\r\\n' trailers '\\r\\n'."""
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            size_line = self.rfile.readline(1024)
+            if not size_line:
+                self._send_plain(400, "truncated chunked body")
+                return None
+            # 分块大小可能带 chunk-ext（';key=value'），只取前面的十六进制部分。
+            size_field = size_line.split(b";", 1)[0].strip()
+            try:
+                chunk_size = int(size_field, 16)
+            except ValueError:
+                self._send_plain(400, "invalid chunk size")
+                return None
+            if chunk_size < 0:
+                self._send_plain(400, "invalid chunk size")
+                return None
+            if chunk_size == 0:
+                # 消费 trailer 直到空行（trailer 也可能为空）。
+                while True:
+                    trailer = self.rfile.readline(8192)
+                    if not trailer or trailer in (b"\r\n", b"\n"):
+                        break
+                return b"".join(chunks)
+            total += chunk_size
+            if total > MAX_REQUEST_BODY:
+                self._reject_too_large()
+                return None
+            data = self.rfile.read(chunk_size)
+            if len(data) != chunk_size:
+                self._send_plain(400, "truncated chunked body")
+                return None
+            chunks.append(data)
+            # 每个 chunk 后面必须紧跟 CRLF（容错接受裸 LF）。
+            terminator = self.rfile.readline(2)
+            if terminator not in (b"\r\n", b"\n"):
+                self._send_plain(400, "invalid chunk terminator")
+                return None
+
+    def _reject_too_large(self) -> None:
+        # 413 后连接里还可能有未读数据，必须显式关闭，否则残留字节会被当成下一个请求。
+        self.close_connection = True
+        self._send_plain(413, "request body too large")
+
     def _handle_git(self) -> None:
         if not self._require_auth():
             return
@@ -216,12 +311,15 @@ class GitHTTPHandler(http.server.BaseHTTPRequestHandler):
             self._send_plain(404, "repository not found")
             return
         repo_path, path_info = resolved
-
-        content_length = int(self.headers.get("Content-Length") or 0)
-        if content_length < 0:
-            self._send_plain(400, "invalid content length")
+        sanitized = self._sanitize_path_info(path_info)
+        if sanitized is None:
+            self._send_plain(400, "invalid repository sub-path")
             return
-        body = self.rfile.read(content_length) if content_length else b""
+        path_info = sanitized
+
+        body = self._read_request_body()
+        if body is None:
+            return
 
         env = {
             "GIT_PROJECT_ROOT": self.state.root,

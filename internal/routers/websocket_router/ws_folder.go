@@ -442,7 +442,7 @@ func (h *FolderWSHandler) FolderModify(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).UpdateOrCreate(c.Context(), uid, params)
 	if err != nil {
 		if conflict, ok := isBaselineConflict(err); ok {
-			h.respondBaselineConflict(c, dto.SyncConflictKindFolder, params.Path, params.PathHash, "", conflict, params.Path)
+			h.respondBaselineConflict(c, dto.SyncConflictKindFolder, params.Vault, params.Path, params.PathHash, "", conflict, params.Path)
 			return
 		}
 		h.respondError(c, code.ErrorFolderModifyOrCreateFailed, err, "websocket_router.folder.FolderModify.UpdateOrCreate")
@@ -489,7 +489,7 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).Delete(c.Context(), uid, params)
 	if err != nil {
 		if conflict, ok := isBaselineConflict(err); ok {
-			h.respondBaselineConflict(c, dto.SyncConflictKindFolder, params.Path, params.PathHash, "", conflict, slotPath)
+			h.respondBaselineConflict(c, dto.SyncConflictKindFolder, params.Vault, params.Path, params.PathHash, "", conflict, slotPath)
 			return
 		}
 		h.respondErrorWithPath(c, code.ErrorFolderDeleteFailed, err, slotPath, msg.Type, "websocket_router.folder.FolderDelete.Delete")
@@ -528,6 +528,16 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	// 只校验、不改写新旧两个路径（#342 S-8）
 	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path").WithData(errPathData(slotPath)))
+		return
+	}
+
+	// 基线模式统一走「创建目标 + 条件删除源」，原生 Rename 会绕过版本令牌。
+	// Baseline mode uses create-target + conditional-delete-source; a native rename
+	// would bypass the revision token.
+	if baselineModeEnabled(c) {
+		h.respondErrorWithPath(c, code.ErrorFolderRenameFailed,
+			code.ErrorFolderRenameFailed.WithDetails("rename is not supported in baseline mode; create the target and delete the source"),
+			slotPath, msg.Type, "websocket_router.folder.FolderRename.BaselineMode")
 		return
 	}
 

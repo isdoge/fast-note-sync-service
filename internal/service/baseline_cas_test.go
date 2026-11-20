@@ -270,8 +270,10 @@ func TestBaselineCAS_DeleteRequiresMatchingRevision(t *testing.T) {
 	path, pathHash := "a.md", util.EncodeHash32("a.md")
 	created := env.seed(t, path, "H1")
 
-	// 令牌正确但内容哈希不匹配：说明客户端看到的不是当前内容，拒绝。
-	// Correct token but a mismatching content hash: reject.
+	// 令牌正确但内容哈希不匹配：说明客户端看到的不是当前内容，拒绝；原因码与批量
+	// 删除一致，统一为 local_deleted（E2E-4）。
+	// Correct token but a mismatching content hash: reject with the batch-identical
+	// local_deleted reason (E2E-4).
 	_, err := env.svc.Delete(ctx, 1, &dto.NoteDeleteRequest{
 		Vault: "vault", Path: path, PathHash: pathHash,
 		Baseline: &dto.BaselineCommit{HasBase: true, BaseHash: "H0", BaseRevision: created.Revision},
@@ -279,17 +281,17 @@ func TestBaselineCAS_DeleteRequiresMatchingRevision(t *testing.T) {
 	require.Error(t, err)
 	var conflict *dto.BaselineConflictError
 	require.True(t, errors.As(err, &conflict), "实际 %v", err)
-	require.Equal(t, dto.BaselineRejectBothModified, conflict.Reason)
+	require.Equal(t, dto.SyncConflictReasonLocalDeleted, conflict.Reason)
 
-	// 没有令牌：不得授权破坏性删除。
-	// No token: never authorizes a destructive delete.
+	// 没有令牌：不得授权破坏性删除，原因码同样是 local_deleted。
+	// No token: never authorizes a destructive delete; same local_deleted reason.
 	_, err = env.svc.Delete(ctx, 1, &dto.NoteDeleteRequest{
 		Vault: "vault", Path: path, PathHash: pathHash,
 		Baseline: &dto.BaselineCommit{HasBase: true, BaseHash: "H1"},
 	})
 	require.Error(t, err)
 	require.True(t, errors.As(err, &conflict))
-	require.Equal(t, dto.BaselineRejectRevisionMoved, conflict.Reason)
+	require.Equal(t, dto.SyncConflictReasonLocalDeleted, conflict.Reason)
 
 	// 全部匹配：条件删除成功并换新令牌。
 	// Everything matches: the conditional delete succeeds with a new token.

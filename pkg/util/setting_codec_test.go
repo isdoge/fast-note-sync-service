@@ -131,3 +131,61 @@ func TestSettingContentHashBytes(t *testing.T) {
 		t.Fatal("corrupt base64 must return an error")
 	}
 }
+
+// TestSettingContentHashBytesForPath_MatchesPlugin 覆盖 P1-07：磁盘配置文件（含 UTF-8 中文
+// JSON/CSS）必须按原始 UTF-8 字节哈希，与插件 hashFileAsync 一致；只有 _localStorage/
+// 虚拟项按 UTF-16 字符串哈希。期望值由插件侧 helpers.ts 的同款算法算出。
+// Disk-backed configs hash raw UTF-8 bytes exactly like the plugin's hashFileAsync;
+// only _localStorage/ virtual entries keep the UTF-16 string hash.
+func TestSettingContentHashBytesForPath_MatchesPlugin(t *testing.T) {
+	cases := []struct {
+		path    string
+		content string
+		want    string
+	}{
+		// 插件 hashArrayBuffer(new TextEncoder().encode(content)) 的结果
+		{"User/Theme.json", `{"主题":"深色","字体":"思源黑体"}`, "-1336091758"},
+		{"snippets/中文.css", "/* 注释：中文样式 */\nbody{color:red}", "1595614919"},
+		{"app.json", "dark", "3075958"},
+		{"fonts/note.txt", "字体配置", "1264281938"},
+		{"empty.json", "", "0"},
+		// 纯 ASCII 时字节哈希与字符串哈希相同
+		{"a.json", "dark", "3075958"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			got, err := SettingContentHashBytesForPath(tc.path, tc.content)
+			if err != nil {
+				t.Fatalf("SettingContentHashBytesForPath(%q) error: %v", tc.path, err)
+			}
+			if got != tc.want {
+				t.Fatalf("hash(%q) = %q, want %q (plugin hashFileAsync parity)", tc.content, got, tc.want)
+			}
+		})
+	}
+
+	// _localStorage/ 虚拟项：插件用 hashContent（UTF-16 字符串）。
+	got, err := SettingContentHashBytesForPath("_localStorage/some-key", "字体配置")
+	if err != nil {
+		t.Fatalf("virtual path hash error: %v", err)
+	}
+	if got != "717303709" {
+		t.Fatalf("virtual _localStorage hash = %q, want 717303709", got)
+	}
+	// 空虚拟项：插件 hashContent("") = "0"。
+	got, err = SettingContentHashBytesForPath("_localStorage/empty", "")
+	if err != nil || got != "0" {
+		t.Fatalf("empty virtual hash = %q (err=%v), want 0", got, err)
+	}
+}
+
+// TestSettingContentHashBytes_EmptyMatchesPlugin 空文本在插件里是 "0"，服务端必须一致。
+func TestSettingContentHashBytes_EmptyMatchesPlugin(t *testing.T) {
+	got, err := SettingContentHashBytes("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "0" {
+		t.Fatalf("EncodeHash32Bytes([]) = %q, want 0", got)
+	}
+}

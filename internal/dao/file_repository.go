@@ -1059,6 +1059,8 @@ func (r *fileRepository) ListByPathHashAndPath(ctx context.Context, pathHash, pa
 func (r *fileRepository) UpdateIfRevision(ctx context.Context, file *domain.File, expectedRevision string, uid int64) (bool, error) {
 	updated := false
 	var updateErr error
+	var tempSavePath string
+	var finalPath string
 
 	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.file(uid).File
@@ -1068,26 +1070,14 @@ func (r *fileRepository) UpdateIfRevision(ctx context.Context, file *domain.File
 		m.UpdatedAt = timex.Now()
 		m.Revision = util.NewRevisionToken()
 
-		tempSavePath := m.SavePath
+		tempSavePath = m.SavePath
 		m.SavePath = ""
 
-		if tempSavePath != "" && file.Action != domain.FileActionDelete {
-			folderPath := r.dao.GetFileFolderPath(uid, m.ID)
-			_ = os.MkdirAll(folderPath, 0755)
-			finalPath := filepath.Join(folderPath, "file.dat")
-			if err := os.Rename(tempSavePath, finalPath); err != nil {
-				r.dao.Logger().Error("failed to move uploaded file into place during UpdateIfRevision, aborting before DB write",
-					zap.Int64("uid", uid),
-					zap.Int64("fileId", m.ID),
-					zap.String("tempSavePath", tempSavePath),
-					zap.String("finalPath", finalPath),
-					zap.Error(err),
-				)
-				updateErr = err
-				return err
-			}
-		}
-
+		// CAS 先行：数据库是唯一真相。行已被另一设备改动时直接返回 false，
+		// 绝不动磁盘上现有的 file.dat（否则冲突会破坏仍然有效的旧附件）。
+		// CAS first: the row is the source of truth. When another device already
+		// changed it, return false without touching the existing file.dat, which
+		// would otherwise destroy the still-valid previous payload.
 		res, err := u.WithContext(ctx).Where(
 			u.ID.Eq(m.ID),
 			u.Revision.Eq(expectedRevision),
@@ -1114,8 +1104,32 @@ func (r *fileRepository) UpdateIfRevision(ctx context.Context, file *domain.File
 			return err
 		}
 		if res.RowsAffected == 0 {
+			// 冲突：磁盘保持原样，临时文件由调用方清理。
+			// Conflict: the disk stays untouched; the caller cleans the temp file.
 			return nil
 		}
+
+		// 行已确认属于本次提交，才把临时文件搬进正式位置。搬移失败必须回滚事务，
+		// 让数据库保持旧内容哈希与旧令牌，而不是声称新内容已落地。
+		// Only after the row is proven ours do we move the temp payload into place.
+		// A move failure rolls the transaction back so the row keeps the old hash.
+		if tempSavePath != "" && file.Action != domain.FileActionDelete {
+			folderPath := r.dao.GetFileFolderPath(uid, m.ID)
+			_ = os.MkdirAll(folderPath, 0755)
+			finalPath = filepath.Join(folderPath, "file.dat")
+			if moveErr := os.Rename(tempSavePath, finalPath); moveErr != nil {
+				r.dao.Logger().Error("failed to move uploaded file into place during UpdateIfRevision, rolling back",
+					zap.Int64("uid", uid),
+					zap.Int64("fileId", m.ID),
+					zap.String("tempSavePath", tempSavePath),
+					zap.String("finalPath", finalPath),
+					zap.Error(moveErr),
+				)
+				updateErr = moveErr
+				return moveErr
+			}
+		}
+
 		updated = true
 		file.Revision = m.Revision
 		file.UpdatedTimestamp = m.UpdatedTimestamp

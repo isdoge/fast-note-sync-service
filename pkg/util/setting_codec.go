@@ -75,20 +75,44 @@ func EncodeSettingContentBytes(raw []byte) string {
 }
 
 // SettingContentHashBytes computes the content hash the plugin reports for a
-// setting payload. Binary payloads hash their raw bytes (matching the plugin's
-// file hash); plain text keeps the legacy string hash so existing hashes do not
-// change. An invalid base64 payload returns an error so callers can reject it
-// instead of persisting a value the client can never reproduce.
-// SettingContentHashBytes 计算插件对配置载荷上报的内容哈希。二进制载荷按原始
-// 字节哈希（与插件的文件哈希一致）；普通文本沿用旧的字符串哈希，已有哈希不变。
-// base64 载荷非法时返回错误，调用方据此拒绝写入，而不是存下客户端永远算不出的值。
+// setting payload.
+//
+// On-disk configuration files (including UTF-8 Chinese .json/.css and binary
+// assets) are hashed by the plugin's hashFileAsync over their raw UTF-8 bytes,
+// so the server must do the same: EncodeHash32Bytes(raw) for every disk-backed
+// payload. Only the virtual _localStorage/ entries are hashed as UTF-16 strings
+// (EncodeHash32); use SettingContentHashBytesForPath to select that branch.
+//
+// An invalid base64 payload returns an error so callers can reject it instead of
+// persisting a value the client can never reproduce.
+// SettingContentHashBytes 计算插件对配置载荷上报的内容哈希。
+//
+// 磁盘配置文件（含 UTF-8 中文 .json/.css 与二进制资源）由插件的 hashFileAsync 按原始
+// UTF-8 字节哈希，服务端必须一致：所有落盘载荷一律 EncodeHash32Bytes(raw)。只有
+// _localStorage/ 虚拟项按 UTF-16 字符串算 EncodeHash32；用
+// SettingContentHashBytesForPath 选择该分支。
 func SettingContentHashBytes(content string) (string, error) {
-	raw, isBinary, err := DecodeSettingContentBytes(content)
+	raw, _, err := DecodeSettingContentBytes(content)
 	if err != nil {
 		return "", err
 	}
-	if isBinary {
-		return EncodeHash32Bytes(raw), nil
+	return EncodeHash32Bytes(raw), nil
+}
+
+// SettingLocalStoragePathPrefix is the plugin's virtual configuration path prefix.
+// Those entries never touch disk and are hashed as UTF-16 strings by the plugin.
+// SettingLocalStoragePathPrefix 是插件虚拟配置路径前缀；这类条目不落盘，插件按
+// UTF-16 字符串哈希。
+const SettingLocalStoragePathPrefix = "_localStorage/"
+
+// SettingContentHashBytesForPath hashes a setting the way the plugin reports it for
+// the given path: _localStorage/ virtual entries keep the UTF-16 string hash, every
+// disk-backed configuration file hashes its raw UTF-8 bytes.
+// SettingContentHashBytesForPath 按插件对该路径上报的方式计算哈希：_localStorage/
+// 虚拟项用 UTF-16 字符串哈希，落盘配置文件按原始 UTF-8 字节哈希。
+func SettingContentHashBytesForPath(path, content string) (string, error) {
+	if strings.HasPrefix(path, SettingLocalStoragePathPrefix) {
+		return EncodeHash32(content), nil
 	}
-	return EncodeHash32(string(raw)), nil
+	return SettingContentHashBytes(content)
 }

@@ -310,6 +310,17 @@ func TestDecideBaseline_FolderTable(t *testing.T) {
 	require.Equal(t, dto.SyncConflictReasonNoBaseline, decideBaselineFolderEntry(false, false, "", gone).Reason)
 	require.Equal(t, baselineActionApplyDelete, decideBaselineFolderEntry(false, false, testRevisionV2, gone).Action)
 	require.Equal(t, baselineActionConfirmDelete, decideBaselineFolderEntry(true, false, "", gone).Action)
+
+	// 服务端完全不存在该目录（P1-04）：离线新建目录允许上传；携带旧基线说明服务端
+	// 曾有过该目录（被清理/重置），保留本地并报 server_missing；删除/恢复请求幂等完成。
+	absent := baselineMeta{}
+	require.Equal(t, baselineActionUpload, decideBaselineFolderEntry(false, false, "", absent).Action,
+		"离线新建目录必须允许上传")
+	require.Equal(t, dto.SyncConflictReasonServerMissing, decideBaselineFolderEntry(false, false, testRevisionV1, absent).Reason,
+		"带基线但服务端已不存在：报 server_missing，不自动上传")
+	require.Equal(t, baselineActionConfirmDelete, decideBaselineFolderEntry(false, true, testRevisionV1, absent).Action,
+		"删除旧目录且服务端已不存在：幂等完成，不误报冲突")
+	require.Equal(t, baselineActionConfirmDelete, decideBaselineFolderEntry(true, false, testRevisionV1, absent).Action)
 }
 
 // TestBaselineRevisionMatches 空令牌永远不算匹配。
@@ -653,3 +664,99 @@ func TestSyncConflictIsNeverSentToLegacyConnections(t *testing.T) {
 
 // 确保未使用的导入不残留（time 供分页等待语义使用）。
 var _ = time.Second
+
+// TestFolderSyncBaseline_OutOfWindowNewFolderUploads 覆盖 P1-04：窗口外的客户端新建目录
+// 必须补查服务端元数据（确认确实不存在）后按 upload 处理，并携带条件提交契约。
+func TestFolderSyncBaseline_OutOfWindowNewFolderUploads(t *testing.T) {
+	folderSvc := new(svcmocks.MockFolderService)
+	folderSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(folderSvc).Maybe()
+	folderSvc.On("ListByUpdatedTimestamp", mock.Anything, int64(1), "vault", int64(0)).
+		Return([]*dto.FolderDTO{}, nil)
+	folderSvc.On("GetPathsMetaBatch", mock.Anything, int64(1), "vault", []string{"newdir"}).
+		Return(map[string]*dto.FolderDTO{}, nil)
+	var sawBaseline *dto.BaselineCommit
+	folderSvc.On("UpdateOrCreate", mock.Anything, int64(1), mock.MatchedBy(func(req *dto.FolderCreateRequest) bool {
+		sawBaseline = req.Baseline
+		return req.Path == "newdir"
+	})).Return(&dto.FolderDTO{Path: "newdir", PathHash: "nh", Revision: testRevisionV2}, nil)
+	vaultSvc := new(svcmocks.MockVaultService)
+	vaultSvc.On("GetOrCreate", mock.Anything, int64(1), "vault").Return(nil, nil).Maybe()
+	testApp := app.NewTestApp(&app.Services{FolderService: folderSvc, VaultService: vaultSvc})
+	testApp.Config().App.SyncDownChunkNum = 10
+	c, messages := baselineNotePeer(t, testApp)
+	const context = "baseline-folder-new"
+
+	NewFolderWSHandler(testApp).doFolderSyncBaseline(c, &dto.FolderSyncRequest{
+		Context: context, Vault: "vault",
+		Folders: []dto.FolderSyncCheckRequest{{Path: "newdir", PathHash: "nh", Mtime: 1000}},
+	})
+
+	end := syncDeleteMessage(t, messages, string(FolderSyncEnd))
+	require.Equal(t, float64(0), end["data"].(map[string]any)["needConflictCount"], "离线新建目录不得误报冲突")
+	folderSvc.AssertExpectations(t)
+	require.NotNil(t, sawBaseline, "创建目录必须携带条件提交契约")
+}
+
+// TestFolderSyncBaseline_DeletedOldFolderDoesNotConflict 覆盖 P1-04：窗口外的删除意图
+// 在服务端确实不存在该目录时必须幂等完成，不报冲突、不调用 Delete。
+func TestFolderSyncBaseline_DeletedOldFolderDoesNotConflict(t *testing.T) {
+	folderSvc := new(svcmocks.MockFolderService)
+	folderSvc.On("WithClient", mock.Anything, mock.Anything, mock.Anything).Return(folderSvc).Maybe()
+	folderSvc.On("ListByUpdatedTimestamp", mock.Anything, int64(1), "vault", int64(0)).
+		Return([]*dto.FolderDTO{}, nil)
+	folderSvc.On("GetPathsMetaBatch", mock.Anything, int64(1), "vault", []string{"olddir"}).
+		Return(map[string]*dto.FolderDTO{}, nil)
+	vaultSvc := new(svcmocks.MockVaultService)
+	vaultSvc.On("GetOrCreate", mock.Anything, int64(1), "vault").Return(nil, nil).Maybe()
+	testApp := app.NewTestApp(&app.Services{FolderService: folderSvc, VaultService: vaultSvc})
+	testApp.Config().App.SyncDownChunkNum = 10
+	c, messages := baselineNotePeer(t, testApp)
+	const context = "baseline-folder-del"
+
+	NewFolderWSHandler(testApp).doFolderSyncBaseline(c, &dto.FolderSyncRequest{
+		Context: context, Vault: "vault",
+		DelFolders: []dto.FolderSyncDelFolder{{Path: "olddir", PathHash: "oh", BaseRevision: testRevisionV1}},
+	})
+
+	end := syncDeleteMessage(t, messages, string(FolderSyncEnd))
+	counts := end["data"].(map[string]any)
+	require.Equal(t, float64(0), counts["needConflictCount"], "服务端已不存在的目录删除不得误报冲突")
+	folderSvc.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestRenameHandlers_RejectedInBaselineMode 覆盖 P1-08：基线模式连接不得使用原生
+// Rename（会绕过版本令牌），必须走「创建目标 + 条件删除源」；旧连接保持原行为。
+// Baseline-mode connections must not use native rename; legacy connections keep it.
+func TestRenameHandlers_RejectedInBaselineMode(t *testing.T) {
+	noteSvc := new(svcmocks.MockNoteService)
+	fileSvc := new(svcmocks.MockFileService)
+	folderSvc := new(svcmocks.MockFolderService)
+	vaultSvc := new(svcmocks.MockVaultService)
+	vaultSvc.On("GetOrCreate", mock.Anything, int64(1), mock.Anything).Return(nil, nil).Maybe()
+	testApp := app.NewTestApp(&app.Services{
+		NoteService: noteSvc, FileService: fileSvc, FolderService: folderSvc, VaultService: vaultSvc,
+	})
+	c, messages := baselineNotePeer(t, testApp)
+
+	NewNoteWSHandler(testApp).NoteRename(c, wsMsg("NoteRename", map[string]any{
+		"vault": "vault", "path": "new.md", "pathHash": "nh", "oldPath": "old.md", "oldPathHash": "oh",
+	}))
+	// 错误响应沿用请求动作名回包。
+	res := syncDeleteMessage(t, messages, "NoteRename")
+	require.NotEqual(t, float64(200), res["code"], "基线模式必须拒绝原生笔记重命名")
+	noteSvc.AssertNotCalled(t, "Rename", mock.Anything, mock.Anything, mock.Anything)
+
+	NewFileWSHandler(testApp).FileRename(c, wsMsg("FileRename", map[string]any{
+		"vault": "vault", "path": "new.png", "pathHash": "nh", "oldPath": "old.png", "oldPathHash": "oh",
+	}))
+	res = syncDeleteMessage(t, messages, "FileRename")
+	require.NotEqual(t, float64(200), res["code"], "基线模式必须拒绝原生附件重命名")
+	fileSvc.AssertNotCalled(t, "Rename", mock.Anything, mock.Anything, mock.Anything)
+
+	NewFolderWSHandler(testApp).FolderRename(c, wsMsg("FolderRename", map[string]any{
+		"vault": "vault", "path": "newdir", "pathHash": "nh", "oldPath": "olddir", "oldPathHash": "oh",
+	}))
+	res = syncDeleteMessage(t, messages, "FolderRename")
+	require.NotEqual(t, float64(200), res["code"], "基线模式必须拒绝原生目录重命名")
+	folderSvc.AssertNotCalled(t, "Rename", mock.Anything, mock.Anything, mock.Anything)
+}

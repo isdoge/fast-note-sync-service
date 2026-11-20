@@ -205,7 +205,7 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 
 	if err != nil {
 		if conflict, ok := isBaselineConflict(err); ok {
-			h.respondBaselineConflict(c, dto.SyncConflictKindFile, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			h.respondBaselineConflict(c, dto.SyncConflictKindFile, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
 			return
 		}
 		h.respondErrorWithPath(c, code.ErrorFileUploadCheckFailed, err, slotPath, msg.Type, "websocket_router.file.FileUploadCheck.UploadCheck")
@@ -499,7 +499,7 @@ func (h *FileWSHandler) FileUploadChunkBinary(c *pkgapp.WebsocketClient, data []
 				// 分片已全部写完但远端已被抢先改动：不替换活跃附件，回冲突并清理会话与临时文件。
 				// All chunks are in but the remote changed first: do not replace the active
 				// attachment; report the conflict and reclaim the session and temp file.
-				h.respondBaselineConflict(c, dto.SyncConflictKindFile, ackPath, ackPathHash, session.BaseHash, conflict, ackPath)
+				h.respondBaselineConflict(c, dto.SyncConflictKindFile, ackVault, ackPath, ackPathHash, session.BaseHash, conflict, ackPath)
 				c.Server.RemoveSession(c.User.ID, ackSessionID)
 				session.Cleanup()
 				return
@@ -635,7 +635,7 @@ func (h *FileWSHandler) FileDelete(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 
 	if err != nil {
 		if conflict, ok := isBaselineConflict(err); ok {
-			h.respondBaselineConflict(c, dto.SyncConflictKindFile, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			h.respondBaselineConflict(c, dto.SyncConflictKindFile, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
 			return
 		}
 		h.respondErrorWithPath(c, code.ErrorFileDeleteFailed, err, slotPath, msg.Type, "websocket_router.file.FileDelete.Delete")
@@ -700,6 +700,16 @@ func (h *FileWSHandler) FileRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 			sess.PathHash = params.PathHash
 			sess.mu.Unlock()
 		}
+	}
+
+	// 基线模式统一走「创建目标 + 条件删除源」，原生 Rename 会绕过版本令牌。
+	// Baseline mode uses create-target + conditional-delete-source; a native rename
+	// would bypass the revision token.
+	if baselineModeEnabled(c) {
+		h.respondErrorWithPath(c, code.ErrorFileRenameFailed,
+			code.ErrorFileRenameFailed.WithDetails("rename is not supported in baseline mode; create the target and delete the source"),
+			slotPath, msg.Type, "websocket_router.file.FileRename.BaselineMode")
+		return
 	}
 
 	fileService := h.App.GetFileService(c.ClientType(), c.ClientName(), c.ClientVersion())

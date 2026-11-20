@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,4 +188,125 @@ func TestFireflyGateway_EndToEnd_PostReceiveSideband(t *testing.T) {
 	require.Equal(t, int64(domain.GitSyncStatusFailed), conf.LastStatus, conf.LastMessage)
 	require.Contains(t, conf.LastMessage, "Saved settings await confirmation")
 	require.True(t, strings.Contains(conf.LastMessage, "remote hook deploy failed"))
+}
+
+// startFireflyGatewayForTest 启动网关子进程并返回远端 URL 与清理函数。
+func startFireflyGatewayForTest(t *testing.T, backend, root, repoName string) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	gatewayScript := filepath.Join(filepath.Dir(thisFile), "..", "..", "scripts", "firefly-git-http.py")
+	gatewayScript, err := filepath.Abs(gatewayScript)
+	require.NoError(t, err)
+
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	const testUser, testPass = "fns", "local-e2e-token"
+	require.NoError(t, os.WriteFile(tokenFile, []byte(testUser+":"+testPass+"\n"), 0600))
+	port := freePort(t)
+	gateway := exec.Command("python3",
+		gatewayScript,
+		"--root", root,
+		"--repo", repoName,
+		"--token-file", tokenFile,
+		"--git-http-backend", backend,
+		"--port", fmt.Sprint(port),
+		"--no-republish",
+		"--quiet",
+	)
+	gateway.Stderr = os.Stderr
+	require.NoError(t, gateway.Start())
+	t.Cleanup(func() {
+		_ = gateway.Process.Kill()
+		_, _ = gateway.Process.Wait()
+	})
+	require.Eventually(t, func() bool {
+		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+		if dialErr != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, 10*time.Second, 50*time.Millisecond)
+	return fmt.Sprintf("http://127.0.0.1:%d/%s", port, repoName)
+}
+
+// newEmptyBareRepo 创建一个空的 bare 仓库并返回根目录与仓库名。
+func newEmptyBareRepo(t *testing.T, repoName string) (root string) {
+	t.Helper()
+	root = t.TempDir()
+	_, err := exec.Command("git", "init", "--bare", "--initial-branch=master", filepath.Join(root, repoName)).CombinedOutput()
+	require.NoError(t, err)
+	return root
+}
+
+// TestFireflyGateway_ChunkedRequestBody 覆盖 P0-07：go-git 用 chunked 编码
+// （ContentLength == -1）发送推送请求时，网关必须完整解码请求体，否则 receive-pack
+// 会拿到空包并拒绝推送。
+// A chunked push (ContentLength == -1) must be decoded and forwarded intact.
+func TestFireflyGateway_ChunkedRequestBody(t *testing.T) {
+	backend := gitHTTPBackendPath(t)
+	repoName := "blog.git"
+	root := newEmptyBareRepo(t, repoName)
+	remoteURL := startFireflyGatewayForTest(t, backend, root, repoName)
+	t.Chdir(t.TempDir())
+
+	repo := new(domainmocks.MockGitSyncRepository)
+	repo.On("Save", mock.Anything, mock.Anything, mock.Anything).Return(&domain.GitSyncConfig{}, nil)
+	repo.On("CreateHistory", mock.Anything, mock.Anything, mock.Anything).Return(&domain.GitSyncHistory{}, nil)
+	svc := newTestGitSyncService(repo)
+	enableLocalGitRepoPaths(t, svc)
+	svc.gitConf.AllowedPrivateHosts = []string{"127.0.0.1"}
+
+	noteRepo := svc.noteRepo.(*domainmocks.MockNoteRepository)
+	noteRepo.On("ListByUpdatedTimestampPage", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return([]*domain.Note{{Path: "a.md", Content: "---\ntitle: t\n---\nbody", Action: domain.NoteActionCreate}}, nil).Once()
+	noteRepo.On("ListByUpdatedTimestampPage", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return([]*domain.Note{}, nil)
+	svc.fileRepo.(*domainmocks.MockFileRepository).
+		On("ListByUpdatedTimestampPage", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return([]*domain.File{}, nil)
+
+	conf := &domain.GitSyncConfig{
+		ID: 1, UID: 1, VaultID: 1, RepoURL: remoteURL, Branch: "master",
+		Username: "fns", Password: "local-e2e-token",
+	}
+	svc.syncTask(context.Background(), conf)
+	require.Equal(t, int64(domain.GitSyncStatusSuccess), conf.LastStatus, conf.LastMessage)
+
+	check := filepath.Join(t.TempDir(), "check")
+	_, err := git.PlainClone(check, false, &git.CloneOptions{URL: filepath.Join(root, repoName)})
+	require.NoError(t, err)
+	require.FileExists(t, filepath.Join(check, "a.md"))
+}
+
+// TestFireflyGateway_RejectsMaliciousSubPath 覆盖 P2-01：解码后的子路径含 NUL、反斜杠
+// 或 '..' 段时必须回 400，绝不能把越界路径交给 git-http-backend。
+// Decoded sub-paths with NUL, backslashes or '..' must be rejected with 400.
+func TestFireflyGateway_RejectsMaliciousSubPath(t *testing.T) {
+	backend := gitHTTPBackendPath(t)
+	repoName := "blog.git"
+	root := newEmptyBareRepo(t, repoName)
+	remoteURL := startFireflyGatewayForTest(t, backend, root, repoName)
+
+	do := func(rawPath string) int {
+		req, err := http.NewRequest(http.MethodGet, remoteURL+rawPath, nil)
+		require.NoError(t, err)
+		req.SetBasicAuth("fns", "local-e2e-token")
+		// 直接用 RawPath 语义发送，避免 net/http 替我们规范化 '..'。
+		req.URL.Opaque = "//" + req.URL.Host + rawPath
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+
+	// 白名单仓库内的恶意子路径必须回 400（解码后再判定，%2e%2e 同样被拦）。
+	for _, raw := range []string{"/blog.git/../etc/passwd", "/blog.git/a%5Cb", "/blog.git/a%00b", "/blog.git/%2e%2e/x"} {
+		require.Equal(t, http.StatusBadRequest, do(raw), "raw path %q must be rejected", raw)
+	}
+	// 仓库名本身不在白名单：仍是 404，不会把请求交给 git-http-backend。
+	for _, raw := range []string{"/../etc/passwd", "/other.git/info/refs"} {
+		require.Equal(t, http.StatusNotFound, do(raw), "raw path %q must not resolve", raw)
+	}
 }

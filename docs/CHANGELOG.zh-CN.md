@@ -17,15 +17,34 @@
 - **Git 同步**: 远端 `post-receive` 钩子的构建回执（`Preview deployed:` / `Unified preview deployed:`）会写入同步成功消息；若钩子报 `Preview deployment failed` 或 `Saved settings await confirmation`，本轮同步如实标记为失败并带出原因，不再静默假装部署成功。
 - **WebGUI**: Git 自动化配置表单新增「子目录映射与博客自动发布（Astro / Firefly）」折叠分区、「一键填入 Firefly 博客预设」按钮、路径映射/过滤徽章与远端部署回执高亮展示（五语种对齐）。
 - **部署**: 新增 `scripts/firefly-git-http.py`：仅监听回环地址的 `git-http-backend` 网关（纯 Python 3 标准库，无第三方依赖），常量时间比对 BasicAuth 令牌、白名单限定 bare 仓库，供容器内服务端推送到宿主机 bare 仓库并触发宿主机 `post-receive` 构建链。
+- **文档**: 新增 [对接 Firefly 博客运行手册](/docs/runbook/firefly-blog.zh-CN.md) 与英文版 [runbook](/docs/runbook/firefly-blog.en.md)：回环 Git 网关的部署、校验、备份与回滚步骤（不含任何凭据内容）。
 
 ### 🛠️ 修复
 
 - **Git 同步**: 修复同一配置的同步正在进行时再次触发，会强杀正在推送（可能还在等待远端构建）的任务并并发启动第二个任务、两个 goroutine 同时操作同一工作区的问题。现在改为单飞串行：运行中的请求只登记一次补跑，当前任务收尾后再执行一轮最新增量，服务关闭时不补跑。
 - **Git 同步**: 修复导出时逐条读取旧文件后延迟关闭句柄的问题（改用一次性读取），长时间同步大量笔记时不再累积文件句柄。
 - **Git 同步**: 修复推送失败时只回报底层错误、看不到远端拒绝摘要的问题。
+- **同步**: 修复正文已被保留期清理的墓碑笔记在调用恢复接口时返回 `430 Note does not exist`、而不是 `532 ErrorContentPurged` 的问题：回收站预查未命中时交由服务层判定是否为已清理墓碑。
+- **同步**: 修复实时写/删条件提交被拒（`530 SyncConflict`）时 `serverContent` 恒为空、可证实的共同祖先 `baseContent` 也恒缺失的问题：现在活跃笔记/配置会带上真实远端正文，笔记在历史精确命中时带上共同祖先正文，插件冲突界面不再把真实远端内容误当成空文件。
+- **同步**: 实时删除（笔记/附件/配置/目录）被拒的原因码统一为 `local_deleted`，与批量 `delNotes/delFiles/delSettings/delFolders` 完全一致，不再混用 `both_modified` / `revision_changed`。
+- **附件**: 修复 `UpdateIfRevision` 在数据库 CAS 之前先 `os.Rename` 覆盖 `file.dat`，导致条件提交冲突时仍然破坏物理附件的问题：现在先执行条件更新，`RowsAffected == 0` 时直接返回且绝不触碰磁盘，落盘失败回滚事务。
+- **同步**: 修复服务端不存在该行、但客户端携带基线令牌时被报成 `remote_deleted` 的问题：现按设计 §3.4 报 `server_missing`，保留本地副本，不再引导用户"恢复"从未存在的远端版本。
+- **同步**: 修复目录基线同步的两个缺口：窗口外的客户端路径不补查服务端元数据（导致"不在增量结果里"被当成不存在），以及 `decideBaselineFolderEntry` 缺少 `!server.Found` 分支（离线新建目录被误判冲突）；创建目录时也补上了条件提交契约。
+- **配置同步**: 修复配置文件哈希算法与插件不一致的问题：落盘配置文件（含 UTF-8 中文 `.json`/`.css` 与二进制）改按原始 UTF-8 字节计算，与插件 `hashFileAsync` 对齐；只有 `_localStorage/` 虚拟项保留 UTF-16 字符串哈希。
+- **Git 同步**: 修复工作区路径为相对路径时 `filepath.Rel` 失败、附件汇聚 + Frontmatter 预检误报 `missing image file` 的问题：沙箱根目录统一规范化为绝对路径。
+- **Git 同步**: 修复不同源路径的同名图片汇聚到同一 `./assets/` 时互相覆盖的问题：同名但不同源的文件追加短哈希后缀。
+- **Git 同步**: 修复配置导出循环内 `defer` 关闭旧文件、长时间同步累积文件句柄的问题（改为立即读取并关闭）。
+- **部署**: 修复回环 Git 网关不支持 `Transfer-Encoding: chunked`（go-git 默认用 chunked 推送）、缺少请求体上限与超时、以及解码后子路径未拒绝 NUL/反斜杠/`..` 的问题。
+- **目录同步**: 修复目录移回根目录时 `FID=0`、`Level=0` 被 GORM 零值跳过、父级与层级停留在旧值的问题。
+
+### 🔒 安全
+
+- **令牌**: 修复受限客户端令牌可通过 Query 与 JSON Body 同时声明 `vault` 遮蔽校验的绕过：两处库名不一致时直接 403；按配置 ID 触发同步时同时校验归属与启用状态。
+- **Git 同步**: 修复部署 Webhook 可能被 DNS Rebinding 或重定向到内网地址的问题：复用仓库地址校验器的安全 Transport，且不跟随任何跳转；后台无变更的定时同步不再反复触发 Webhook，仅显式手动触发才调用。
 
 ### 🚀 优化
 
+- **同步协议**: 基线模式连接的 `NoteRename` / `FileRename` / `FolderRename` 统一拒绝原生重命名（改为「创建目标 + 条件删除源」），避免绕过版本令牌直接改写两条记录；旧版连接行为不变。
 - **Git 同步**: `sourceDir`、`targetSubdir`、Frontmatter 过滤或预检、附件汇聚任一配置变更后，会清空本地工作区并重置同步游标，确保按新规则完整重导；子目录挂载模式下不再把 `.obsidian` 配置与配置文件导出到 Astro 仓库，`settings-overrides.json`、`package.json`、`pnpm-lock.yaml`、`.npmrc`、`public/uploads/settings`、`.settings-*` 等受保护路径在导出层硬拦截，任何写入与删除都不会触碰它们。
 
 ---

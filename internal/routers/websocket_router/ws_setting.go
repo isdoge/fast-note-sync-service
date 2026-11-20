@@ -59,7 +59,7 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 	// text keeps the legacy string hash. Corrupt base64 is rejected before any
 	// database work.
 	if params.ContentHash == "" {
-		hash, err := util.SettingContentHashBytes(params.Content)
+		hash, err := util.SettingContentHashBytesForPath(params.Path, params.Content)
 		if err != nil {
 			h.respondErrorWithPath(c, code.ErrorInvalidParams, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ContentHash")
 			return
@@ -109,7 +109,7 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 		_, setting, err := settingSvc.ModifyOrCreate(ctx, c.User.UID, params, true)
 		if err != nil {
 			if conflict, ok := isBaselineConflict(err); ok {
-				h.respondBaselineConflict(c, dto.SyncConflictKindSetting, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+				h.respondBaselineConflict(c, dto.SyncConflictKindSetting, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
 				return
 			}
 			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
@@ -243,7 +243,7 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 	setting, err := settingSvc.Delete(ctx, c.User.UID, params)
 	if err != nil {
 		if conflict, ok := isBaselineConflict(err); ok {
-			h.respondBaselineConflict(c, dto.SyncConflictKindSetting, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			h.respondBaselineConflict(c, dto.SyncConflictKindSetting, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
 			return
 		}
 		h.respondErrorWithPath(c, code.ErrorSettingDeleteFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingDelete.Delete")

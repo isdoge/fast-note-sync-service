@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -577,4 +578,66 @@ func TestUserAuthTokenWithConfig_GitSyncVaultRoutes(t *testing.T) {
 
 	// 其它 git-sync 路由仍要求 config 权限，即使库在授权范围内
 	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(readScope, "doge", http.MethodGet, "/api/git-sync/configs?vault=doge").Code)
+}
+
+// TestUserAuthTokenWithConfig_RejectsVaultShadowing 覆盖 P1-01：受限令牌在 query 里声明
+// 授权库、却在 JSON Body 里指向另一个库时，必须整体拒绝；Body 与 query 一致时以 Body 为准
+// 正常放行。
+// A restricted token that names one vault in the query and another in the JSON body must
+// be rejected outright; agreeing values pass with the body taking precedence.
+func TestUserAuthTokenWithConfig_RejectsVaultShadowing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tokenService := &fakeMiddlewareTokenService{}
+	router := gin.New()
+	router.Use(UserAuthTokenWithConfig("test-secret", tokenService))
+	okHandler := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	}
+	router.POST("/api/git-sync/trigger", okHandler)
+	router.POST("/api/note", okHandler)
+
+	call := func(scope, vaults, target, body string) app.Res {
+		tokenService.activeToken = &domain.AuthToken{
+			ID: 2, UID: 1, TokenString: "nonce-ok", Status: 1,
+			Scope: scope, Vaults: vaults, IssueType: 2, ExpiredAt: time.Now().Add(time.Hour),
+		}
+		token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("x-client", "ObsidianPlugin")
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		require.Equal(t, http.StatusOK, recorder.Code)
+		var res app.Res
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &res))
+		return res
+	}
+
+	const writeScope = "p:rest c:ObsidianPlugin f:note_w"
+
+	// ?vault=A + {"Vault":"B"}：越权尝试必须被 403 拦截（键名大小写不敏感）。
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger?vault=A", `{"vault":"B"}`).Code)
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger?vault=A", `{"Vault":"B"}`).Code)
+
+	// Body 指向授权库、query 指向未授权库：同样拒绝。
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger?vault=B", `{"vault":"A"}`).Code)
+
+	// 两处一致：放行。
+	assert.Equal(t, code.Success.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger?vault=A", `{"vault":"A"}`).Code)
+
+	// 仅 Body 声明授权库：放行；仅 Body 声明未授权库：拒绝。
+	assert.Equal(t, code.Success.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger", `{"vault":"A"}`).Code)
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/git-sync/trigger", `{"vault":"B"}`).Code)
+
+	// 笔记写入同样受遮蔽保护。
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(),
+		call(writeScope, "A", "/api/note?vault=A", `{"vault":"B","path":"x.md","content":"hi"}`).Code)
 }

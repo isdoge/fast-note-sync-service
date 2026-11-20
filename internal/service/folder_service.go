@@ -34,6 +34,7 @@ type FolderService interface {
 	CleanupEmptyAncestors(ctx context.Context, uid int64, vaultID int64, resourcePath string) error
 	SyncResourceFID(ctx context.Context, uid int64, vaultID int64, noteIDs []int64, fileIDs []int64) error
 	IsStaleRevive(ctx context.Context, uid int64, vault string, pathHash string, mtime int64, paths ...string) (bool, error)
+	GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FolderDTO, error)
 	GetTree(ctx context.Context, uid int64, params *dto.FolderTreeRequest) (*dto.FolderTreeResponse, error)
 	CleanDuplicateFolders(ctx context.Context, uid int64, vaultID int64) error
 	WithClient(clientType, clientName, clientVersion string) FolderService
@@ -192,6 +193,31 @@ func (s *folderService) UpdateOrCreate(ctx context.Context, uid int64, params *d
 	}
 
 	return s.domainToDTO(f), nil
+}
+
+// GetPathsMetaBatch 按完整路径批量获取目录元数据（含墓碑），供增量同步窗口外的路径补查。
+// GetPathsMetaBatch batch-loads folder metadata (tombstones included) for exact paths
+// so paths outside the incremental window are never mistaken for absent ones.
+func (s *folderService) GetPathsMetaBatch(ctx context.Context, uid int64, vault string, paths []string) (map[string]*dto.FolderDTO, error) {
+	result := make(map[string]*dto.FolderDTO, len(paths))
+	if len(paths) == 0 {
+		return result, nil
+	}
+
+	vaultID, err := s.vaultService.MustGetID(ctx, uid, vault)
+	if err != nil {
+		return nil, err
+	}
+
+	metaMap, err := s.folderRepo.ListByPathsMeta(ctx, paths, vaultID, uid)
+	if err != nil {
+		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	for path, f := range metaMap {
+		result[path] = s.domainToDTO(f)
+	}
+	return result, nil
 }
 
 // IsStaleRevive reports whether a client-reported folder would be a stale

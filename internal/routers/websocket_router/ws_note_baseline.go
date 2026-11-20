@@ -134,7 +134,6 @@ func (h *NoteWSHandler) doNoteSyncBaseline(c *pkgapp.WebsocketClient, params *dt
 			server = baselineMetaFromNote(true, serverDTO.Action == "delete", serverDTO.ContentHash,
 				serverDTO.Revision, serverDTO.Path, serverDTO.PathHash,
 				serverDTO.Ctime, serverDTO.Mtime, serverDTO.Size, serverDTO.UpdatedTimestamp)
-			server.ContentPurge = serverDTO.Action == "delete" && serverDTO.ContentHash == "" && serverDTO.Revision != ""
 		}
 
 		decision := decideBaseline(cs.state, server)
