@@ -8,7 +8,7 @@ Release 3.7.0 is independently maintained by isdoge in `isdoge/fast-note-sync-se
 2. Back up all of `config/` and `storage/`. The former contains configuration, `lastVersion`, and possibly `.server_uuid`; the latter contains the default SQLite databases, note bodies, attachments, indexes, and logs.
 3. If the database is outside `storage/`, take a separate consistent database backup. Keep a restorable snapshot of attachments in object storage too.
 4. Record the current binary/image version, launch command, port mappings, and mounts.
-5. Check secrets, proxy settings, and Git URLs. MySQL/MariaDB is unsupported in this release; use SQLite or PostgreSQL.
+5. Check secrets, proxy settings, and Git URLs. If you run an existing MySQL / MariaDB instance, take a full database backup before upgrading: on first startup, v3.8.0 converts path, path-hash, and vault-name columns to case-sensitive binary types (`varbinary(1024)` / `varbinary(255)`), which locks tables for a while on large datasets and runs a byte-length precheck beforehand (reporting the exact database, table, column, and row ID and aborting if any path exceeds 1024 UTF-8 bytes or any vault name exceeds 255 bytes).
 
 Preserve the original `security.auth-token-key` and `security.share-token-key` during restoration. Token signatures also include the machine identity, so old tokens may become invalid after moving hosts or recreating the runtime; see the troubleshooting guide.
 

@@ -56,8 +56,11 @@ Keep service logs, client error codes, and timestamps before changing settings. 
 
 ### MySQL / MariaDB schema or runtime errors
 
-- **Cause**: Although 3.7.0 fixes path indexes and zero dates, unresolved share-table, Git-sync-table, and sync-log-table errors remain.
-- **Action**: Do not use MySQL/MariaDB with this release; use SQLite or PostgreSQL. The repository does not provide a cross-database data migration procedure, so changing `database.type` alone does not migrate data.
+- **Cause**: Release 3.8.0 fixes MySQL / MariaDB table creation, concurrent first-time table creation, reserved-word columns, case-sensitive paths (`varbinary(1024)` / `varbinary(255)`), and migration issues. Remaining failures are typically caused by missing configuration, insufficient database privileges, or the upgrade byte-length precheck.
+- **Action**:
+  1. If user data still goes to local SQLite or per-user database creation fails, confirm `user-database.type: mysql` and its connection parameters are explicitly configured (leaving `user-database.type` empty still writes to local SQLite files by default), and verify the database account has `CREATE DATABASE` privileges to create `user_<uid>` databases automatically.
+  2. If upgrading from `<=3.7.0` fails on startup with `mysql upgrade precheck failed` (path exceeding 1024 UTF-8 bytes or vault name exceeding 255 bytes), the schema has not been altered yet; shorten the offending path or vault name using the database, table, column, and sample ID printed in the error message, then restart.
+  3. The repository does not provide an automatic cross-database migration tool; changing `database.type` or `user-database.type` alone does not migrate existing data between backends.
 
 ### Full-text search is unavailable on 32-bit ARM
 

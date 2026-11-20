@@ -10,6 +10,7 @@
 - 部署时建议把 `user.admin-uid` 设为指定管理员的 UID。`0` 表示未显式配置，此时按“现存用户中 UID 最小者”认定管理员（无任何用户时无人是管理员），单用户部署无需配置即可用；多用户、开放注册的实例必须显式设置，否则除最早注册用户外的其它登录用户都没有管理权限。此外 `admin-uid: 0` 时，即使开启注册，已有用户后也不再允许新注册。
 - `server.trusted-proxies` 默认只信任回环代理。跨主机代理或容器网关必须按应用实际看到的来源 IP/CIDR 配置，不要填 `0.0.0.0/0`。
 - WebGUI 登录令牌默认绑定 IP 和 UA。链路改变客户端 IP 时可关闭 `webgui-login-token-bind-ip`；代理改写 UA 导致 313 时可关闭 `webgui-login-token-bind-ua`。关闭后对应维度的校验不再生效。
+- 修改用户密码不会自动吊销该用户已签发的登录令牌或 API 令牌；如需使旧令牌失效，请在 WebGUI「API 令牌」页面手动吊销（吊销后在线同步连接与实时事件流会立即断开）。
 
 ## server
 
@@ -87,11 +88,11 @@
 
 ## database 与 user-database
 
-两段使用同一结构。`user-database.type` 留空（或不写该键）时，代码默认值会按 `sqlite` 处理，与主库类型无关：用户数据写入启动工作目录下的 SQLite 文件 `storage/database/db_<仓储 key>.sqlite3`（例如笔记与标签为 `db_user_1.sqlite3`，附件为 `db_user_file_1.sqlite3`，目录、库、配置、Git 同步、备份、存储、分享、同步日志各有对应文件；主库只保留用户与令牌等主模型表）。要让用户数据进入 MySQL/MariaDB/PostgreSQL，必须显式设置 `user-database.type` 和连接参数：MySQL/MariaDB 会按用户自动创建 `user_<uid>` 数据库（`CREATE DATABASE IF NOT EXISTS`，账号需要建库权限）；PostgreSQL 会在所配置的数据库中自动创建 `user_<uid>` schema（`CREATE SCHEMA IF NOT EXISTS`，账号需要该库的建 schema 权限，或为属主/超级用户）。MySQL/MariaDB 当前不受支持，请使用 SQLite 或 PostgreSQL。
+两段使用同一结构。`user-database.type` 留空（或不写该键）时，代码默认值会按 `sqlite` 处理，与主库类型无关：用户数据写入启动工作目录下的 SQLite 文件 `storage/database/db_<仓储 key>.sqlite3`（例如笔记与标签为 `db_user_1.sqlite3`，附件为 `db_user_file_1.sqlite3`，目录、库、配置、Git 同步、备份、存储、分享、同步日志各有对应文件；主库只保留用户与令牌等主模型表）。要让用户数据进入 MySQL/MariaDB/PostgreSQL，必须显式设置 `user-database.type` 和连接参数：MySQL/MariaDB 会按用户自动创建 `user_<uid>` 数据库（`CREATE DATABASE IF NOT EXISTS`，账号需要建库权限）；PostgreSQL 会在所配置的数据库中自动创建 `user_<uid>` schema（`CREATE SCHEMA IF NOT EXISTS`，账号需要该库的建 schema 权限，或为属主/超级用户）。MySQL / MariaDB 已在 MySQL 8.4 与 MariaDB 11.4 通过验证，其中路径列与路径哈希列采用区分大小写的 `varbinary(1024)`（路径上限 1024 UTF-8 字节），库名列采用 `varbinary(255)`；从 `<=3.7.0` 升级的既有实例，首次启动改列前会自动预检字节长度，若存在超长记录会报 `mysql upgrade precheck failed` 并指明具体库、表、列与样本 ID 后中止迁移。
 
 | 键 | 类型 | database 默认 | user-database 默认 | 作用 |
 | --- | --- | --- | --- | --- |
-| `type` | string | `sqlite` | 空（加载后按 `sqlite` 处理） | `sqlite` / `postgres`；`mysql` 代码可识别但不建议用于本版。 |
+| `type` | string | `sqlite` | 空（加载后按 `sqlite` 处理） | `sqlite` / `postgres` / `mysql`（MariaDB 同样填 `mysql`）。 |
 | `path` | path | `storage/database/db.sqlite3` | 空 | SQLite 文件路径。 |
 | `host` | string | 空 | 空 | 网络数据库主机。 |
 | `port` | int | `0` | `0` | 网络数据库端口。 |
