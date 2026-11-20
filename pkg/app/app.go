@@ -42,6 +42,10 @@ type CheckVersionInfo struct {
 	SyncDownChunkNum                 int                 `json:"syncDownChunkNum"`
 	PipelineWindowUp                 int                 `json:"pipelineWindowUp"`   // Negotiated upload pipeline window; 0 = stop-and-wait // 上行流水线窗口协商值；0 = stop-and-wait
 	PipelineWindowDown               int                 `json:"pipelineWindowDown"` // Negotiated download pipeline window; 0 = stop-and-wait // 下行流水线窗口协商值；0 = stop-and-wait
+	// SyncBaselineVersion is the sync baseline protocol version accepted on this connection.
+	// 0 = legacy rules; 1 = baseline rules confirmed by both sides.
+	// SyncBaselineVersion 是本连接接受的同步基线协议版本；0 = 旧规则，1 = 双方已确认基线规则。
+	SyncBaselineVersion uint32 `json:"syncBaselineVersion"`
 }
 
 type SupportRecord struct {

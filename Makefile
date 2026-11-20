@@ -83,6 +83,11 @@ ver:
 %:
 	@:
 
+# 生成 internal/proto/v1/sync.pb.go。
+# 需要 protoc（macOS: brew install protobuf；Ubuntu: apt-get install protobuf-compiler）与
+# protoc-gen-go（go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11，确保 $(go env GOPATH)/bin 在 PATH 中）。
+# 插件侧的 src/pb/v1/sync.js / sync.d.ts 由插件仓库的 `pnpm run proto` 从同一份 sync.proto 生成，
+# 两端必须用同一份文件生成，禁止手工编辑生成物。
 proto:
 	protoc --go_out=. --go_opt=paths=source_relative internal/proto/v1/sync.proto
 
