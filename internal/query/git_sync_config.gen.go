@@ -43,6 +43,12 @@ func newGitSyncConfig(db *gorm.DB, opts ...gen.DOOption) gitSyncConfig {
 	_gitSyncConfig.LastMessage = field.NewString(tableName, "last_message")
 	_gitSyncConfig.IncludeConfig = field.NewInt64(tableName, "include_config")
 	_gitSyncConfig.ConfigSyncRules = field.NewString(tableName, "config_sync_rules")
+	_gitSyncConfig.SourceDir = field.NewString(tableName, "source_dir")
+	_gitSyncConfig.TargetSubdir = field.NewString(tableName, "target_subdir")
+	_gitSyncConfig.RequireFrontmatter = field.NewString(tableName, "require_frontmatter")
+	_gitSyncConfig.ValidateFrontmatter = field.NewInt64(tableName, "validate_frontmatter")
+	_gitSyncConfig.BundleAssets = field.NewInt64(tableName, "bundle_assets")
+	_gitSyncConfig.WebhookURL = field.NewString(tableName, "webhook_url")
 	_gitSyncConfig.CreatedAt = field.NewField(tableName, "created_at")
 	_gitSyncConfig.UpdatedAt = field.NewField(tableName, "updated_at")
 
@@ -54,24 +60,30 @@ func newGitSyncConfig(db *gorm.DB, opts ...gen.DOOption) gitSyncConfig {
 type gitSyncConfig struct {
 	gitSyncConfigDo gitSyncConfigDo
 
-	ALL             field.Asterisk
-	ID              field.Int64
-	UID             field.Int64
-	VaultID         field.Int64
-	RepoURL         field.String
-	Username        field.String
-	Password        field.String
-	Branch          field.String
-	IsEnabled       field.Int64
-	Delay           field.Int64
-	RetentionDays   field.Int64
-	LastSyncTime    field.Time
-	LastStatus      field.Int64
-	LastMessage     field.String
-	IncludeConfig   field.Int64
-	ConfigSyncRules field.String
-	CreatedAt       field.Field
-	UpdatedAt       field.Field
+	ALL                 field.Asterisk
+	ID                  field.Int64
+	UID                 field.Int64
+	VaultID             field.Int64
+	RepoURL             field.String
+	Username            field.String
+	Password            field.String
+	Branch              field.String
+	IsEnabled           field.Int64
+	Delay               field.Int64
+	RetentionDays       field.Int64
+	LastSyncTime        field.Time
+	LastStatus          field.Int64
+	LastMessage         field.String
+	IncludeConfig       field.Int64
+	ConfigSyncRules     field.String
+	SourceDir           field.String
+	TargetSubdir        field.String
+	RequireFrontmatter  field.String
+	ValidateFrontmatter field.Int64
+	BundleAssets        field.Int64
+	WebhookURL          field.String
+	CreatedAt           field.Field
+	UpdatedAt           field.Field
 
 	fieldMap map[string]field.Expr
 }
@@ -103,6 +115,12 @@ func (g *gitSyncConfig) updateTableName(table string) *gitSyncConfig {
 	g.LastMessage = field.NewString(table, "last_message")
 	g.IncludeConfig = field.NewInt64(table, "include_config")
 	g.ConfigSyncRules = field.NewString(table, "config_sync_rules")
+	g.SourceDir = field.NewString(table, "source_dir")
+	g.TargetSubdir = field.NewString(table, "target_subdir")
+	g.RequireFrontmatter = field.NewString(table, "require_frontmatter")
+	g.ValidateFrontmatter = field.NewInt64(table, "validate_frontmatter")
+	g.BundleAssets = field.NewInt64(table, "bundle_assets")
+	g.WebhookURL = field.NewString(table, "webhook_url")
 	g.CreatedAt = field.NewField(table, "created_at")
 	g.UpdatedAt = field.NewField(table, "updated_at")
 
@@ -133,7 +151,7 @@ func (g *gitSyncConfig) GetFieldByName(fieldName string) (field.OrderExpr, bool)
 }
 
 func (g *gitSyncConfig) fillFieldMap() {
-	g.fieldMap = make(map[string]field.Expr, 17)
+	g.fieldMap = make(map[string]field.Expr, 23)
 	g.fieldMap["id"] = g.ID
 	g.fieldMap["uid"] = g.UID
 	g.fieldMap["vault_id"] = g.VaultID
@@ -149,6 +167,12 @@ func (g *gitSyncConfig) fillFieldMap() {
 	g.fieldMap["last_message"] = g.LastMessage
 	g.fieldMap["include_config"] = g.IncludeConfig
 	g.fieldMap["config_sync_rules"] = g.ConfigSyncRules
+	g.fieldMap["source_dir"] = g.SourceDir
+	g.fieldMap["target_subdir"] = g.TargetSubdir
+	g.fieldMap["require_frontmatter"] = g.RequireFrontmatter
+	g.fieldMap["validate_frontmatter"] = g.ValidateFrontmatter
+	g.fieldMap["bundle_assets"] = g.BundleAssets
+	g.fieldMap["webhook_url"] = g.WebhookURL
 	g.fieldMap["created_at"] = g.CreatedAt
 	g.fieldMap["updated_at"] = g.UpdatedAt
 }

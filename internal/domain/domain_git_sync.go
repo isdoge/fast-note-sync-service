@@ -30,8 +30,16 @@ type GitSyncConfig struct {
 	LastMessage     string     `json:"lastMessage"`
 	IncludeConfig   bool       `json:"includeConfig" gorm:"column:include_config"`
 	ConfigSyncRules []string   `json:"configSyncRules" gorm:"column:config_sync_rules;type:text;serializer:json"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	// Blog/Astro mapping extensions. Zero values keep the pre-3.8.5 whole-vault mirror behavior.
+	// 博客/Astro 映射扩展。零值即保持 3.8.5 之前的整库镜像行为。
+	SourceDir           string    `json:"sourceDir"`
+	TargetSubdir        string    `json:"targetSubdir"`
+	RequireFrontmatter  string    `json:"requireFrontmatter"`
+	ValidateFrontmatter bool      `json:"validateFrontmatter"`
+	BundleAssets        bool      `json:"bundleAssets"`
+	WebhookURL          string    `json:"webhookUrl"`
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
 // GitSyncHistory Git 同步历史

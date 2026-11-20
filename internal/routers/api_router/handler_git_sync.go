@@ -268,3 +268,78 @@ func (h *GitSyncHandler) logError(ctx context.Context, method string, err error)
 		zap.String("traceId", traceID),
 	)
 }
+
+// GetVaultStatus returns the client-safe sync status of the vault's git sync configs.
+// Mounted on the plain auth group (note_r), so vault-scoped plugin tokens can read it
+// without ever seeing repo URLs, credentials or webhook URLs.
+// GetVaultStatus 返回某个库的 Git 同步公开状态。挂在普通鉴权组（note_r），
+// 限定库的插件令牌可用，且看不到仓库地址、凭据与 Webhook 地址。
+// @Summary Get git sync status for a vault
+// @Tags GitSync
+// @Security UserAuthToken
+// @Produce json
+// @Param params query dto.GitSyncVaultStatusRequest true "Parameters"
+// @Success 200 {object} pkgapp.Res{data=[]dto.GitSyncPublicStatusDTO} "Success"
+// @Failure 400 {object} pkgapp.Res "Invalid Params"
+// @Failure 401 {object} pkgapp.Res "Token Required"
+// @Failure 500 {object} pkgapp.Res "Internal Server Error"
+// @Router /api/git-sync/status [get]
+func (h *GitSyncHandler) GetVaultStatus(c *gin.Context) {
+	response := pkgapp.NewResponse(c)
+	params := &dto.GitSyncVaultStatusRequest{}
+	if valid, errs := pkgapp.BindAndValid(c, params); !valid {
+		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
+		return
+	}
+
+	uid := pkgapp.GetUID(c)
+	if uid == 0 {
+		response.ToResponse(code.ErrorNotUserAuthToken)
+		return
+	}
+
+	list, err := h.App.GitSyncService.GetVaultStatuses(c.Request.Context(), uid, params.Vault)
+	if err != nil {
+		h.logError(c.Request.Context(), "GitSyncHandler.GetVaultStatus", err)
+		apperrors.ErrorResponse(c, err)
+		return
+	}
+
+	response.ToResponse(code.Success.WithData(list))
+}
+
+// TriggerVaultSync manually triggers the vault's git sync configs.
+// TriggerVaultSync 手动触发某个库的 Git 同步配置。
+// @Summary Trigger git sync for a vault
+// @Tags GitSync
+// @Security UserAuthToken
+// @Accept json
+// @Produce json
+// @Param params body dto.GitSyncVaultTriggerRequest true "Parameters"
+// @Success 200 {object} pkgapp.Res "Success"
+// @Failure 400 {object} pkgapp.Res "Invalid Params"
+// @Failure 401 {object} pkgapp.Res "Token Required"
+// @Failure 500 {object} pkgapp.Res "Internal Server Error"
+// @Router /api/git-sync/trigger [post]
+func (h *GitSyncHandler) TriggerVaultSync(c *gin.Context) {
+	response := pkgapp.NewResponse(c)
+	params := &dto.GitSyncVaultTriggerRequest{}
+	if valid, errs := pkgapp.BindAndValid(c, params); !valid {
+		response.ToResponse(code.ErrorInvalidParams.WithDetails(errs.ErrorsToString()).WithData(errs.MapsToString()))
+		return
+	}
+
+	uid := pkgapp.GetUID(c)
+	if uid == 0 {
+		response.ToResponse(code.ErrorNotUserAuthToken)
+		return
+	}
+
+	if err := h.App.GitSyncService.TriggerByVault(c.Request.Context(), uid, params.Vault, params.ConfigID); err != nil {
+		h.logError(c.Request.Context(), "GitSyncHandler.TriggerVaultSync", err)
+		apperrors.ErrorResponse(c, err)
+		return
+	}
+
+	response.ToResponse(code.Success.WithDetails("Sync started in background"))
+}

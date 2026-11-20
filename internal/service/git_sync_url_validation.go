@@ -27,6 +27,14 @@ type gitRepoURLValidator struct {
 	allowedPrivateHosts    []string
 	lookupIP               func(context.Context, string, string) ([]net.IP, error)
 	allowLocalPathsForTest bool
+	// pushCapture, when set, tees the raw body of git-receive-pack responses so the
+	// post-receive hook output can be inspected. go-git stops decoding at the first
+	// flush pkt, so hook output sent after the status report never reaches
+	// PushOptions.Progress; the transport-level tee is the only reliable capture point.
+	// pushCapture 设置后，会在传输层把 git-receive-pack 响应体整段读出并留存：
+	// go-git 在首个 flush 处结束解码，状态报告之后到达的 hook 输出不会进入
+	// PushOptions.Progress，传输层是唯一可靠的捕获点。
+	pushCapture *sidebandCapture
 }
 
 func newGitRepoURLValidator(allowedPrivateHosts []string, lookupIP func(context.Context, string, string) ([]net.IP, error)) *gitRepoURLValidator {
@@ -174,7 +182,13 @@ func (v *gitRepoURLValidator) installHTTPClients() func() {
 	transport.DialContext = v.dialContext(transport.DialContext)
 	transport.DialTLSContext = nil
 	transport.DialTLS = nil
-	client := githttp.NewClient(&http.Client{Transport: transport})
+	// 捕获只对 receive-pack 生效，且限制在固定大小内，不影响其它 Git 流量。
+	// Capture applies only to receive-pack responses, bounded in size.
+	roundTripper := http.RoundTripper(transport)
+	if v.pushCapture != nil {
+		roundTripper = &pushCaptureRoundTripper{base: transport, capture: v.pushCapture}
+	}
+	client := githttp.NewClient(&http.Client{Transport: roundTripper})
 	gitclient.InstallProtocol("http", client)
 	gitclient.InstallProtocol("https", client)
 

@@ -60,6 +60,19 @@ func (m *MockGitSyncService) ExecuteSync(ctx context.Context, uid int64, id int6
 	return args.Error(0)
 }
 
+func (m *MockGitSyncService) GetVaultStatuses(ctx context.Context, uid int64, vaultName string) ([]*dto.GitSyncPublicStatusDTO, error) {
+	args := m.Called(ctx, uid, vaultName)
+	if v := args.Get(0); v != nil {
+		return v.([]*dto.GitSyncPublicStatusDTO), args.Error(1)
+	}
+	return nil, args.Error(1)
+}
+
+func (m *MockGitSyncService) TriggerByVault(ctx context.Context, uid int64, vaultName string, configID int64) error {
+	args := m.Called(ctx, uid, vaultName, configID)
+	return args.Error(0)
+}
+
 func (m *MockGitSyncService) CleanWorkspace(ctx context.Context, uid int64, configID int64) error {
 	args := m.Called(ctx, uid, configID)
 	return args.Error(0)

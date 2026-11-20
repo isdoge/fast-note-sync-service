@@ -207,6 +207,14 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 			// file, and folder APIs. Mutating vault operations remain WebGUI-only.
 			auth.GET("/vault", vaultHandler.List)
 
+			// Client-safe git sync status/trigger for vault-scoped tokens (Obsidian plugin).
+			// These two routes are classified as note_r / note_w; every other
+			// /api/git-sync/* route stays in the WebGUI group below.
+			// 面向限定库客户端令牌的 Git 同步状态/触发接口（Obsidian 插件）。
+			// 仅这两条归类为 note_r / note_w，其余 /api/git-sync/* 仍在下方 WebGUI 组。
+			auth.GET("/git-sync/status", gitSyncHandler.GetVaultStatus)
+			auth.POST("/git-sync/trigger", gitSyncHandler.TriggerVaultSync)
+
 			// WebGUI restricted routes
 			// 仅限 WebGUI 访问的路由组
 			webguiGroup := auth.Group("")
