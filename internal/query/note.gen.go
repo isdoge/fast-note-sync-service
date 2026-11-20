@@ -50,6 +50,7 @@ func newNote(db *gorm.DB, opts ...gen.DOOption) note {
 	_note.UpdatedTimestamp = field.NewInt64(tableName, "updated_timestamp")
 	_note.CreatedAt = field.NewField(tableName, "created_at")
 	_note.UpdatedAt = field.NewField(tableName, "updated_at")
+	_note.Revision = field.NewString(tableName, "revision")
 
 	_note.fillFieldMap()
 
@@ -82,6 +83,7 @@ type note struct {
 	UpdatedTimestamp        field.Int64
 	CreatedAt               field.Field
 	UpdatedAt               field.Field
+	Revision                field.String
 
 	fieldMap map[string]field.Expr
 }
@@ -120,6 +122,7 @@ func (n *note) updateTableName(table string) *note {
 	n.UpdatedTimestamp = field.NewInt64(table, "updated_timestamp")
 	n.CreatedAt = field.NewField(table, "created_at")
 	n.UpdatedAt = field.NewField(table, "updated_at")
+	n.Revision = field.NewString(table, "revision")
 
 	n.fillFieldMap()
 
@@ -144,7 +147,7 @@ func (n *note) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (n *note) fillFieldMap() {
-	n.fieldMap = make(map[string]field.Expr, 22)
+	n.fieldMap = make(map[string]field.Expr, 23)
 	n.fieldMap["id"] = n.ID
 	n.fieldMap["vault_id"] = n.VaultID
 	n.fieldMap["action"] = n.Action
@@ -167,6 +170,7 @@ func (n *note) fillFieldMap() {
 	n.fieldMap["updated_timestamp"] = n.UpdatedTimestamp
 	n.fieldMap["created_at"] = n.CreatedAt
 	n.fieldMap["updated_at"] = n.UpdatedAt
+	n.fieldMap["revision"] = n.Revision
 }
 
 func (n note) clone(db *gorm.DB) note {

@@ -37,6 +37,7 @@ type Note struct {
 	Ctime                   int64
 	Mtime                   int64
 	UpdatedTimestamp        int64
+	Revision                string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
 }
@@ -119,6 +120,14 @@ type NoteRepository interface {
 
 	// Update 更新笔记
 	Update(ctx context.Context, note *Note, uid int64) (*Note, error)
+
+	// UpdateIfRevision 仅在行仍携带 expectedRevision 时更新笔记（CAS）；行已变化返回 false。
+	// UpdateIfRevision applies the note update only when the row still carries
+	// expectedRevision; returns false when another device moved it.
+	UpdateIfRevision(ctx context.Context, note *Note, expectedRevision string, uid int64) (bool, error)
+
+	// UpdateDeleteIfRevision 仅在行仍携带 expectedRevision 时把笔记软删除（CAS）。
+	UpdateDeleteIfRevision(ctx context.Context, note *Note, expectedRevision string, uid int64) (bool, error)
 
 	// UpdateDelete 更新笔记为删除状态
 	UpdateDelete(ctx context.Context, note *Note, uid int64) error

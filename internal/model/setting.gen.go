@@ -25,6 +25,7 @@ type Setting struct {
 	UpdatedTimestamp int64      `gorm:"column:updated_timestamp;index:idx_setting_id_updated_timestamp,priority:2;default:0" json:"updatedTimestamp" form:"updatedTimestamp"`
 	CreatedAt        timex.Time `gorm:"column:created_at;default:NULL;autoCreateTime:false" json:"createdAt" form:"createdAt"`
 	UpdatedAt        timex.Time `gorm:"column:updated_at;index:idx_setting_id_updated_at,priority:2;default:NULL;autoUpdateTime:false" json:"updatedAt" form:"updatedAt"`
+	Revision         string     `gorm:"column:revision;type:varchar(64);not null;default:''" json:"revision" form:"revision"`
 }
 
 // TableName Setting's table name

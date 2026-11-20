@@ -251,6 +251,7 @@ func (s *noteService) domainToDTO(note *domain.Note) *dto.NoteDTO {
 		ClientName:       note.ClientName,
 		ClientType:       note.ClientType,
 		ClientVersion:    note.ClientVersion,
+		Revision:         note.Revision,
 		UpdatedTimestamp: note.UpdatedTimestamp,
 		UpdatedAt:        timex.Time(note.UpdatedAt),
 		CreatedAt:        timex.Time(note.CreatedAt),
@@ -395,6 +396,12 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 		dto   *dto.NoteDTO
 	}
 
+	// 基线模式条件提交（CAS）：所有调用方（WebSocket 实时写、HTTP、MCP）都会经过这里；
+	// params.Baseline 仅由基线模式连接的 WebSocket 处理器附加，nil 表示保持无条件写入。
+	// Baseline-mode conditional commit (CAS): every caller (WebSocket realtime write, HTTP,
+	// MCP) funnels through here; params.Baseline is attached only by baseline-mode WebSocket
+	// handlers, nil keeps the unconditional behavior.
+
 	// Per-key mutex instead of singleflight.Do: singleflight would let a losing
 	// concurrent caller silently skip its own write and reuse another caller's
 	// result, dropping data. A keyed mutex serializes same-key calls while still
@@ -450,6 +457,20 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 				return &result{isNew: isNew, dto: s.domainToDTO(note)}, nil
 			}
 
+			// 基线模式墓碑闸门：服务端墓碑不得被静默复活。只有用户明确选择恢复、且携带的
+			// 令牌仍等于当前墓碑令牌时才允许条件复活；否则报冲突并保持服务端删除状态。
+			// Baseline tombstone gate: a server tombstone must never be silently revived.
+			// Only an explicit user choice carrying the tombstone's current revision may
+			// conditionally revive it; otherwise report a conflict and keep it deleted.
+			if params.Baseline != nil && note.Action == domain.NoteActionDelete {
+				if !params.Baseline.IsConflictResolved {
+					return nil, newBaselineConflict(dto.BaselineRejectRemoteDeleted, note)
+				}
+				if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != note.Revision {
+					return nil, newBaselineConflict(dto.BaselineRejectRevisionMoved, note)
+				}
+			}
+
 			// Set action // 设置 action
 			var action domain.NoteAction
 			if note.Action == domain.NoteActionDelete {
@@ -494,9 +515,41 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 			note.ContentPurged = 0
 			note.Version++ // Increment version on content change // 内容变更时递增版本号
 
-			updated, err := s.noteRepo.Update(ctx, note, uid)
-			if err != nil {
-				return nil, code.ErrorDBQuery.WithDetails(err.Error())
+			var updated *domain.Note
+			if params.Baseline != nil {
+				// 有基线更新：仅当当前行仍带客户端确认的版本令牌时才原子写入。
+				// Baseline update: write atomically only while the row still carries the
+				// revision the client confirmed.
+				expectedRevision := params.Baseline.BaseRevision
+				if expectedRevision == "" {
+					return nil, newBaselineConflict(dto.BaselineRejectRevisionMoved, note)
+				}
+				ok, err := s.noteRepo.UpdateIfRevision(ctx, note, expectedRevision, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+				if !ok {
+					// 预检通过后行被另一设备抢先改动：重新读取最新状态报冲突。
+					latest, _ := s.noteRepo.GetAllByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+					if latest == nil {
+						latest = note
+					}
+					reason := dto.BaselineRejectRevisionMoved
+					if latest.ContentHash != params.Baseline.BaseHash {
+						reason = dto.BaselineRejectBothModified
+					}
+					return nil, newBaselineConflict(reason, latest)
+				}
+				updated, err = s.noteRepo.GetByID(ctx, note.ID, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+			} else {
+				var err error
+				updated, err = s.noteRepo.Update(ctx, note, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
 			}
 
 			// Log content modify // 记录内容变更日志
@@ -522,6 +575,11 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 
 		// Create new note // 创建新笔记
 		isNew = true
+		if params.Baseline != nil {
+			if err := checkBaselineCreate(params.Baseline); err != nil {
+				return nil, err
+			}
+		}
 		newNote := &domain.Note{
 			VaultID:       vaultID,
 			Path:          params.Path,
@@ -612,6 +670,19 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 		return res, nil
 	}
 
+	// 基线模式实时删除：活跃行只有在客户端携带匹配的版本令牌（内容资源还需匹配
+	// 内容哈希）时才能软删除，否则拒绝并报冲突，保持服务端活跃。
+	// Baseline realtime delete: a live row may only be soft-deleted when the client
+	// carries a matching revision (and matching content hash); otherwise reject with a
+	// conflict and keep the server row live.
+	if params.Baseline != nil {
+		if err := checkBaselineDelete(params.Baseline, note.Revision, note.ContentHash, func(reason string) error {
+			return baselineConflictFromNote(reason, note)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	// Update to deleted status // 更新为删除状态
 	note.Action = domain.NoteActionDelete
 	note.ClientName = s.clientName
@@ -619,9 +690,20 @@ func (s *noteService) Delete(ctx context.Context, uid int64, params *dto.NoteDel
 	note.ClientVersion = s.clientVer
 	note.Rename = 0
 
-	err = s.noteRepo.UpdateDelete(ctx, note, uid)
-	if err != nil {
-		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	if params.Baseline != nil {
+		ok, err := s.noteRepo.UpdateDeleteIfRevision(ctx, note, params.Baseline.BaseRevision, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+		if !ok {
+			latest, _ := s.noteRepo.GetAllByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+			return nil, baselineConflictFromNote(dto.BaselineRejectRevisionMoved, latest)
+		}
+	} else {
+		err = s.noteRepo.UpdateDelete(ctx, note, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
 	}
 
 	// 删除后从标签索引移除（失败只记日志）；从回收站恢复时 Restore 会重建

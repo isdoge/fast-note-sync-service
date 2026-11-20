@@ -314,3 +314,17 @@ func (m *MockNoteRepository) ListByPathsMeta(ctx context.Context, paths []string
 	}
 	return args.Get(0).(map[string]*domain.Note), args.Error(1)
 }
+
+// UpdateIfRevision is a CAS update used by the baseline-mode conditional commit.
+// UpdateIfRevision 是基线模式条件提交使用的 CAS 更新。
+func (m *MockNoteRepository) UpdateIfRevision(ctx context.Context, note *domain.Note, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, note, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
+}
+
+// UpdateDeleteIfRevision is a CAS soft-delete used by the baseline-mode conditional commit.
+// UpdateDeleteIfRevision 是基线模式条件提交使用的 CAS 软删除。
+func (m *MockNoteRepository) UpdateDeleteIfRevision(ctx context.Context, note *domain.Note, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, note, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
+}

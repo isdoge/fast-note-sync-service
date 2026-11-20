@@ -22,6 +22,7 @@ type Folder struct {
 	UpdatedTimestamp int64      `gorm:"column:updated_timestamp;not null;index:idx_folder_vault_id_updated_timestamp,priority:2;default:0" json:"updatedTimestamp" form:"updatedTimestamp"`
 	CreatedAt        timex.Time `gorm:"column:created_at;default:NULL;autoCreateTime:false" json:"createdAt" form:"createdAt"`
 	UpdatedAt        timex.Time `gorm:"column:updated_at;default:NULL;autoUpdateTime:false" json:"updatedAt" form:"updatedAt"`
+	Revision         string     `gorm:"column:revision;type:varchar(64);not null;default:''" json:"revision" form:"revision"`
 }
 
 // TableName Folder's table name

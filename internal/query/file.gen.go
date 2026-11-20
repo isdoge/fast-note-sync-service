@@ -44,6 +44,7 @@ func newFile(db *gorm.DB, opts ...gen.DOOption) file {
 	_file.UpdatedTimestamp = field.NewInt64(tableName, "updated_timestamp")
 	_file.CreatedAt = field.NewField(tableName, "created_at")
 	_file.UpdatedAt = field.NewField(tableName, "updated_at")
+	_file.Revision = field.NewString(tableName, "revision")
 
 	_file.fillFieldMap()
 
@@ -70,6 +71,7 @@ type file struct {
 	UpdatedTimestamp field.Int64
 	CreatedAt        field.Field
 	UpdatedAt        field.Field
+	Revision         field.String
 
 	fieldMap map[string]field.Expr
 }
@@ -102,6 +104,7 @@ func (f *file) updateTableName(table string) *file {
 	f.UpdatedTimestamp = field.NewInt64(table, "updated_timestamp")
 	f.CreatedAt = field.NewField(table, "created_at")
 	f.UpdatedAt = field.NewField(table, "updated_at")
+	f.Revision = field.NewString(table, "revision")
 
 	f.fillFieldMap()
 
@@ -126,7 +129,7 @@ func (f *file) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (f *file) fillFieldMap() {
-	f.fieldMap = make(map[string]field.Expr, 16)
+	f.fieldMap = make(map[string]field.Expr, 17)
 	f.fieldMap["id"] = f.ID
 	f.fieldMap["vault_id"] = f.VaultID
 	f.fieldMap["action"] = f.Action
@@ -143,6 +146,7 @@ func (f *file) fillFieldMap() {
 	f.fieldMap["updated_timestamp"] = f.UpdatedTimestamp
 	f.fieldMap["created_at"] = f.CreatedAt
 	f.fieldMap["updated_at"] = f.UpdatedAt
+	f.fieldMap["revision"] = f.Revision
 }
 
 func (f file) clone(db *gorm.DB) file {

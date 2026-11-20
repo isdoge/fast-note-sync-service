@@ -145,6 +145,7 @@ func (s *settingService) domainToDTO(setting *domain.Setting) *dto.SettingDTO {
 		ContentHash:      setting.ContentHash,
 		Ctime:            setting.Ctime,
 		Mtime:            setting.Mtime,
+		Revision:         setting.Revision,
 		UpdatedTimestamp: setting.UpdatedTimestamp,
 		UpdatedAt:        timex.Time(setting.UpdatedAt),
 		CreatedAt:        timex.Time(setting.CreatedAt),
@@ -268,6 +269,19 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 				return &result{isNew: false, dto: s.domainToDTO(setting)}, nil
 			}
 
+			// 基线模式墓碑闸门：服务端墓碑不得被静默复活；只有用户明确选择恢复、且携带的
+			// 令牌仍等于当前墓碑令牌时才允许条件复活。
+			// Baseline tombstone gate: never silently revive a server tombstone; only an
+			// explicit user choice carrying the tombstone's current revision may.
+			if params.Baseline != nil && setting.Action == domain.SettingActionDelete {
+				if !params.Baseline.IsConflictResolved {
+					return nil, baselineConflictFromSetting(dto.BaselineRejectRemoteDeleted, setting)
+				}
+				if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != setting.Revision {
+					return nil, baselineConflictFromSetting(dto.BaselineRejectRevisionMoved, setting)
+				}
+			}
+
 			// Set action
 			// 设置 action
 			var action domain.SettingAction
@@ -294,9 +308,39 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 			setting.Rename = 0
 			setting.ContentPurged = 0
 
-			updated, err := s.settingRepo.Update(ctx, setting, uid)
-			if err != nil {
-				return nil, code.ErrorDBQuery.WithDetails(err.Error())
+			var updated *domain.Setting
+			if params.Baseline != nil {
+				// 有基线更新：仅当行仍带客户端确认的令牌时才原子写入。
+				// Baseline update: write atomically only while the row still carries the
+				// client's revision.
+				if params.Baseline.BaseRevision == "" {
+					return nil, baselineConflictFromSetting(dto.BaselineRejectRevisionMoved, setting)
+				}
+				ok, err := s.settingRepo.UpdateIfRevision(ctx, setting, params.Baseline.BaseRevision, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+				if !ok {
+					latest, _ := s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+					if latest == nil {
+						latest = setting
+					}
+					reason := dto.BaselineRejectRevisionMoved
+					if latest.ContentHash != params.Baseline.BaseHash {
+						reason = dto.BaselineRejectBothModified
+					}
+					return nil, baselineConflictFromSetting(reason, latest)
+				}
+				updated, err = s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
+			} else {
+				var err error
+				updated, err = s.settingRepo.Update(ctx, setting, uid)
+				if err != nil {
+					return nil, code.ErrorDBQuery.WithDetails(err.Error())
+				}
 			}
 
 			// Log content modify // 记录内容变更日志
@@ -309,6 +353,11 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 
 		// Create new configuration
 		// 创建新配置
+		if params.Baseline != nil {
+			if err := checkBaselineCreate(params.Baseline); err != nil {
+				return nil, err
+			}
+		}
 		newSetting := &domain.Setting{
 			VaultID:     vaultID,
 			Path:        params.Path,
@@ -361,9 +410,36 @@ func (s *settingService) Delete(ctx context.Context, uid int64, params *dto.Sett
 	setting, err := s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 基线模式：不存在即幂等成功（与笔记/附件一致），供决策表确认删除已完成。
+			// Baseline mode: missing means idempotent success, matching notes/files, so the
+			// decision table can confirm the delete already happened.
+			if params.Baseline != nil {
+				return &dto.SettingDTO{Path: params.Path, PathHash: params.PathHash, Unchanged: true}, nil
+			}
 			return nil, code.ErrorSettingNotFound
 		}
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	}
+
+	if setting.Action == domain.SettingActionDelete {
+		// 基线模式：已是墓碑即幂等成功。
+		// Baseline mode: an existing tombstone is an idempotent success.
+		if params.Baseline != nil {
+			res := s.domainToDTO(setting)
+			res.Unchanged = true
+			return res, nil
+		}
+	}
+
+	// 基线模式实时删除：活跃行只有在客户端携带匹配的版本令牌与内容哈希时才能软删除。
+	// Baseline realtime delete: a live row may only be soft-deleted when the client
+	// carries a matching revision and content hash.
+	if params.Baseline != nil {
+		if err := checkBaselineDelete(params.Baseline, setting.Revision, setting.ContentHash, func(reason string) error {
+			return baselineConflictFromSetting(reason, setting)
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	// Update to deleted status
@@ -378,9 +454,26 @@ func (s *settingService) Delete(ctx context.Context, uid int64, params *dto.Sett
 	setting.Size = 0
 	setting.Rename = 0
 
-	updated, err := s.settingRepo.Update(ctx, setting, uid)
-	if err != nil {
-		return nil, code.ErrorDBQuery.WithDetails(err.Error())
+	var updated *domain.Setting
+	if params.Baseline != nil {
+		ok, err := s.settingRepo.UpdateIfRevision(ctx, setting, params.Baseline.BaseRevision, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+		if !ok {
+			latest, _ := s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+			return nil, baselineConflictFromSetting(dto.BaselineRejectRevisionMoved, latest)
+		}
+		updated, err = s.settingRepo.GetByPathHash(ctx, params.PathHash, vaultID, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
+	} else {
+		var err error
+		updated, err = s.settingRepo.Update(ctx, setting, uid)
+		if err != nil {
+			return nil, code.ErrorDBQuery.WithDetails(err.Error())
+		}
 	}
 
 	// Log soft delete // 记录软删除日志

@@ -84,6 +84,11 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	settingSvc := h.App.GetSettingService(c.ClientType(), c.ClientName(), c.ClientVersion())
 
+	// 基线模式连接：附加条件提交契约（旧连接为 nil，保持无条件写入）。
+	// Baseline-mode connections attach the conditional-commit contract; legacy
+	// connections stay nil.
+	params.Baseline = baselineCommitFromNote(c, params.BaseHash, params.BaseHashMissing, params.BaseRevision, params.IsConflictResolved)
+
 	checkParams := convert.StructAssign(params, &dto.SettingUpdateCheckRequest{}).(*dto.SettingUpdateCheckRequest)
 	updateMode, settingCheck, err := settingSvc.UpdateCheck(ctx, c.User.UID, checkParams)
 	if err != nil {
@@ -103,14 +108,20 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 		}
 		_, setting, err := settingSvc.ModifyOrCreate(ctx, c.User.UID, params, true)
 		if err != nil {
+			if conflict, ok := isBaselineConflict(err); ok {
+				h.respondBaselineConflict(c, dto.SyncConflictKindSetting, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+				return
+			}
 			h.respondErrorWithPath(c, code.ErrorSettingModifyOrCreateFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingModify.ModifyOrCreate")
 			return
 		}
 
 		c.ToResponse(code.Success.WithData(dto.SettingModifyAckMessage{
-			LastTime: setting.UpdatedTimestamp,
-			Path:     setting.Path,
-			PathHash: setting.PathHash,
+			LastTime:    setting.UpdatedTimestamp,
+			Path:        setting.Path,
+			PathHash:    setting.PathHash,
+			ContentHash: setting.ContentHash,
+			Revision:    setting.Revision,
 		}).WithVault(params.Vault).WithContext(params.Context), string(SettingModifyAck))
 		c.BroadcastResponse(code.Success.WithData(
 			dto.SettingSyncModifyMessage{
@@ -122,15 +133,18 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 				Ctime:            setting.Ctime,
 				Mtime:            setting.Mtime,
 				UpdatedTimestamp: setting.UpdatedTimestamp,
+				Revision:         setting.Revision,
 			},
 		).WithVault(params.Vault), true, SettingSyncModify)
 		return
 
 	case "UpdateMtime":
 		c.ToResponse(code.Success.WithData(dto.SettingModifyAckMessage{
-			LastTime: settingCheck.UpdatedTimestamp,
-			Path:     settingCheck.Path,
-			PathHash: settingCheck.PathHash,
+			LastTime:    settingCheck.UpdatedTimestamp,
+			Path:        settingCheck.Path,
+			PathHash:    settingCheck.PathHash,
+			ContentHash: settingCheck.ContentHash,
+			Revision:    settingCheck.Revision,
 		}).WithVault(params.Vault).WithContext(params.Context), string(SettingModifyAck))
 		return
 	default:
@@ -225,8 +239,13 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 
 	settingSvc := h.App.GetSettingService(c.ClientType(), c.ClientName(), c.ClientVersion())
 
+	params.Baseline = baselineCommitFromNote(c, params.BaseHash, params.BaseHashMissing, params.BaseRevision, false)
 	setting, err := settingSvc.Delete(ctx, c.User.UID, params)
 	if err != nil {
+		if conflict, ok := isBaselineConflict(err); ok {
+			h.respondBaselineConflict(c, dto.SyncConflictKindSetting, params.Path, params.PathHash, params.BaseHash, conflict, slotPath)
+			return
+		}
 		h.respondErrorWithPath(c, code.ErrorSettingDeleteFailed, err, slotPath, msg.Type, "websocket_router.setting.SettingDelete.Delete")
 		return
 	}
@@ -235,7 +254,13 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 		LastTime: setting.UpdatedTimestamp,
 		Path:     setting.Path,
 		PathHash: setting.PathHash,
+		Revision: setting.Revision,
 	}).WithVault(params.Vault).WithContext(params.Context), string(SettingDeleteAck))
+	// 幂等删除（不存在/已是墓碑）：只回 Ack，不广播。
+	// Idempotent delete (missing/already a tombstone): ack only, no broadcast.
+	if setting.Unchanged {
+		return
+	}
 	c.BroadcastResponse(code.Success.WithData(
 		dto.SettingSyncDeleteMessage{
 			Path:             setting.Path,
@@ -243,6 +268,8 @@ func (h *SettingWSHandler) SettingDelete(c *pkgapp.WebsocketClient, msg *pkgapp.
 			Ctime:            setting.Ctime,
 			Mtime:            setting.Mtime,
 			UpdatedTimestamp: setting.UpdatedTimestamp,
+			Revision:         setting.Revision,
+			ContentHash:      setting.ContentHash,
 		},
 	).WithVault(params.Vault), true, SettingSyncDelete)
 }
@@ -330,6 +357,11 @@ func (h *SettingWSHandler) SettingSync(c *pkgapp.WebsocketClient, msg *pkgapp.We
 			allMissingSettings = append(allMissingSettings, item.(dto.SettingSyncDelSetting))
 		}
 		params.MissingSettings = allMissingSettings
+	}
+
+	if baselineModeEnabled(c) {
+		h.doSettingSyncBaseline(c, params)
+		return
 	}
 
 	h.doSettingSync(c, params)

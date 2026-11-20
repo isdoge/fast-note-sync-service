@@ -103,6 +103,11 @@ func (h *FolderWSHandler) FolderSync(c *pkgapp.WebsocketClient, msg *pkgapp.WebS
 		params.MissingFolders = allMissingFolders
 	}
 
+	if baselineModeEnabled(c) {
+		h.doFolderSyncBaseline(c, params)
+		return
+	}
+
 	h.doFolderSync(c, params)
 }
 
@@ -433,8 +438,13 @@ func (h *FolderWSHandler) FolderModify(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	}
 
 	uid := c.User.UID
+	params.Baseline = baselineCommitFromFolder(c, params.BaseRevision, params.IsConflictResolved)
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).UpdateOrCreate(c.Context(), uid, params)
 	if err != nil {
+		if conflict, ok := isBaselineConflict(err); ok {
+			h.respondBaselineConflict(c, dto.SyncConflictKindFolder, params.Path, params.PathHash, "", conflict, params.Path)
+			return
+		}
 		h.respondError(c, code.ErrorFolderModifyOrCreateFailed, err, "websocket_router.folder.FolderModify.UpdateOrCreate")
 		return
 	}
@@ -443,6 +453,7 @@ func (h *FolderWSHandler) FolderModify(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		LastTime: folder.UpdatedTimestamp,
 		Path:     folder.Path,
 		PathHash: folder.PathHash,
+		Revision: folder.Revision,
 	}).WithVault(params.Vault).WithContext(params.Context), string(FolderModifyAck))
 	c.BroadcastResponse(code.Success.WithData(
 		dto.FolderSyncModifyMessage{
@@ -451,6 +462,7 @@ func (h *FolderWSHandler) FolderModify(c *pkgapp.WebsocketClient, msg *pkgapp.We
 			Ctime:            folder.Ctime,
 			Mtime:            folder.Mtime,
 			UpdatedTimestamp: folder.UpdatedTimestamp,
+			Revision:         folder.Revision,
 		},
 	).WithVault(params.Vault), true, FolderSyncModify)
 }
@@ -473,8 +485,13 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	}
 
 	uid := c.User.UID
+	params.Baseline = baselineCommitFromFolder(c, params.BaseRevision, false)
 	folder, err := h.App.GetFolderService(c.ClientType(), c.ClientName(), c.ClientVersion()).Delete(c.Context(), uid, params)
 	if err != nil {
+		if conflict, ok := isBaselineConflict(err); ok {
+			h.respondBaselineConflict(c, dto.SyncConflictKindFolder, params.Path, params.PathHash, "", conflict, slotPath)
+			return
+		}
 		h.respondErrorWithPath(c, code.ErrorFolderDeleteFailed, err, slotPath, msg.Type, "websocket_router.folder.FolderDelete.Delete")
 		return
 	}
@@ -483,6 +500,7 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		LastTime: folder.UpdatedTimestamp,
 		Path:     folder.Path,
 		PathHash: folder.PathHash,
+		Revision: folder.Revision,
 	}).WithVault(params.Vault).WithContext(params.Context), string(FolderDeleteAck))
 	c.BroadcastResponse(code.Success.WithData(
 		dto.FolderSyncDeleteMessage{
@@ -491,6 +509,7 @@ func (h *FolderWSHandler) FolderDelete(c *pkgapp.WebsocketClient, msg *pkgapp.We
 			Ctime:            folder.Ctime,
 			Mtime:            folder.Mtime,
 			UpdatedTimestamp: folder.UpdatedTimestamp,
+			Revision:         folder.Revision,
 		},
 	).WithVault(params.Vault), true, FolderSyncDelete)
 }

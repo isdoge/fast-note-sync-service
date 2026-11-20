@@ -1076,6 +1076,13 @@ type ValidatorInterface interface {
 	ValidateStruct(obj interface{}) error
 }
 
+// MaxSyncBaselineVersionSupported is the highest sync baseline protocol version this
+// server implements. Connections that request >= 1 via ClientInfo are switched to the
+// baseline rules; everything else keeps the legacy behavior.
+// MaxSyncBaselineVersionSupported 是本服务端实现的最高同步基线协议版本。通过 ClientInfo
+// 请求 >= 1 的连接会切到基线规则；其余连接保持旧行为。
+const MaxSyncBaselineVersionSupported uint32 = 1
+
 type WebsocketServer struct {
 	app                AppContainer // App Container (Required) // App Container（必须）
 	handlers           map[string]func(*WebsocketClient, *WebSocketMessage)
@@ -1099,11 +1106,12 @@ type WebsocketServer struct {
 	ProtobufDecoder     func(action string, data []byte, obj any) (bool, error) // Protobuf decoder hook // Protobuf 解码钩子
 	ProtobufEncoder     func(action string, res *Res) ([]byte, error)           // Protobuf encoder hook // Protobuf 编码钩子
 	// MaxSyncBaselineVersion is the highest sync baseline protocol version this server advertises.
-	// Stage C keeps it at 0 because the conditional-commit rules of stage D are not merged yet;
-	// stage D only needs to raise this constant to 1 to activate the negotiated mode. Tests may
-	// set it to 1 to exercise the full 0/1 state machine.
-	// MaxSyncBaselineVersion 是本服务端广告的最高同步基线协议版本。阶段 C 保持 0（阶段 D 的条件提交
-	// 规则尚未合入）；阶段 D 只需把它改为 1 即可启用协商模式。测试可设为 1 以完整验证 0/1 状态机。
+	// Stage D is complete (decision engine, conditional commit, revision tokens), so the
+	// server advertises 1: only connections that explicitly request >= 1 through ClientInfo
+	// are switched to the baseline rules; every other connection keeps the legacy behavior.
+	// MaxSyncBaselineVersion 是本服务端广告的最高同步基线协议版本。阶段 D 已完整实现
+	//（决策引擎、条件提交、版本令牌），NewWebsocketServer 默认置 1：只有通过 ClientInfo
+	// 明确请求 >= 1 的连接才切换到基线规则，其余连接保持旧行为。
 	MaxSyncBaselineVersion uint32
 }
 
@@ -1209,6 +1217,10 @@ func NewWebsocketServer(c WSConfig, app AppContainer) *WebsocketServer {
 		events:              NewEventHub(),
 		config:              &c,
 		binaryChunkSessions: make(map[string]map[string]any),
+		// Stage D is complete: advertise baseline protocol version 1. A connection only
+		// switches modes when its ClientInfo explicitly requests >= 1.
+		// 阶段 D 已完成：广告基线协议版本 1。只有 ClientInfo 明确请求 >= 1 的连接才会切换模式。
+		MaxSyncBaselineVersion: MaxSyncBaselineVersionSupported,
 	}
 
 	// Register built-in unauthenticated handlers

@@ -81,6 +81,7 @@ func (s *folderService) domainToDTO(f *domain.Folder) *dto.FolderDTO {
 		FID:              f.FID,
 		Ctime:            f.Ctime,
 		Mtime:            f.Mtime,
+		Revision:         f.Revision,
 		UpdatedTimestamp: f.UpdatedTimestamp,
 		UpdatedAt:        timex.Time(f.UpdatedAt),
 		CreatedAt:        timex.Time(f.CreatedAt),
@@ -140,6 +141,34 @@ func (s *folderService) UpdateOrCreate(ctx context.Context, uid int64, params *d
 
 	if params.PathHash == "" {
 		params.PathHash = util.EncodeHash32(params.Path)
+	}
+
+	// 基线模式条件提交：目录没有内容哈希，只按 BaseRevision 判断。服务端活跃目录要求
+	// 令牌匹配；服务端墓碑要求用户明确选择恢复且令牌匹配；服务端不存在时允许创建。
+	// Baseline conditional commit: folders have no content hash, so only BaseRevision
+	// decides. A live folder requires a matching revision; a tombstone requires an
+	// explicit resolution with a matching revision; a missing row may be created.
+	if params.Baseline != nil {
+		current, getErr := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+		switch {
+		case getErr != nil && errors.Is(getErr, gorm.ErrRecordNotFound):
+			if params.Baseline.BaseRevision != "" && !params.Baseline.IsConflictResolved {
+				return nil, baselineConflictFromFolder(dto.BaselineRejectServerMissing, nil)
+			}
+		case getErr != nil:
+			return nil, code.ErrorDBQuery.WithDetails(getErr.Error())
+		case current.Action == domain.FolderActionDelete:
+			if !params.Baseline.IsConflictResolved {
+				return nil, baselineConflictFromFolder(dto.BaselineRejectRemoteDeleted, current)
+			}
+			if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != current.Revision {
+				return nil, baselineConflictFromFolder(dto.BaselineRejectRevisionMoved, current)
+			}
+		default:
+			if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != current.Revision {
+				return nil, baselineConflictFromFolder(dto.BaselineRejectRevisionMoved, current)
+			}
+		}
 	}
 
 	// Unified call to EnsurePathFID
@@ -219,13 +248,33 @@ func (s *folderService) Delete(ctx context.Context, uid int64, params *dto.Folde
 		return nil, code.ErrorFolderGetFailed.WithDetails(err.Error())
 	}
 
+	// 基线模式实时删除：目录活跃行只有在携带匹配的 BaseRevision 时才能条件删除。
+	// Baseline realtime delete: a live folder may only be conditionally deleted with a
+	// matching BaseRevision.
+	if params.Baseline != nil {
+		if params.Baseline.BaseRevision == "" || params.Baseline.BaseRevision != f.Revision {
+			return nil, baselineConflictFromFolder(dto.BaselineRejectRevisionMoved, f)
+		}
+	}
+
 	// Update to deleted status
 	// 更新为删除状态
 	f.Action = domain.FolderActionDelete
 	f.UpdatedTimestamp = time.Now().UnixMilli()
-	_, err = s.folderRepo.Update(ctx, f, uid)
-	if err != nil {
-		return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
+	if params.Baseline != nil {
+		ok, err := s.folderRepo.UpdateIfRevision(ctx, f, params.Baseline.BaseRevision, uid)
+		if err != nil {
+			return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
+		}
+		if !ok {
+			latest, _ := s.folderRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
+			return nil, baselineConflictFromFolder(dto.BaselineRejectRevisionMoved, latest)
+		}
+	} else {
+		_, err = s.folderRepo.Update(ctx, f, uid)
+		if err != nil {
+			return nil, code.ErrorFolderDeleteFailed.WithDetails(err.Error())
+		}
 	}
 
 	if s.backupService != nil {

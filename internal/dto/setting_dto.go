@@ -7,14 +7,14 @@ import "github.com/haierkeys/fast-note-sync-service/pkg/timex"
 // SettingUpdateCheckRequest Client request parameters for checking setting updates
 // 客户端检查更新请求参数
 type SettingUpdateCheckRequest struct {
-	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`       // Vault name // 保险库名称
-	Path            string `json:"path" form:"path" binding:"required" example:"User/Theme"`      // Setting path // 配置路径
-	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"hash123"` // Path hash // 路径哈希
-	ContentHash     string `json:"contentHash" form:"contentHash" example:"chash456"`             // Content hash // 内容哈希
-	Ctime           int64  `json:"ctime" form:"ctime" binding:"required" example:"1700000000"`    // Creation timestamp // 创建时间戳
-	Mtime           int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`    // Modification timestamp // 修改时间戳
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                   // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`        // No trusted content baseline // 没有可信内容基线
+	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path            string `json:"path" form:"path" binding:"required" example:"User/Theme"`                    // Setting path // 配置路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"hash123"`               // Path hash // 路径哈希
+	ContentHash     string `json:"contentHash" form:"contentHash" example:"chash456"`                           // Content hash // 内容哈希
+	Ctime           int64  `json:"ctime" form:"ctime" binding:"required" example:"1700000000"`                  // Creation timestamp // 创建时间戳
+	Mtime           int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`                  // Modification timestamp // 修改时间戳
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
@@ -27,18 +27,22 @@ func (r *SettingUpdateCheckRequest) NormalizeSyncBaseline() {
 // SettingModifyOrCreateRequest Request parameters for creating or modifying settings
 // 修改或创建配置参数
 type SettingModifyOrCreateRequest struct {
-	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"`  // Vault name // 保险库名称
-	Path               string `json:"path" form:"path" binding:"required" example:"User/Theme"` // Setting path // 配置路径
-	PathHash           string `json:"pathHash" form:"pathHash" example:"hash123"`               // Path hash // 路径哈希
-	Content            string `json:"content" form:"content" example:"dark"`                    // Setting content // 配置内容
-	ContentHash        string `json:"contentHash" form:"contentHash" example:"chash456"`        // Content hash // 内容哈希
-	Ctime              int64  `json:"ctime" form:"ctime" example:"1700000000"`                  // Creation timestamp // 创建时间戳
-	Mtime              int64  `json:"mtime" form:"mtime" example:"1700000000"`                  // Modification timestamp // 修改时间戳
-	Context            string `json:"context" form:"context" example:"ctx123"`                  // Context // 同步上下文
-	BaseHash           string `json:"baseHash" form:"baseHash" example:"bhash789"`              // Content baseline // 内容基线
-	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`   // No trusted content baseline // 没有可信内容基线
+	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path               string `json:"path" form:"path" binding:"required" example:"User/Theme"`                    // Setting path // 配置路径
+	PathHash           string `json:"pathHash" form:"pathHash" example:"hash123"`                                  // Path hash // 路径哈希
+	Content            string `json:"content" form:"content" example:"dark"`                                       // Setting content // 配置内容
+	ContentHash        string `json:"contentHash" form:"contentHash" example:"chash456"`                           // Content hash // 内容哈希
+	Ctime              int64  `json:"ctime" form:"ctime" example:"1700000000"`                                     // Creation timestamp // 创建时间戳
+	Mtime              int64  `json:"mtime" form:"mtime" example:"1700000000"`                                     // Modification timestamp // 修改时间戳
+	Context            string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
+	BaseHash           string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision       string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
-	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"` // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"`                // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 
 // NormalizeSyncBaseline see NormalizeBaseline.
@@ -50,13 +54,17 @@ func (r *SettingModifyOrCreateRequest) NormalizeSyncBaseline() {
 // SettingDeleteRequest Parameters for deleting settings
 // 删除配置参数
 type SettingDeleteRequest struct {
-	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`  // Vault name // 保险库名称
-	Path            string `json:"path" form:"path" binding:"required" example:"User/Theme"` // Setting path // 配置路径
-	PathHash        string `json:"pathHash" form:"pathHash" example:"hash123"`               // Path hash // 路径哈希
-	Context         string `json:"context" form:"context" example:"ctx123"`                  // Context // 同步上下文
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`              // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`   // No trusted content baseline // 没有可信内容基线
+	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path            string `json:"path" form:"path" binding:"required" example:"User/Theme"`                    // Setting path // 配置路径
+	PathHash        string `json:"pathHash" form:"pathHash" example:"hash123"`                                  // Path hash // 路径哈希
+	Context         string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	// Baseline is the conditional-commit contract, attached only by baseline-mode
+	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 
 // NormalizeSyncBaseline see NormalizeBaseline.
@@ -99,23 +107,23 @@ type SettingGetRequest struct {
 // SettingSyncCheckRequest Parameters for checking synchronization of a single setting
 // 单条同步检查参数
 type SettingSyncCheckRequest struct {
-	Path            string `json:"path" form:"path" example:"User/Theme"`                         // Setting path // 配置路径
-	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"hash123"` // Path hash // 路径哈希
-	ContentHash     string `json:"contentHash" form:"contentHash" example:"chash456"`             // Content hash // 内容哈希
-	Mtime           int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`    // Modification timestamp // 修改时间戳
-	Ctime           int64  `json:"ctime" form:"ctime" example:"1700000000"`                       // Creation timestamp (aligns with sync.proto) // 创建时间戳（与 sync.proto 对齐）
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                   // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`        // No trusted content baseline // 没有可信内容基线
+	Path            string `json:"path" form:"path" example:"User/Theme"`                                       // Setting path // 配置路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"hash123"`               // Path hash // 路径哈希
+	ContentHash     string `json:"contentHash" form:"contentHash" example:"chash456"`                           // Content hash // 内容哈希
+	Mtime           int64  `json:"mtime" form:"mtime" binding:"required" example:"1700000000"`                  // Modification timestamp // 修改时间戳
+	Ctime           int64  `json:"ctime" form:"ctime" example:"1700000000"`                                     // Creation timestamp (aligns with sync.proto) // 创建时间戳（与 sync.proto 对齐）
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
 // SettingSyncDelSetting Parameters for deleting sets during sync
 // 同步删除配置参数
 type SettingSyncDelSetting struct {
-	Path            string `json:"path" form:"path" binding:"required" example:"DeletedSetting"`   // Setting path // 配置路径
-	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"dhash789"` // Path hash // 路径哈希
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                    // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`         // No trusted content baseline // 没有可信内容基线
+	Path            string `json:"path" form:"path" binding:"required" example:"DeletedSetting"`                // Setting path // 配置路径
+	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"dhash789"`              // Path hash // 路径哈希
+	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
 	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
 }
 
@@ -126,11 +134,11 @@ type SettingSyncRequest struct {
 	Vault           string                    `json:"vault" form:"vault" binding:"required" example:"MyVault"` // Vault name // 保险库名称
 	LastTime        int64                     `json:"lastTime" form:"lastTime" example:"1700000000"`           // Last sync time // 最后同步时间
 	Cover           bool                      `json:"cover" form:"cover" example:"false"`                      // Whether to cover existing // 是否覆盖现有配置
-	BatchIndex      int                       `json:"batchIndex" form:"batchIndex" example:"0"`               // Current batch index (0-based) // 当前批次索引（0 起）
-	TotalBatches    int                       `json:"totalBatches" form:"totalBatches" example:"1"`           // Total batch count // 总批次数
+	BatchIndex      int                       `json:"batchIndex" form:"batchIndex" example:"0"`                // Current batch index (0-based) // 当前批次索引（0 起）
+	TotalBatches    int                       `json:"totalBatches" form:"totalBatches" example:"1"`            // Total batch count // 总批次数
 	Settings        []SettingSyncCheckRequest `json:"settings" form:"settings"`                                // Settings to check // 待检查配置列表
 	DelSettings     []SettingSyncDelSetting   `json:"delSettings" form:"delSettings"`                          // Settings to delete // 待删除配置列表
-	MissingSettings []SettingSyncDelSetting   `json:"missingSettings" form:"missingSettings"`                        // Missing settings // 缺失配置列表
+	MissingSettings []SettingSyncDelSetting   `json:"missingSettings" form:"missingSettings"`                  // Missing settings // 缺失配置列表
 }
 
 // NormalizeSyncBaseline normalizes every baseline-bearing entry of the request.
@@ -163,4 +171,8 @@ type SettingDTO struct {
 	UpdatedTimestamp int64      `json:"lastTime" form:"updatedTimestamp"` // Record update timestamp // 记录更新时间戳
 	UpdatedAt        timex.Time `json:"updatedAt"`                        // Updated at time // 更新时间
 	CreatedAt        timex.Time `json:"createdAt"`                        // Created at time // 创建时间
+	Revision         string     `json:"revision,omitempty"`               // Server revision token // 服务端版本令牌
+	// Unchanged is set by Delete when the record was missing or already deleted.
+	// Unchanged 由 Delete 设置：记录不存在或已是删除状态，本次未写库。
+	Unchanged bool `json:"-" form:"-"`
 }

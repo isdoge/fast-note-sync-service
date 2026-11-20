@@ -16,6 +16,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/query"
 	"github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 	"gorm.io/gen/field"
 	"gorm.io/gorm"
@@ -76,6 +77,7 @@ func (r *fileRepository) toDomain(m *model.File, uid int64) *domain.File {
 		Ctime:            m.Ctime,
 		Mtime:            m.Mtime,
 		UpdatedTimestamp: m.UpdatedTimestamp,
+		Revision:         m.Revision,
 		CreatedAt:        time.Time(m.CreatedAt),
 		UpdatedAt:        time.Time(m.UpdatedAt),
 	}
@@ -104,6 +106,7 @@ func (r *fileRepository) toModel(file *domain.File) *model.File {
 		Ctime:            file.Ctime,
 		Mtime:            file.Mtime,
 		UpdatedTimestamp: file.UpdatedTimestamp,
+		Revision:         file.Revision,
 		CreatedAt:        timex.Time(file.CreatedAt),
 		UpdatedAt:        timex.Time(file.UpdatedAt),
 	}
@@ -304,6 +307,9 @@ func (r *fileRepository) Create(ctx context.Context, file *domain.File, uid int6
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
 		m.CreatedAt = timex.Now()
 		m.UpdatedAt = timex.Now()
+		// 新建附件是新的服务端状态，必须生成新令牌。
+		// A new attachment is a new server state and must mint a token.
+		m.Revision = util.NewRevisionToken()
 
 		tempSavePath := m.SavePath
 		m.SavePath = "" // 不在数据库中保存路径
@@ -362,6 +368,9 @@ func (r *fileRepository) Update(ctx context.Context, file *domain.File, uid int6
 
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
 		m.UpdatedAt = timex.Now()
+		// 正文/状态变更（含删除墓碑、恢复、重建）一律换新令牌。
+		// Any content/state change (delete tombstone, restore, rebuild) mints a token.
+		m.Revision = util.NewRevisionToken()
 
 		tempSavePath := m.SavePath
 		m.SavePath = "" // 不在数据库中更新路径
@@ -878,6 +887,9 @@ func (r *fileRepository) RecycleClear(ctx context.Context, path, pathHash string
 			u.SavePath.Value(""),
 			u.UpdatedTimestamp.Value(timex.Now().UnixMilli()),
 			u.UpdatedAt.Value(timex.Now()),
+			// 手动清空回收站改变墓碑可见状态，也要换新令牌。
+			// A manual recycle clear changes the tombstone's visible state and mints a token.
+			u.Revision.Value(util.NewRevisionToken()),
 		); err != nil {
 			return err
 		}
@@ -1037,4 +1049,81 @@ func (r *fileRepository) ListByPathHashAndPath(ctx context.Context, pathHash, pa
 		list = append(list, r.toDomain(m, uid))
 	}
 	return list, nil
+}
+
+// UpdateIfRevision applies a file update only when the row still carries
+// expectedRevision. It returns false (and moves no payload) when another device
+// changed the row between the caller's precheck and this write.
+// UpdateIfRevision 仅在行仍携带 expectedRevision 时应用附件更新；另一设备在预检与本次写入之间
+// 改过该行时返回 false，且不搬移任何载荷。
+func (r *fileRepository) UpdateIfRevision(ctx context.Context, file *domain.File, expectedRevision string, uid int64) (bool, error) {
+	updated := false
+	var updateErr error
+
+	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		u := r.file(uid).File
+		m := r.toModel(file)
+
+		m.UpdatedTimestamp = timex.Now().UnixMilli()
+		m.UpdatedAt = timex.Now()
+		m.Revision = util.NewRevisionToken()
+
+		tempSavePath := m.SavePath
+		m.SavePath = ""
+
+		if tempSavePath != "" && file.Action != domain.FileActionDelete {
+			folderPath := r.dao.GetFileFolderPath(uid, m.ID)
+			_ = os.MkdirAll(folderPath, 0755)
+			finalPath := filepath.Join(folderPath, "file.dat")
+			if err := os.Rename(tempSavePath, finalPath); err != nil {
+				r.dao.Logger().Error("failed to move uploaded file into place during UpdateIfRevision, aborting before DB write",
+					zap.Int64("uid", uid),
+					zap.Int64("fileId", m.ID),
+					zap.String("tempSavePath", tempSavePath),
+					zap.String("finalPath", finalPath),
+					zap.Error(err),
+				)
+				updateErr = err
+				return err
+			}
+		}
+
+		res, err := u.WithContext(ctx).Where(
+			u.ID.Eq(m.ID),
+			u.Revision.Eq(expectedRevision),
+		).Select(
+			u.ID,
+			u.VaultID,
+			u.Action,
+			u.FID,
+			u.Path,
+			u.PathHash,
+			u.ContentHash,
+			u.SavePath,
+			u.Rename,
+			u.ContentPurged,
+			u.Size,
+			u.Ctime,
+			u.Mtime,
+			u.UpdatedTimestamp,
+			u.UpdatedAt,
+			u.Revision,
+		).Updates(m)
+		if err != nil {
+			updateErr = err
+			return err
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		updated = true
+		file.Revision = m.Revision
+		file.UpdatedTimestamp = m.UpdatedTimestamp
+		return nil
+	})
+
+	if err != nil {
+		return false, err
+	}
+	return updated, updateErr
 }

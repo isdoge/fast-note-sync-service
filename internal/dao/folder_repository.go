@@ -9,6 +9,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/model"
 	"github.com/haierkeys/fast-note-sync-service/internal/query"
 	"github.com/haierkeys/fast-note-sync-service/pkg/timex"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -96,6 +97,9 @@ func (r *folderRepository) Create(ctx context.Context, folder *domain.Folder, ui
 		m.CreatedAt = timex.Now()
 		m.UpdatedAt = timex.Now()
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
+		// 新建目录是新的服务端状态，必须生成新令牌。
+		// A new folder is a new server state and must mint a token.
+		m.Revision = util.NewRevisionToken()
 		f := r.folder(uid).Folder
 		err := f.WithContext(ctx).Create(m)
 		if err != nil {
@@ -116,6 +120,9 @@ func (r *folderRepository) Update(ctx context.Context, folder *domain.Folder, ui
 		m := r.domainToModel(folder)
 		m.UpdatedAt = timex.Now()
 		m.UpdatedTimestamp = timex.Now().UnixMilli()
+		// 目录删除、恢复、重命名一律换新令牌。
+		// Folder delete, restore and rename always mint a new token.
+		m.Revision = util.NewRevisionToken()
 		f := r.folder(uid).Folder
 		_, err := f.WithContext(ctx).Where(f.ID.Eq(m.ID)).Updates(m)
 		if err != nil {
@@ -187,6 +194,7 @@ func (r *folderRepository) modelToDomain(m *model.Folder) *domain.Folder {
 		Ctime:            m.Ctime,
 		Mtime:            m.Mtime,
 		UpdatedTimestamp: m.UpdatedTimestamp,
+		Revision:         m.Revision,
 		CreatedAt:        time.Time(m.CreatedAt),
 		UpdatedAt:        time.Time(m.UpdatedAt),
 	}
@@ -207,6 +215,7 @@ func (r *folderRepository) domainToModel(d *domain.Folder) *model.Folder {
 		Ctime:            d.Ctime,
 		Mtime:            d.Mtime,
 		UpdatedTimestamp: d.UpdatedTimestamp,
+		Revision:         d.Revision,
 		CreatedAt:        timex.Time(d.CreatedAt),
 		UpdatedAt:        timex.Time(d.UpdatedAt),
 	}
@@ -278,4 +287,36 @@ func (r *folderRepository) GetAllByPathHashAndPath(ctx context.Context, pathHash
 		res = append(res, r.modelToDomain(m))
 	}
 	return res, nil
+}
+
+// UpdateIfRevision applies a folder update only when the row still carries
+// expectedRevision. It returns false when another device changed the row.
+// UpdateIfRevision 仅在行仍携带 expectedRevision 时应用目录更新；行已被改动时返回 false。
+func (r *folderRepository) UpdateIfRevision(ctx context.Context, folder *domain.Folder, expectedRevision string, uid int64) (bool, error) {
+	updated := false
+	err := r.Dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		m := r.domainToModel(folder)
+		m.UpdatedAt = timex.Now()
+		m.UpdatedTimestamp = timex.Now().UnixMilli()
+		m.Revision = util.NewRevisionToken()
+		f := r.folder(uid).Folder
+		res, err := f.WithContext(ctx).Where(
+			f.ID.Eq(m.ID),
+			f.Revision.Eq(expectedRevision),
+		).Updates(m)
+		if err != nil {
+			return err
+		}
+		if res.RowsAffected == 0 {
+			return nil
+		}
+		updated = true
+		folder.Revision = m.Revision
+		folder.UpdatedTimestamp = m.UpdatedTimestamp
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return updated, nil
 }

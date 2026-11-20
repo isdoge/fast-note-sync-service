@@ -114,3 +114,10 @@ func (m *MockSettingRepository) DeleteByVaultID(ctx context.Context, vaultID, ui
 // Compile-time check: MockSettingRepository must implement domain.SettingRepository.
 // 编译时检查：MockSettingRepository 必须实现 domain.SettingRepository 接口。
 var _ domain.SettingRepository = (*MockSettingRepository)(nil)
+
+// UpdateIfRevision is a CAS update used by the baseline-mode conditional commit.
+// UpdateIfRevision 是基线模式条件提交使用的 CAS 更新。
+func (m *MockSettingRepository) UpdateIfRevision(ctx context.Context, setting *domain.Setting, expectedRevision string, uid int64) (bool, error) {
+	args := m.Called(ctx, setting, expectedRevision, uid)
+	return args.Bool(0), args.Error(1)
+}

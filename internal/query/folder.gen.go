@@ -40,6 +40,7 @@ func newFolder(db *gorm.DB, opts ...gen.DOOption) folder {
 	_folder.UpdatedTimestamp = field.NewInt64(tableName, "updated_timestamp")
 	_folder.CreatedAt = field.NewField(tableName, "created_at")
 	_folder.UpdatedAt = field.NewField(tableName, "updated_at")
+	_folder.Revision = field.NewString(tableName, "revision")
 
 	_folder.fillFieldMap()
 
@@ -62,6 +63,7 @@ type folder struct {
 	UpdatedTimestamp field.Int64
 	CreatedAt        field.Field
 	UpdatedAt        field.Field
+	Revision         field.String
 
 	fieldMap map[string]field.Expr
 }
@@ -90,6 +92,7 @@ func (f *folder) updateTableName(table string) *folder {
 	f.UpdatedTimestamp = field.NewInt64(table, "updated_timestamp")
 	f.CreatedAt = field.NewField(table, "created_at")
 	f.UpdatedAt = field.NewField(table, "updated_at")
+	f.Revision = field.NewString(table, "revision")
 
 	f.fillFieldMap()
 
@@ -114,7 +117,7 @@ func (f *folder) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (f *folder) fillFieldMap() {
-	f.fieldMap = make(map[string]field.Expr, 12)
+	f.fieldMap = make(map[string]field.Expr, 13)
 	f.fieldMap["id"] = f.ID
 	f.fieldMap["vault_id"] = f.VaultID
 	f.fieldMap["action"] = f.Action
@@ -127,6 +130,7 @@ func (f *folder) fillFieldMap() {
 	f.fieldMap["updated_timestamp"] = f.UpdatedTimestamp
 	f.fieldMap["created_at"] = f.CreatedAt
 	f.fieldMap["updated_at"] = f.UpdatedAt
+	f.fieldMap["revision"] = f.Revision
 }
 
 func (f folder) clone(db *gorm.DB) folder {
