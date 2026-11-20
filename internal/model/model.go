@@ -51,6 +51,13 @@ func AutoMigrate(db *gorm.DB, key string) error {
 	default:
 		return nil
 	}
+	// v3.8.0 narrows path and vault columns to varbinary. Refuse the upgrade
+	// before any ALTER if legacy rows are too long for the new type.
+	// v3.8.0 把 path 与 vault 列收窄为 varbinary。若存量行超出新类型长度，
+	// 在任何 ALTER 之前拒绝升级。
+	if err := PrecheckMySQLVarbinaryColumns(db, key); err != nil {
+		return err
+	}
 	// #275: legacy MySQL deployments created full-column path indexes at
 	// varchar(255). Rebuild them as prefix indexes before widening the columns,
 	// otherwise utf8mb4 varchar(1024) exceeds InnoDB's 3072-byte key limit.
