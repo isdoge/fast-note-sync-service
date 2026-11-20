@@ -315,6 +315,17 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 	switch {
 	case path == "/api/webgui/events":
 		return "note_r", nil
+
+	// ---------------- Git sync (client-safe, vault-scoped) ----------------
+	// Exactly these two routes are reachable with note_r/note_w manual tokens; the
+	// vault allowlist check below then confines them to the token's vaults. Every
+	// other /api/git-sync/* route stays config_r/config_w and WebGUI-only.
+	// 仅这两条 Git 同步路由允许 note_r/note_w 手动令牌；下方库白名单校验再把它们
+	// 限制在令牌授权的库内。其余 /api/git-sync/* 仍是 config_r/config_w 且仅限 WebGUI。
+	case path == "/api/git-sync/status":
+		return "note_r", nil
+	case path == "/api/git-sync/trigger":
+		return "note_w", nil
 	// ---------------- Vault ----------------
 	// Vault discovery is needed before REST clients can address note/file
 	// APIs; any read capability suffices so restricted read-only tokens keep

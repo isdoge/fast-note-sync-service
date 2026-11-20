@@ -520,3 +520,61 @@ func TestRevalidateUserToken(t *testing.T) {
 		require.Equal(t, code.ErrorNotUserAuthToken.Code(), appErr.Code())
 	})
 }
+
+// 限定库的插件令牌：/api/git-sync/status 与 /api/git-sync/trigger 按 note_r / note_w 归类，
+// 且 vault 白名单校验把它们限制在授权库内；其它 /api/git-sync/* 仍要求 config 权限。
+func TestUserAuthTokenWithConfig_GitSyncVaultRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tokenService := &fakeMiddlewareTokenService{}
+	router := gin.New()
+	router.Use(UserAuthTokenWithConfig("test-secret", tokenService))
+	okHandler := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": code.Success.Code(), "status": true})
+	}
+	router.GET("/api/git-sync/status", okHandler)
+	router.POST("/api/git-sync/trigger", okHandler)
+	router.GET("/api/git-sync/configs", okHandler)
+
+	call := func(scope, vaults, method, target string) app.Res {
+		tokenService.activeToken = &domain.AuthToken{
+			ID:          2,
+			UID:         1,
+			TokenString: "nonce-ok",
+			Status:      1,
+			Scope:       scope,
+			Vaults:      vaults,
+			IssueType:   2,
+			ExpiredAt:   time.Now().Add(time.Hour),
+		}
+		token := newMiddlewareJWT(t, "test-secret", "nonce-ok")
+
+		req := httptest.NewRequest(method, target, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("x-client", "ObsidianPlugin")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+
+		require.Equal(t, http.StatusOK, recorder.Code)
+		var res app.Res
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &res))
+		return res
+	}
+
+	const readScope = "p:rest c:ObsidianPlugin f:note_r"
+	const writeScope = "p:rest c:ObsidianPlugin f:note_w"
+
+	// 限定到 doge：可查、可触发
+	assert.Equal(t, code.Success.Code(), call(readScope, "doge", http.MethodGet, "/api/git-sync/status?vault=doge").Code)
+	assert.Equal(t, code.Success.Code(), call(writeScope, "doge", http.MethodPost, "/api/git-sync/trigger?vault=doge").Code)
+
+	// 其它库被拒
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(readScope, "doge", http.MethodGet, "/api/git-sync/status?vault=other").Code)
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(writeScope, "doge", http.MethodPost, "/api/git-sync/trigger?vault=other").Code)
+
+	// 只读令牌不能触发
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(readScope, "doge", http.MethodPost, "/api/git-sync/trigger?vault=doge").Code)
+
+	// 其它 git-sync 路由仍要求 config 权限，即使库在授权范围内
+	assert.Equal(t, code.ErrorAuthTokenScopeRestricted.Code(), call(readScope, "doge", http.MethodGet, "/api/git-sync/configs?vault=doge").Code)
+}

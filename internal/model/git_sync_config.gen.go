@@ -14,23 +14,32 @@ const TableNameGitSyncConfig = "git_sync_config"
 
 // GitSyncConfig mapped from table <git_sync_config>
 type GitSyncConfig struct {
-	ID              int64      `gorm:"column:id;primaryKey" json:"id" form:"id"`
-	UID             int64      `gorm:"column:uid;not null;index:idx_git_sync_config_uid,priority:1;default:0" json:"uid" form:"uid"`
-	VaultID         int64      `gorm:"column:vault_id;not null;default:0" json:"vaultId" form:"vaultId"`
-	RepoURL         string     `gorm:"column:repo_url;default:''" json:"repoUrl" form:"repoUrl"`
-	Username        string     `gorm:"column:username;type:TEXT;default:''" json:"username" form:"username"`
-	Password        string     `gorm:"column:password;type:TEXT;default:''" json:"password" form:"password"`
-	Branch          string     `gorm:"column:branch;type:TEXT;default:''" json:"branch" form:"branch"`
-	IsEnabled       int64      `gorm:"column:is_enabled;default:0" json:"isEnabled" form:"isEnabled"`
-	Delay           int64      `gorm:"column:delay;default:0" json:"delay" form:"delay"`
-	RetentionDays   int64      `gorm:"column:retention_days;default:0" json:"retentionDays" form:"retentionDays"`
-	LastSyncTime    time.Time  `gorm:"column:last_sync_time" json:"lastSyncTime" form:"lastSyncTime"`
-	LastStatus      int64      `gorm:"column:last_status;default:0" json:"lastStatus" form:"lastStatus"`
-	LastMessage     string     `gorm:"column:last_message;type:TEXT;default:''" json:"lastMessage" form:"lastMessage"`
-	IncludeConfig   int64      `gorm:"column:include_config;default:0" json:"includeConfig" form:"includeConfig"`
-	ConfigSyncRules string     `gorm:"column:config_sync_rules;type:TEXT;default:''" json:"configSyncRules" form:"configSyncRules"`
-	CreatedAt       timex.Time `gorm:"column:created_at;default:NULL;autoCreateTime:false" json:"createdAt" form:"createdAt"`
-	UpdatedAt       timex.Time `gorm:"column:updated_at;default:NULL;autoUpdateTime:false" json:"updatedAt" form:"updatedAt"`
+	ID              int64     `gorm:"column:id;primaryKey" json:"id" form:"id"`
+	UID             int64     `gorm:"column:uid;not null;index:idx_git_sync_config_uid,priority:1;default:0" json:"uid" form:"uid"`
+	VaultID         int64     `gorm:"column:vault_id;not null;default:0" json:"vaultId" form:"vaultId"`
+	RepoURL         string    `gorm:"column:repo_url;default:''" json:"repoUrl" form:"repoUrl"`
+	Username        string    `gorm:"column:username;type:TEXT;default:''" json:"username" form:"username"`
+	Password        string    `gorm:"column:password;type:TEXT;default:''" json:"password" form:"password"`
+	Branch          string    `gorm:"column:branch;type:TEXT;default:''" json:"branch" form:"branch"`
+	IsEnabled       int64     `gorm:"column:is_enabled;default:0" json:"isEnabled" form:"isEnabled"`
+	Delay           int64     `gorm:"column:delay;default:0" json:"delay" form:"delay"`
+	RetentionDays   int64     `gorm:"column:retention_days;default:0" json:"retentionDays" form:"retentionDays"`
+	LastSyncTime    time.Time `gorm:"column:last_sync_time" json:"lastSyncTime" form:"lastSyncTime"`
+	LastStatus      int64     `gorm:"column:last_status;default:0" json:"lastStatus" form:"lastStatus"`
+	LastMessage     string    `gorm:"column:last_message;type:TEXT;default:''" json:"lastMessage" form:"lastMessage"`
+	IncludeConfig   int64     `gorm:"column:include_config;default:0" json:"includeConfig" form:"includeConfig"`
+	ConfigSyncRules string    `gorm:"column:config_sync_rules;type:TEXT;default:''" json:"configSyncRules" form:"configSyncRules"`
+	// Blog/Astro mapping extensions (v3.8.5). All columns default to a no-op value so
+	// AutoMigrate adds them without touching existing rows.
+	// 博客/Astro 映射扩展（v3.8.5）。全部列都有无副作用默认值，AutoMigrate 补列不影响旧数据。
+	SourceDir           string     `gorm:"column:source_dir;type:TEXT;default:''" json:"sourceDir" form:"sourceDir"`
+	TargetSubdir        string     `gorm:"column:target_subdir;type:TEXT;default:''" json:"targetSubdir" form:"targetSubdir"`
+	RequireFrontmatter  string     `gorm:"column:require_frontmatter;type:TEXT;default:''" json:"requireFrontmatter" form:"requireFrontmatter"`
+	ValidateFrontmatter int64      `gorm:"column:validate_frontmatter;default:0" json:"validateFrontmatter" form:"validateFrontmatter"`
+	BundleAssets        int64      `gorm:"column:bundle_assets;default:0" json:"bundleAssets" form:"bundleAssets"`
+	WebhookURL          string     `gorm:"column:webhook_url;type:TEXT;default:''" json:"webhookUrl" form:"webhookUrl"`
+	CreatedAt           timex.Time `gorm:"column:created_at;default:NULL;autoCreateTime:false" json:"createdAt" form:"createdAt"`
+	UpdatedAt           timex.Time `gorm:"column:updated_at;default:NULL;autoUpdateTime:false" json:"updatedAt" form:"updatedAt"`
 }
 
 // TableName GitSyncConfig's table name

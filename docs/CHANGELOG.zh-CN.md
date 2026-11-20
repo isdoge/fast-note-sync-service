@@ -6,6 +6,29 @@
 
 ---
 
+## v3.8.5
+> *2026/11/20*
+
+### ✨ 新增
+
+- **Git 同步**: 新增「子目录沙箱 + 源目录过滤 + Frontmatter 预检 + 附件汇聚」的博客导出能力，可直接把 Obsidian 笔记同步到 Astro / Firefly 等静态博客仓库的指定子目录。新增配置项：`sourceDir`（只导出该目录下的条目并剥离前缀）、`targetSubdir`（导出严格限制在仓库该子目录内）、`requireFrontmatter`（如 `type=share`，不满足的笔记不导出，取消标记后自动从仓库撤下）、`validateFrontmatter`（导出前校验 `title` 非空、`published`/`updated` 为合法日期、本地相对图片全部存在，不合格的笔记跳过写入并保留仓库里的上一版合法内容）、`bundleAssets`（把笔记引用的库内图片汇聚到目标文章同目录 `./assets/` 并改写导出副本，原笔记内容不变）。全部字段默认关闭，不影响原有整库镜像行为。
+- **Git 同步**: 新增 `webhookUrl` 配置，用于在本轮没有新提交时手动触发一次受控的远端构建重试（与仓库地址共用协议与私网白名单校验）。
+- **Git 同步**: 新增面向客户端的安全接口 `GET /api/git-sync/status` 与 `POST /api/git-sync/trigger`，限定库的插件令牌只需 `note_r` / `note_w` 即可查询与触发本库的同步，返回内容不含仓库地址、账号、密码与 Webhook 地址；其余 `/api/git-sync/*` 接口仍需 WebGUI 权限。
+- **Git 同步**: 远端 `post-receive` 钩子的构建回执（`Preview deployed:` / `Unified preview deployed:`）会写入同步成功消息；若钩子报 `Preview deployment failed` 或 `Saved settings await confirmation`，本轮同步如实标记为失败并带出原因，不再静默假装部署成功。
+- **部署**: 新增 `scripts/firefly-git-http.py`：仅监听回环地址的 `git-http-backend` 网关（纯 Python 3 标准库，无第三方依赖），常量时间比对 BasicAuth 令牌、白名单限定 bare 仓库，供容器内服务端推送到宿主机 bare 仓库并触发宿主机 `post-receive` 构建链。
+
+### 🛠️ 修复
+
+- **Git 同步**: 修复同一配置的同步正在进行时再次触发，会强杀正在推送（可能还在等待远端构建）的任务并并发启动第二个任务、两个 goroutine 同时操作同一工作区的问题。现在改为单飞串行：运行中的请求只登记一次补跑，当前任务收尾后再执行一轮最新增量，服务关闭时不补跑。
+- **Git 同步**: 修复导出时逐条读取旧文件后延迟关闭句柄的问题（改用一次性读取），长时间同步大量笔记时不再累积文件句柄。
+- **Git 同步**: 修复推送失败时只回报底层错误、看不到远端拒绝摘要的问题。
+
+### 🚀️ 优化
+
+- **Git 同步**: `sourceDir`、`targetSubdir`、Frontmatter 过滤或预检、附件汇聚任一配置变更后，会清空本地工作区并重置同步游标，确保按新规则完整重导；子目录挂载模式下不再把 `.obsidian` 配置与配置文件导出到 Astro 仓库，`settings-overrides.json`、`package.json`、`pnpm-lock.yaml`、`.npmrc`、`public/uploads/settings`、`.settings-*` 等受保护路径在导出层硬拦截，任何写入与删除都不会触碰它们。
+
+---
+
 ## v3.8.0
 > *2026/11/19*
 
