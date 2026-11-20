@@ -56,8 +56,11 @@
 
 ### MySQL / MariaDB 建表或运行异常
 
-- **原因**：3.7.0 虽修复了 path 索引和零日期问题，仍有分享表、Git 同步表、同步日志表相关未解决错误。
-- **处理**：本版不要使用 MySQL/MariaDB；使用 SQLite 或 PostgreSQL。不同数据库之间的数据迁移步骤未在仓库中提供，不要只改 `database.type` 就假定数据会迁移。
+- **原因**：3.8.0 已修复 MySQL / MariaDB 建表、并发首次建表、保留字、大小写路径（`varbinary(1024)` / `varbinary(255)`）及迁移问题，常见异常通常由配置缺失、权限不足或升级预检拦截引起。
+- **处理**：
+  1. 若用户数据仍写入本地 SQLite 或建库失败，确认同时显式配置了 `user-database.type: mysql` 与连接参数（`user-database.type` 留空时默认仍写入本地 SQLite 文件），并确认数据库账号具备 `CREATE DATABASE` 权限（用于按用户自动创建 `user_<uid>` 库）。
+  2. 若从 `<=3.7.0` 升级启动报 `mysql upgrade precheck failed`（路径超过 1024 UTF-8 字节或库名超过 255 字节），表结构尚未改动；按报错给出的库、表、列与样本 ID 缩短对应超长路径或库名后重启即可。
+  3. 仓库未提供自动跨数据库迁移工具，修改 `database.type` / `user-database.type` 不会自动把既有 SQLite 或 PostgreSQL 数据迁入 MySQL / MariaDB。
 
 ### 32 位 ARM 没有全文搜索
 

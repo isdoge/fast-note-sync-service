@@ -60,11 +60,9 @@ The following items have been removed in this independently maintained fork. **I
 | Feiniu fnOS `.fpk` installers | No longer built | Docker or binary deployment |
 | `ssh://`, `git://`, and `user@host:path` repository URLs for Git sync | These URL forms never actually worked for syncing; saving and validation now reject them with a clear message | `http` / `https` URLs |
 
-In addition, **the MySQL / MariaDB backend is not recommended in the current version** (table-creation issues remain unresolved); please use SQLite or PostgreSQL.
-
 ### Upgrading from upstream
 
-- **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion). On first start, v3.8.0 also runs a path normalization migration to convert backslashes in historical paths to forward slashes; if the target path is already occupied, the entry containing backslashes is renamed to `*.conflict.<timestamp>.*` and preserved without overwriting or deleting data.
+- **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion). On first start, v3.8.0 also runs a path normalization migration to convert backslashes in historical paths to forward slashes; if the target path is already occupied, the entry containing backslashes is renamed to `*.conflict.<timestamp>.*` and preserved without overwriting or deleting data. For existing MySQL / MariaDB deployments, the first start on v3.8.0 converts path and vault-name columns to case-sensitive binary types (`varbinary(1024)` / `varbinary(255)`) and automatically runs a byte-length precheck beforehand; if any historical path exceeds 1024 UTF-8 bytes (or any vault name exceeds 255 bytes), the precheck reports the specific table name and record ID and aborts migration — shorten the value and start again.
 - **Docker**: Change the image to `ghcr.io/isdoge/fast-note-sync-service:latest`; volumes and configuration can stay as they are.
 - **Binary**: Download the package for your platform from this repository's Releases and replace the binary, or re-run the one-click script below.
 - **Behavior changes** (excerpt; see the "Changes" and "Security" sections of the changelog for the full list):
@@ -127,7 +125,7 @@ In addition, **the MySQL / MariaDB backend is not recommended in the current ver
   * Automatically cleans up expired backups with custom retention days.
 
 * **🗄️ Multi-Database Support**:
-  * Supports SQLite and PostgreSQL, meeting deployment needs from individuals to teams. MySQL / MariaDB are not recommended in the current version.
+  * Supports SQLite, PostgreSQL, and MySQL / MariaDB (verified on MySQL 8.4 and MariaDB 11.4), meeting deployment needs from individuals to teams. To store user data such as notes and attachments in PostgreSQL or MySQL / MariaDB, you must also explicitly configure `user-database.type` and connection parameters (when left empty, user data is still written to local SQLite files by default; the MySQL / MariaDB account needs `CREATE DATABASE` privileges).
 
 ## ☕ Sponsorship and Support
 
