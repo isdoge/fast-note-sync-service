@@ -116,6 +116,7 @@ func (r *noteRepository) toDomain(m *model.Note, uid int64) (*domain.Note, error
 		VaultID:                 m.VaultID,
 		Action:                  domain.NoteAction(m.Action),
 		Rename:                  m.Rename,
+		ContentPurged:           m.ContentPurged,
 		FID:                     m.FID,
 		Path:                    m.Path,
 		PathHash:                m.PathHash,
@@ -151,6 +152,7 @@ func (r *noteRepository) toModel(note *domain.Note) *model.Note {
 		VaultID:                 note.VaultID,
 		Action:                  string(note.Action),
 		Rename:                  note.Rename,
+		ContentPurged:           note.ContentPurged,
 		FID:                     note.FID,
 		Path:                    note.Path,
 		PathHash:                note.PathHash,
@@ -175,6 +177,15 @@ func (r *noteRepository) toModel(note *domain.Note) *model.Note {
 // fillNoteContent 填充笔记内容
 func (r *noteRepository) fillNoteContent(uid int64, n *domain.Note) error {
 	if n == nil {
+		return nil
+	}
+	// 正文已过保留期清理：磁盘文件已删除，读取应返回空正文而不是“读取失败”，
+	// 否则同步/删除幂等等路径会因墓碑行读取报错而中断。
+	// Body already purged: disk files are gone, so report empty content instead of a
+	// read failure; otherwise sync/delete-idempotency paths break on tombstone reads.
+	if n.ContentPurged != 0 {
+		n.Content = ""
+		n.ContentLastSnapshot = ""
 		return nil
 	}
 	folder := r.dao.GetNoteFolderPath(uid, n.ID)
@@ -239,6 +250,7 @@ func (r *noteRepository) toDomainMeta(m *model.Note) *domain.Note {
 		VaultID:                 m.VaultID,
 		Action:                  domain.NoteAction(m.Action),
 		Rename:                  m.Rename,
+		ContentPurged:           m.ContentPurged,
 		FID:                     m.FID,
 		Path:                    m.Path,
 		PathHash:                m.PathHash,
@@ -298,7 +310,7 @@ func (r *noteRepository) GetByPathHashIncludeRecycle(ctx context.Context, pathHa
 	// 歧义守卫与下方状态过滤保持一致：墓碑行不能掩盖唯一的存活行（或唯一的回收站行）。
 	guard := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.PathHash.Eq(pathHash))
 	if isRecycle {
-		guard = guard.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+		guard = guard.Where(u.Action.Eq("delete"), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		guard = guard.Where(u.Action.Neq("delete"))
 	}
@@ -311,7 +323,7 @@ func (r *noteRepository) GetByPathHashIncludeRecycle(ctx context.Context, pathHa
 	)
 
 	if isRecycle {
-		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq("delete"))
 	}
@@ -448,6 +460,7 @@ func (r *noteRepository) Update(ctx context.Context, note *domain.Note, uid int6
 			u.VaultID,
 			u.Action,
 			u.Rename,
+			u.ContentPurged,
 			u.Path,
 			u.PathHash,
 			u.Content,
@@ -612,60 +625,81 @@ func (r *noteRepository) Delete(ctx context.Context, id, vaultID, uid int64) err
 	})
 }
 
-// DeletePhysicalByTime physically deletes notes marked as deleted by time
-// DeletePhysicalByTime 根据时间物理删除已标记删除的笔记
-func (r *noteRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
-	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+// PurgeContentByTime releases stored bodies of expired tombstones while keeping the
+// lightweight metadata row. Database rows are never physically deleted here (that only
+// happens when the whole vault is destroyed): an older offline device that reconnects
+// after the retention period must still be told the path was deleted, and the retained
+// content_hash lets the tombstone gate reject stale re-uploads.
+//
+// The row keeps vault_id/path/path_hash/content_hash/action=delete, gets rename=2 (so
+// the recycle list no longer offers it) and content_purged=1 (idempotence marker), and
+// its updated_timestamp is deliberately left untouched so online clients are not made
+// to pull the delete notification again.
+//
+// PurgeContentByTime 清理已超过保留期的删除墓碑正文（磁盘正文与快照），但保留轻量
+// 元数据行。这里绝不物理删除数据库行（只有整个仓库被销毁时才物理删除）：离线设备
+// 在保留期之后回连时仍须被告知该路径已删除，保留的 content_hash 也让墓碑闸门能拒绝
+// 陈旧重报。
+//
+// 行内保留 vault_id/path/path_hash/content_hash/action=delete，设置 rename=2（不再
+// 出现在回收站可恢复列表）与 content_purged=1（幂等标记），并且刻意不刷新
+// updated_timestamp，避免在线客户端白白再拉一轮删除通知。
+func (r *noteRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) ([]int64, error) {
+	var purged []int64
+	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.note(uid).Note
 
-		// 先找到要删除的 ID
-		list, _ := u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
+		// 只处理尚未清理正文的过期墓碑，重复执行时不会再次命中。
+		// Only unpurged expired tombstones are selected, so repeated runs are no-ops.
+		list, err := u.WithContext(ctx).Where(
+			u.Action.Eq(string(domain.NoteActionDelete)),
 			u.UpdatedTimestamp.Lt(timestamp),
+			u.ContentPurged.Eq(0),
 		).Select(u.ID, u.VaultID).Find()
+		if err != nil {
+			return err
+		}
+		if len(list) == 0 {
+			return nil
+		}
 
+		ids := make([]int64, 0, len(list))
 		for _, m := range list {
+			ids = append(ids, m.ID)
+			// 正文即将消失，同步从全文索引中移除，避免搜索命中已清理内容
+			// The body is about to be released; drop it from the FTS index too.
 			r.deleteFTS(m.ID, m.VaultID, uid)
 		}
 
-		_, err := u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
-			u.UpdatedTimestamp.Lt(timestamp),
-		).Delete()
-
-		if err == nil {
-			for _, m := range list {
-				folder := r.dao.GetNoteFolderPath(uid, m.ID)
-				_ = r.dao.RemoveContentFolder(folder)
-			}
+		// 先标记墓碑状态，再删磁盘正文：两步都在同一个串行写事务内完成，
+		// 即便磁盘清理失败，下一次运行也不会重复扫描（content_purged 已是 1）。
+		// Mark the row first, then release disk payloads; both happen inside the same
+		// serialized write transaction, and content_purged=1 makes the next run skip it.
+		if err := forEachIDChunk(ids, func(chunk []int64) error {
+			_, err := u.WithContext(ctx).Where(
+				u.ID.In(chunk...),
+				u.ContentPurged.Eq(0),
+				u.Action.Eq(string(domain.NoteActionDelete)),
+			).UpdateSimple(
+				u.ContentPurged.Value(1),
+				u.Rename.Value(2),
+				u.Content.Value(""),
+				u.ContentLastSnapshot.Value(""),
+				u.ContentLastSnapshotHash.Value(""),
+			)
+			return err
+		}); err != nil {
+			return err
 		}
-		return err
+
+		for _, id := range ids {
+			folder := r.dao.GetNoteFolderPath(uid, id)
+			_ = r.dao.RemoveContentFolder(folder)
+		}
+		purged = ids
+		return nil
 	})
-}
-
-// DeletePhysicalByTimeAll physically deletes notes marked as deleted for all users by time
-// DeletePhysicalByTimeAll 根据时间物理删除所有用户的已标记删除的笔记
-func (r *noteRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
-	// Get all user UIDs
-	// 获取所有用户 UID
-	uids, err := r.dao.GetAllUserUIDs()
-	if err != nil {
-		return err
-	}
-
-	// Execute cleanup user by user
-	// 逐用户执行清理
-	for i, uid := range uids {
-		// 增加错峰延迟，避免瞬间触发大量写事务
-		if i > 0 {
-			time.Sleep(500 * time.Millisecond)
-		}
-		if err := r.DeletePhysicalByTime(ctx, timestamp, uid); err != nil {
-			// 记录错误但继续处理其他用户
-			continue
-		}
-	}
-	return nil
+	return purged, err
 }
 
 // List retrieves note list by page
@@ -677,7 +711,7 @@ func (r *noteRepository) List(ctx context.Context, vaultID int64, page, pageSize
 	)
 
 	if isRecycle {
-		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq("delete"))
 	}
@@ -830,7 +864,7 @@ func (r *noteRepository) ListCount(ctx context.Context, vaultID, uid int64, keyw
 	)
 
 	if isRecycle {
-		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq("delete"))
 	}
@@ -1152,28 +1186,61 @@ func (r *noteRepository) CountByFIDs(ctx context.Context, fids []int64, vaultID,
 	return result, nil
 }
 
-// RecycleClear 清理回收站
+// RecycleClear 清理回收站：用户预期回收站立刻不可见且不可恢复，因此同时释放磁盘
+// 正文并标记 content_purged=1；仍保留墓碑行与删除前的 content_hash，供离线设备
+// 增量同步时收到删除、不复活。墓碑行仍刷新 updated_timestamp（保持原有“清理即通知”
+// 的行为）。
+// RecycleClear empties the recycle bin: the user expects the item to disappear and be
+// unrecoverable, so the stored body is released and content_purged=1 is set. The
+// tombstone row and its pre-deletion content_hash remain so offline devices still
+// receive the delete and cannot resurrect it; updated_timestamp is refreshed as before.
 func (r *noteRepository) RecycleClear(ctx context.Context, path, pathHash string, vaultID, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.note(uid).Note
-		q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.NoteActionDelete)), u.Rename.Eq(0))
-		if path != "" {
-			q = q.Where(u.Path.Eq(path))
+		build := func() query.INoteDo {
+			q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.NoteActionDelete)), u.Rename.Eq(0))
+			if path != "" {
+				q = q.Where(u.Path.Eq(path))
+			}
+			if pathHash != "" {
+				q = q.Where(u.PathHash.Eq(pathHash))
+			}
+			return q
 		}
-		if pathHash != "" {
-			q = q.Where(u.PathHash.Eq(pathHash))
-		}
+
+		q := build()
 		if path == "" && pathHash != "" {
 			if err := requireUnambiguousPath(q.UnderlyingDB()); err != nil {
 				return err
 			}
 		}
-		_, err := q.UpdateSimple(
+
+		list, err := build().Select(u.ID, u.VaultID).Find()
+		if err != nil {
+			return err
+		}
+		for _, m := range list {
+			r.deleteFTS(m.ID, m.VaultID, uid)
+		}
+
+		_, err = build().UpdateSimple(
 			u.Rename.Value(2),
+			u.ContentPurged.Value(1),
+			u.Content.Value(""),
+			u.ContentLastSnapshot.Value(""),
+			u.ContentLastSnapshotHash.Value(""),
 			u.UpdatedTimestamp.Value(timex.Now().UnixMilli()),
 			u.UpdatedAt.Value(timex.Now()),
 		)
-		return err
+		if err != nil {
+			return err
+		}
+
+		for _, m := range list {
+			folder := r.dao.GetNoteFolderPath(uid, m.ID)
+			_ = r.dao.RemoveContentFolder(folder)
+		}
+		return nil
 	})
 }
 
@@ -1244,7 +1311,7 @@ func (r *noteRepository) SearchHits(ctx context.Context, vaultID int64, uid int6
 	u := r.note(uid).Note
 	q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID))
 	if isRecycle {
-		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq("delete"))
 	}
@@ -1595,7 +1662,7 @@ func (r *noteRepository) GetByPathHashAndPathIncludeRecycle(ctx context.Context,
 	)
 
 	if isRecycle {
-		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq("delete"), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq("delete"))
 	}

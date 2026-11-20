@@ -252,7 +252,10 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 			}
 			// If content is consistent but modification time is different, only update modification time
 			// 检查内容是否一致但修改时间不同，则只更新修改时间
-			if mtimeCheck && setting.Mtime < params.Mtime && setting.ContentHash == params.ContentHash {
+			// 墓碑记录不得走“仅更新时间戳”的短路，否则会保持删除状态却刷新同步水位。
+			// Tombstones must not take the mtime-only shortcut, which would refresh the
+			// sync watermark while leaving the row deleted.
+			if mtimeCheck && setting.Action != domain.SettingActionDelete && setting.Mtime < params.Mtime && setting.ContentHash == params.ContentHash {
 				err := s.settingRepo.UpdateActionMtime(ctx, domain.SettingActionModify, params.Mtime, setting.ID, uid)
 				if err != nil {
 					return nil, code.ErrorDBQuery.WithDetails(err.Error())
@@ -285,6 +288,11 @@ func (s *settingService) ModifyOrCreate(ctx context.Context, uid int64, params *
 			setting.Mtime = params.Mtime
 			setting.Ctime = params.Ctime
 			setting.Action = action
+			// 复用墓碑行复活为存活记录时，必须同时重置 rename 与“正文已清理”标记，
+			// 否则复活后的配置会一直隐藏或被视为不可恢复。
+			// Reviving a tombstone row must reset both the rename flag and the purged marker.
+			setting.Rename = 0
+			setting.ContentPurged = 0
 
 			updated, err := s.settingRepo.Update(ctx, setting, uid)
 			if err != nil {
@@ -360,10 +368,15 @@ func (s *settingService) Delete(ctx context.Context, uid int64, params *dto.Sett
 
 	// Update to deleted status
 	// 更新为删除状态
+	// 保留 ContentHash：墓碑需要删除前的最后内容哈希，供墓碑闸门与后续增量同步比对，
+	// 清空它会让删除证据永久丢失。正文与大小照旧清空。
+	// Keep ContentHash: the tombstone needs the last pre-deletion content hash for the
+	// tombstone gate and later sync comparisons; clearing it would destroy the deletion
+	// evidence. Content and size are still cleared as before.
 	setting.Action = domain.SettingActionDelete
 	setting.Content = ""
-	setting.ContentHash = ""
 	setting.Size = 0
+	setting.Rename = 0
 
 	updated, err := s.settingRepo.Update(ctx, setting, uid)
 	if err != nil {
@@ -524,6 +537,9 @@ func (s *settingService) Rename(ctx context.Context, uid int64, params *dto.Sett
 		existSetting.Ctime = n.Ctime
 		existSetting.Mtime = n.Mtime // Preserve original mtime
 		existSetting.Rename = 0
+		// 复用墓碑行作为重命名目标时同样要清除“正文已清理”标记。
+		// Reusing a tombstone row as the rename target must clear the purged marker too.
+		existSetting.ContentPurged = 0
 		existSetting.UpdatedTimestamp = timex.Now().UnixMilli()
 		newSettingCreated, err = s.settingRepo.Update(ctx, existSetting, uid)
 	} else {
@@ -576,17 +592,22 @@ func (s *settingService) Cleanup(ctx context.Context, uid int64) error {
 	}
 
 	cutoffTime := time.Now().Add(-retentionDuration).UnixMilli()
-	return s.settingRepo.DeletePhysicalByTime(ctx, cutoffTime, uid)
+	return s.settingRepo.PurgeContentByTime(ctx, cutoffTime, uid)
 }
 
-// CleanupByTime cleans up expired soft-deleted configurations for all users by cutoff time
-// CleanupByTime 按截止时间清理所有用户的过期软删除配置
+// CleanupByTime releases stored bodies of expired setting tombstones for all users by
+// cutoff time, keeping the lightweight metadata rows.
+// CleanupByTime 按截止时间清理所有用户的过期软删除配置正文，保留轻量墓碑元数据行。
 func (s *settingService) CleanupByTime(ctx context.Context, cutoffTime int64) error {
-	return s.settingRepo.DeletePhysicalByTimeAll(ctx, cutoffTime)
+	return s.settingRepo.PurgeContentByTimeAll(ctx, cutoffTime)
 }
 
-// ClearByVault clears all settings for a specific vault of a user
-// ClearByVault 清除用户指定笔记本的所有配置
+// ClearByVault clears all settings for a specific vault of a user. Live settings are
+// converted into deletion tombstones instead of being physically deleted, so other
+// clients still receive the deletions through incremental sync and the deletion
+// evidence survives.
+// ClearByVault 清除用户指定笔记本的所有配置。存活配置会被转为删除墓碑而不是物理删除，
+// 使其它客户端仍能通过增量同步收到删除，删除证据也得以保留。
 func (s *settingService) ClearByVault(ctx context.Context, uid int64, vaultName string) error {
 	// Use VaultService.MustGetID to retrieve VaultID
 	// 使用 VaultService.MustGetID 获取 VaultID
@@ -594,7 +615,7 @@ func (s *settingService) ClearByVault(ctx context.Context, uid int64, vaultName 
 	if err != nil {
 		return err
 	}
-	return s.settingRepo.DeleteByVaultID(ctx, vaultID, uid)
+	return s.settingRepo.TombstoneByVaultID(ctx, vaultID, uid)
 }
 
 // CleanDuplicateSettings cleans up duplicate configuration records

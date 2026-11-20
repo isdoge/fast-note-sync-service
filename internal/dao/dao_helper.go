@@ -8,6 +8,28 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/pkg/fileurl"
 )
 
+// batchSizeForInClause 是拼装 `id IN (...)` 语句时每批的最大参数个数，避免 SQLite
+// 等驱动对单条语句参数数量的上限。
+// batchSizeForInClause caps the number of parameters per `id IN (...)` statement to
+// stay below driver limits (e.g. SQLite).
+const batchSizeForInClause = 500
+
+// forEachIDChunk 把 ids 按 batchSizeForInClause 分批交给 fn，便于安全地做批量更新/删除。
+// forEachIDChunk feeds ids to fn in batches so bulk UPDATE/DELETE stays within
+// driver parameter limits.
+func forEachIDChunk(ids []int64, fn func(chunk []int64) error) error {
+	for start := 0; start < len(ids); start += batchSizeForInClause {
+		end := start + batchSizeForInClause
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := fn(ids[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // getContentPath gets the content storage path
 // getContentPath 获取内容存储路径
 func (d *Dao) GetNoteFolderPath(uid int64, noteID int64) string {

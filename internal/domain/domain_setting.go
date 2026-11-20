@@ -26,6 +26,7 @@ type Setting struct {
 	ContentHash      string
 	Size             int64
 	Rename           int64
+	ContentPurged    int64
 	Ctime            int64
 	Mtime            int64
 	UpdatedTimestamp int64
@@ -80,11 +81,15 @@ type SettingRepository interface {
 	// Delete 物理删除配置
 	Delete(ctx context.Context, id, uid int64) error
 
-	// DeletePhysicalByTime 根据时间物理删除已标记删除的配置
-	DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error
+	// PurgeContentByTime 释放早于给定时间的已删除配置正文，保留轻量墓碑行
+	// （action=delete、content_purged=1、rename=2），且不刷新 updated_timestamp。
+	// PurgeContentByTime releases stored bodies of expired tombstones while keeping a
+	// lightweight metadata row (action=delete, content_purged=1, rename=2) and leaving
+	// updated_timestamp untouched.
+	PurgeContentByTime(ctx context.Context, timestamp, uid int64) error
 
-	// DeletePhysicalByTimeAll 根据时间物理删除所有用户的已标记删除的配置
-	DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error
+	// PurgeContentByTimeAll 对所有用户执行 PurgeContentByTime
+	PurgeContentByTimeAll(ctx context.Context, timestamp int64) error
 
 	// List 分页获取配置列表
 	List(ctx context.Context, vaultID int64, page, pageSize int, uid int64, keyword string) ([]*Setting, error)
@@ -95,6 +100,15 @@ type SettingRepository interface {
 	// ListByUpdatedTimestamp 根据更新时间戳获取配置列表
 	ListByUpdatedTimestamp(ctx context.Context, timestamp, vaultID, uid int64) ([]*Setting, error)
 
-	// DeleteByVaultID 物理删除该用户指定笔记本的所有配置
+	// DeleteByVaultID 物理删除该用户指定笔记本的所有配置（仅在整个仓库被销毁时使用）
 	DeleteByVaultID(ctx context.Context, vaultID, uid int64) error
+
+	// TombstoneByVaultID 将某仓库的存活配置转为删除墓碑（action=delete、rename=2、
+	// content_purged=1、更新 updated_timestamp），使其它客户端增量同步时仍能收到删除，
+	// 而不是像 DeleteByVaultID 那样直接物理删行、丢失全部删除证据。
+	// TombstoneByVaultID converts live settings of a vault into deletion tombstones
+	// (action=delete, rename=2, content_purged=1, refreshed updated_timestamp), so other
+	// clients still receive the deletions through incremental sync instead of losing all
+	// deletion evidence as with DeleteByVaultID.
+	TombstoneByVaultID(ctx context.Context, vaultID, uid int64) error
 }

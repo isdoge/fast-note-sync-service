@@ -14,6 +14,7 @@ type Setting struct {
 	VaultID          int64      `gorm:"column:vault_id;not null;default:0" json:"vaultId" form:"vaultId"`
 	Action           string     `gorm:"column:action;default:''" json:"action" form:"action"`
 	Rename           int64      `gorm:"column:rename;default:0" json:"rename" form:"rename"`
+	ContentPurged    int64      `gorm:"column:content_purged;not null;default:0" json:"contentPurged" form:"contentPurged"`
 	Path             string     `gorm:"column:path;type:varchar(1024);mysqlType:varbinary(1024);index:idx_setting_id_path,priority:2,length:255;default:''" json:"path" form:"path"`
 	PathHash         string     `gorm:"column:path_hash;type:varchar(1024);mysqlType:varbinary(1024);index:idx_setting_id_path_hash,priority:2,length:255;default:''" json:"pathHash" form:"pathHash"`
 	Content          string     `gorm:"column:content;default:''" json:"content" form:"content"`

@@ -336,6 +336,9 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 			file.Ctime = params.Ctime
 			file.Action = action
 			file.Rename = 0
+			// 复用墓碑行复活为存活记录时清掉“正文已清理”标记。
+			// Clear the purged marker when a tombstone row is revived.
+			file.ContentPurged = 0
 
 			updated, err := s.fileRepo.Update(ctx, file, uid)
 			if err != nil {
@@ -484,10 +487,19 @@ func (s *fileService) Restore(ctx context.Context, uid int64, params *dto.FileRe
 		return nil, code.ErrorNoteNotFound
 	}
 
+	// 正文已清理的墓碑或已手动清空回收站的条目不可恢复：恢复只会得到一个
+	// 指向不存在文件的空记录。
+	// Purged tombstones (or entries removed by a manual recycle clear) cannot be
+	// restored: doing so would yield a record pointing at a missing payload.
+	if file.ContentPurged != 0 || file.Rename == 2 {
+		return nil, code.ErrorContentPurged
+	}
+
 	// Update to modified status and update modification time
 	file.Action = domain.FileActionModify
 	file.Mtime = time.Now().UnixMilli()
 	file.Rename = 0
+	file.ContentPurged = 0
 
 	updated, err := s.fileRepo.Update(ctx, file, uid)
 	if err != nil {
@@ -644,13 +656,14 @@ func (s *fileService) Cleanup(ctx context.Context, uid int64) error {
 	}
 
 	cutoffTime := time.Now().Add(-retentionDuration).UnixMilli()
-	return s.fileRepo.DeletePhysicalByTime(ctx, cutoffTime, uid)
+	return s.fileRepo.PurgeContentByTime(ctx, cutoffTime, uid)
 }
 
-// CleanupByTime cleans up expired soft-deleted files for all users by cutoff time
-// CleanupByTime 按截止时间清理所有用户的过期软删除文件
+// CleanupByTime releases stored payloads of expired attachment tombstones for all users
+// by cutoff time, keeping the lightweight metadata rows.
+// CleanupByTime 按截止时间清理所有用户的过期软删除附件载荷，保留轻量墓碑元数据行。
 func (s *fileService) CleanupByTime(ctx context.Context, cutoffTime int64) error {
-	return s.fileRepo.DeletePhysicalByTimeAll(ctx, cutoffTime)
+	return s.fileRepo.PurgeContentByTimeAll(ctx, cutoffTime)
 }
 
 // GetContent retrieves raw content of note or attachment file
@@ -692,6 +705,12 @@ func (s *fileService) GetContent(ctx context.Context, uid int64, params *dto.Fil
 				if file.Action == domain.FileActionDelete {
 					return nil, "", 0, "", code.ErrorFileNotFound
 				}
+			}
+
+			// 正文已清理的墓碑没有可下载内容：明确报“已清理”而不是磁盘读取失败。
+			// A purged tombstone has no payload: report "purged" instead of a disk read error.
+			if file.ContentPurged != 0 || file.Rename == 2 {
+				return nil, "", 0, "", code.ErrorContentPurged
 			}
 
 			// Identify file MIME type
@@ -766,6 +785,12 @@ func (s *fileService) GetContentInfo(ctx context.Context, uid int64, params *dto
 					return "", "", 0, "", "", code.ErrorFileNotFound
 				}
 			}
+			// 正文已清理的墓碑没有可下载内容：明确报“已清理”而不是磁盘读取失败。
+			// A purged tombstone has no payload: report "purged" instead of a disk read error.
+			if file.ContentPurged != 0 || file.Rename == 2 {
+				return "", "", 0, "", "", code.ErrorContentPurged
+			}
+
 			// Identify file MIME type
 			// 识别文件 MIME 类型
 			ext := filepath.Ext(file.Path)
@@ -941,6 +966,9 @@ func (s *fileService) Rename(ctx context.Context, uid int64, params *dto.FileRen
 			// 复用已删除的记录
 			existFile.Action = domain.FileActionCreate
 			existFile.Rename = 0 // Reset rename flag to ensure correct file count statistics
+			// 复用墓碑行作为重命名目标时同样要清除“正文已清理”标记。
+			// Reusing a tombstone row as the rename target must clear the purged marker too.
+			existFile.ContentPurged = 0
 			existFile.Path = newPath
 			existFile.PathHash = newPathHash
 			newPathDir := ""

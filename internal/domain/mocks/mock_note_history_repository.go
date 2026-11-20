@@ -75,6 +75,11 @@ func (m *MockNoteHistoryRepository) Delete(ctx context.Context, id, uid int64) e
 	return args.Error(0)
 }
 
+func (m *MockNoteHistoryRepository) PurgeByNoteIDs(ctx context.Context, noteIDs []int64, uid int64) error {
+	args := m.Called(ctx, noteIDs, uid)
+	return args.Error(0)
+}
+
 func (m *MockNoteHistoryRepository) DeleteByVaultID(ctx context.Context, vaultID, uid int64) error {
 	args := m.Called(ctx, vaultID, uid)
 	return args.Error(0)

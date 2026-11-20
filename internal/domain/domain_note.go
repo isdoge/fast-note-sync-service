@@ -21,6 +21,7 @@ type Note struct {
 	VaultID                 int64
 	Action                  NoteAction
 	Rename                  int64
+	ContentPurged           int64
 	FID                     int64
 	Path                    string
 	PathHash                string
@@ -140,11 +141,15 @@ type NoteRepository interface {
 	// Delete 物理删除笔记
 	Delete(ctx context.Context, id, vaultID, uid int64) error
 
-	// DeletePhysicalByTime 根据时间物理删除已标记删除的笔记
-	DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error
-
-	// DeletePhysicalByTimeAll 根据时间物理删除所有用户的已标记删除的笔记
-	DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error
+	// PurgeContentByTime 清理早于给定时间的已删除笔记正文（磁盘正文与历史快照），
+	// 但保留轻量墓碑行（action=delete、content_purged=1、rename=2），且不刷新
+	// updated_timestamp，使离线设备回连时仍能收到删除通知并阻止复活。
+	// 返回本次清理正文的笔记 ID，供调用方清理关联的 note_history 记录。
+	// PurgeContentByTime releases the stored body/history of expired tombstones while
+	// keeping a lightweight metadata row (action=delete, content_purged=1, rename=2)
+	// without touching updated_timestamp, so offline clients still learn about the
+	// deletion and cannot resurrect it. Returns the purged note IDs.
+	PurgeContentByTime(ctx context.Context, timestamp, uid int64) ([]int64, error)
 
 	// List 分页获取笔记列表
 	// searchMode: path(默认), content, regex

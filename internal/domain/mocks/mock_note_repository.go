@@ -118,14 +118,12 @@ func (m *MockNoteRepository) Delete(ctx context.Context, id, vaultID, uid int64)
 	return args.Error(0)
 }
 
-func (m *MockNoteRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
+func (m *MockNoteRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) ([]int64, error) {
 	args := m.Called(ctx, timestamp, uid)
-	return args.Error(0)
-}
-
-func (m *MockNoteRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
-	args := m.Called(ctx, timestamp)
-	return args.Error(0)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]int64), args.Error(1)
 }
 
 func (m *MockNoteRepository) List(ctx context.Context, vaultID int64, page, pageSize int, uid int64, keyword string, isRecycle bool, searchMode string, searchContent bool, sortBy string, sortOrder string, paths []string) ([]*domain.Note, error) {
