@@ -71,6 +71,7 @@ func (r *fileRepository) toDomain(m *model.File, uid int64) *domain.File {
 		ContentHash:      m.ContentHash,
 		SavePath:         m.SavePath,
 		Rename:           m.Rename,
+		ContentPurged:    m.ContentPurged,
 		Size:             m.Size,
 		Ctime:            m.Ctime,
 		Mtime:            m.Mtime,
@@ -98,6 +99,7 @@ func (r *fileRepository) toModel(file *domain.File) *model.File {
 		ContentHash:      file.ContentHash,
 		SavePath:         file.SavePath,
 		Rename:           file.Rename,
+		ContentPurged:    file.ContentPurged,
 		Size:             file.Size,
 		Ctime:            file.Ctime,
 		Mtime:            file.Mtime,
@@ -457,37 +459,68 @@ func (r *fileRepository) Delete(ctx context.Context, id, uid int64) error {
 	})
 }
 
-// DeletePhysicalByTime physically deletes files marked as deleted by time
-// DeletePhysicalByTime 根据时间物理删除已标记删除的文件
-func (r *fileRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
+// PurgeContentByTime releases stored payloads of expired attachment tombstones while
+// keeping the lightweight metadata row. Rows are never physically deleted here (that
+// only happens when the whole vault is destroyed), so an offline device reconnecting
+// after the retention period still receives the deletion and the retained content_hash
+// keeps the tombstone gate working. The row keeps vault_id/path/path_hash/content_hash,
+// gets rename=2 and content_purged=1, loses save_path, and its updated_timestamp is left
+// untouched on purpose.
+//
+// PurgeContentByTime 清理已超过保留期的附件墓碑载荷，但保留轻量元数据行。这里绝不
+// 物理删除数据库行（只有整个仓库被销毁时才物理删除）：离线设备在保留期之后回连时
+// 仍能收到删除，保留的 content_hash 也让墓碑闸门继续生效。行内保留
+// vault_id/path/path_hash/content_hash，设置 rename=2 与 content_purged=1，清空
+// save_path，并刻意不刷新 updated_timestamp。
+func (r *fileRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.file(uid).File
 
-		// Find records to be deleted to remove folders in the file system
-		// 查找待删除的记录，以便删除文件系统中的文件夹
+		// 只处理尚未清理正文的过期墓碑，重复执行时不会再次命中。
+		// Only unpurged expired tombstones are selected, so repeated runs are no-ops.
 		mList, err := u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
+			u.Action.Eq(string(domain.FileActionDelete)),
 			u.UpdatedTimestamp.Lt(timestamp),
-		).Find()
-
-		if err == nil {
-			for _, m := range mList {
-				folderPath := r.dao.GetFileFolderPath(uid, m.ID)
-				_ = r.dao.RemoveContentFolder(folderPath)
-			}
+			u.ContentPurged.Eq(0),
+		).Select(u.ID).Find()
+		if err != nil {
+			return err
+		}
+		if len(mList) == 0 {
+			return nil
 		}
 
-		_, err = u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
-			u.UpdatedTimestamp.Lt(timestamp),
-		).Delete()
-		return err
+		ids := make([]int64, 0, len(mList))
+		for _, m := range mList {
+			ids = append(ids, m.ID)
+		}
+
+		if err := forEachIDChunk(ids, func(chunk []int64) error {
+			_, err := u.WithContext(ctx).Where(
+				u.ID.In(chunk...),
+				u.ContentPurged.Eq(0),
+				u.Action.Eq(string(domain.FileActionDelete)),
+			).UpdateSimple(
+				u.ContentPurged.Value(1),
+				u.Rename.Value(2),
+				u.SavePath.Value(""),
+			)
+			return err
+		}); err != nil {
+			return err
+		}
+
+		for _, id := range ids {
+			folderPath := r.dao.GetFileFolderPath(uid, id)
+			_ = r.dao.RemoveContentFolder(folderPath)
+		}
+		return nil
 	})
 }
 
-// DeletePhysicalByTimeAll physically deletes files marked as deleted for all users by time
-// DeletePhysicalByTimeAll 根据时间物理删除所有用户的已标记删除的文件
-func (r *fileRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
+// PurgeContentByTimeAll runs PurgeContentByTime for every user
+// PurgeContentByTimeAll 对所有用户执行 PurgeContentByTime
+func (r *fileRepository) PurgeContentByTimeAll(ctx context.Context, timestamp int64) error {
 	// Get all user UIDs
 	// 获取所有用户 UID
 	uids, err := r.dao.GetAllUserUIDs()
@@ -498,7 +531,7 @@ func (r *fileRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp 
 	// Execute cleanup user by user
 	// 逐用户执行清理
 	for _, uid := range uids {
-		if err := r.DeletePhysicalByTime(ctx, timestamp, uid); err != nil {
+		if err := r.PurgeContentByTime(ctx, timestamp, uid); err != nil {
 			// 记录错误但继续处理其他用户
 			continue
 		}
@@ -515,7 +548,7 @@ func (r *fileRepository) List(ctx context.Context, vaultID int64, page, pageSize
 	)
 
 	if isRecycle {
-		q = q.Where(u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq(string(domain.FileActionDelete)))
 	}
@@ -575,7 +608,7 @@ func (r *fileRepository) ListCount(ctx context.Context, vaultID, uid int64, keyw
 	)
 
 	if isRecycle {
-		q = q.Where(u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0))
+		q = q.Where(u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0), u.ContentPurged.Eq(0))
 	} else {
 		q = q.Where(u.Action.Neq(string(domain.FileActionDelete)))
 	}
@@ -812,24 +845,48 @@ func (r *fileRepository) ListByIDs(ctx context.Context, ids []int64, uid int64) 
 func (r *fileRepository) RecycleClear(ctx context.Context, path, pathHash string, vaultID, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.file(uid).File
-		q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0))
-		if path != "" {
-			q = q.Where(u.Path.Eq(path))
+		build := func() query.IFileDo {
+			q := u.WithContext(ctx).Where(u.VaultID.Eq(vaultID), u.Action.Eq(string(domain.FileActionDelete)), u.Rename.Eq(0), u.ContentPurged.Eq(0))
+			if path != "" {
+				q = q.Where(u.Path.Eq(path))
+			}
+			if pathHash != "" {
+				q = q.Where(u.PathHash.Eq(pathHash))
+			}
+			return q
 		}
-		if pathHash != "" {
-			q = q.Where(u.PathHash.Eq(pathHash))
-		}
+
 		if path == "" && pathHash != "" {
-			if err := requireUnambiguousPath(q.UnderlyingDB()); err != nil {
+			if err := requireUnambiguousPath(build().UnderlyingDB()); err != nil {
 				return err
 			}
 		}
-		_, err := q.UpdateSimple(
+
+		list, err := build().Select(u.ID).Find()
+		if err != nil {
+			return err
+		}
+
+		// 手动清空回收站 = 永久删除：释放磁盘载荷并标记不恢复，同时保留墓碑行
+		// 与 content_hash，供离线设备增量同步收到删除且不复活。
+		// Manual recycle-clear means permanent deletion: release the payload and mark it
+		// unrecoverable, while keeping the tombstone row and content_hash so offline
+		// devices still get the delete and cannot resurrect it.
+		if _, err := build().UpdateSimple(
 			u.Rename.Value(2),
+			u.ContentPurged.Value(1),
+			u.SavePath.Value(""),
 			u.UpdatedTimestamp.Value(timex.Now().UnixMilli()),
 			u.UpdatedAt.Value(timex.Now()),
-		)
-		return err
+		); err != nil {
+			return err
+		}
+
+		for _, m := range list {
+			folderPath := r.dao.GetFileFolderPath(uid, m.ID)
+			_ = r.dao.RemoveContentFolder(folderPath)
+		}
+		return nil
 	})
 }
 

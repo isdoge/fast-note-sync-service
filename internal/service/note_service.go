@@ -488,6 +488,10 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 			note.Ctime = params.Ctime
 			note.Action = action
 			note.Rename = 0
+			// 复用既有墓碑行复活为存活记录时，必须同时清掉“正文已清理”标记，
+			// 否则存活记录会被永久视作不可恢复/不可读取。
+			// Reviving a tombstone row must also clear the purged marker.
+			note.ContentPurged = 0
 			note.Version++ // Increment version on content change // 内容变更时递增版本号
 
 			updated, err := s.noteRepo.Update(ctx, note, uid)
@@ -666,6 +670,15 @@ func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRe
 	note, err := s.noteRepo.GetByPathHashAndPathIncludeRecycle(ctx, params.PathHash, params.Path, vaultID, uid, true)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 回收站查询只覆盖可恢复的墓碑（rename=0）。若该路径的墓碑正文已因超过
+			// 保留期被清理（rename=2 / content_purged=1），明确拒绝而不是报“不存在”，
+			// 避免调用方误以为还能恢复。
+			// The recycle lookup only covers restorable tombstones. If the tombstone's
+			// body was purged after the retention period, reject explicitly instead of
+			// reporting "not found".
+			if s.isNoteTombstonePurged(ctx, params.PathHash, params.Path, vaultID, uid) {
+				return nil, code.ErrorContentPurged
+			}
 			return nil, code.ErrorNoteNotFound
 		}
 		return nil, code.ErrorDBQuery.WithDetails(err.Error())
@@ -676,6 +689,12 @@ func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRe
 		return nil, code.ErrorNoteNotFound
 	}
 
+	// 正文已清理的墓碑不可恢复：恢复只会得到一篇空正文笔记。
+	// A tombstone whose body was purged cannot be restored: it would yield an empty note.
+	if note.ContentPurged != 0 {
+		return nil, code.ErrorContentPurged
+	}
+
 	// Update to modified status and update modification time // 更新为修改状态 并更新修改时间
 	note.Action = domain.NoteActionModify
 	note.ClientName = s.clientName
@@ -683,6 +702,7 @@ func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRe
 	note.ClientVersion = s.clientVer
 	note.Mtime = time.Now().UnixMilli()
 	note.Rename = 0
+	note.ContentPurged = 0
 
 	err = s.noteRepo.UpdateDelete(ctx, note, uid)
 	if err != nil {
@@ -715,6 +735,23 @@ func (s *noteService) Restore(ctx context.Context, uid int64, params *dto.NoteRe
 	}
 
 	return s.domainToDTO(updated), nil
+}
+
+// isNoteTombstonePurged reports whether any tombstone of the path has already been
+// permanently cleared (body purged, or hidden from the recycle bin by a manual clear).
+// isNoteTombstonePurged 判断该路径是否存在正文已被永久清理（或手动清空回收站后隐藏）
+// 的墓碑行。
+func (s *noteService) isNoteTombstonePurged(ctx context.Context, pathHash, path string, vaultID, uid int64) bool {
+	rows, err := s.noteRepo.ListByPathHashAndPath(ctx, pathHash, path, vaultID, uid)
+	if err != nil {
+		return false
+	}
+	for _, row := range rows {
+		if row.Action == domain.NoteActionDelete && (row.ContentPurged != 0 || row.Rename == 2) {
+			return true
+		}
+	}
+	return false
 }
 
 // Rename renames a note
@@ -781,6 +818,9 @@ func (s *noteService) Rename(ctx context.Context, uid int64, params *dto.NoteRen
 			// Reuse deleted record // 复用已删除的记录
 			existNote.Action = domain.NoteActionCreate
 			existNote.Rename = 0 // Reset rename flag to ensure correct note count statistics
+			// 复用墓碑行作为重命名目标时同样要清除“正文已清理”标记。
+			// Reusing a tombstone row as the rename target must clear the purged marker too.
+			existNote.ContentPurged = 0
 			existNote.Path = newPath
 			existNote.PathHash = newPathHash
 			newPathDir := ""
@@ -1026,17 +1066,60 @@ func (s *noteService) Cleanup(ctx context.Context, uid int64) error {
 	}
 
 	cutoffTime := time.Now().Add(-retentionDuration).UnixMilli()
-	err = s.noteRepo.DeletePhysicalByTime(ctx, cutoffTime, uid)
+	return s.purgeExpiredTombstones(ctx, uid, cutoffTime)
+}
+
+// CleanupByTime releases the stored bodies of expired note tombstones for all users by
+// cutoff time. Database rows are kept (only the whole-vault deletion physically removes
+// them) so offline clients still receive the deletion and cannot resurrect the note.
+// CleanupByTime 按截止时间清理所有用户的过期软删除笔记正文。数据库行会保留（只有整个
+// 仓库被销毁时才物理删除），使离线客户端仍能收到删除且无法复活。
+func (s *noteService) CleanupByTime(ctx context.Context, cutoffTime int64) error {
+	uids, err := s.userRepo.GetAllUIDs(ctx)
 	if err != nil {
 		return code.ErrorDBQuery.WithDetails(err.Error())
 	}
-	return nil
+
+	var firstErr error
+	for i, uid := range uids {
+		// 错峰执行，避免瞬间触发大量写事务
+		// Stagger users to avoid a burst of write transactions.
+		if i > 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if err := s.purgeExpiredTombstones(ctx, uid, cutoffTime); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			zap.L().Error("failed to purge expired note tombstones",
+				zap.Int64(logger.FieldUID, uid),
+				zap.Error(err))
+		}
+	}
+	return firstErr
 }
 
-// CleanupByTime cleans up expired soft-deleted notes for all users by cutoff time
-// CleanupByTime 按截止时间清理所有用户的过期软删除笔记
-func (s *noteService) CleanupByTime(ctx context.Context, cutoffTime int64) error {
-	return s.noteRepo.DeletePhysicalByTimeAll(ctx, cutoffTime)
+// purgeExpiredTombstones purges the stored bodies of expired note tombstones for one
+// user and then releases their note_history snapshots.
+// purgeExpiredTombstones 清理单个用户过期笔记墓碑的正文，并释放对应的 note_history。
+func (s *noteService) purgeExpiredTombstones(ctx context.Context, uid, cutoffTime int64) error {
+	ids, err := s.noteRepo.PurgeContentByTime(ctx, cutoffTime, uid)
+	if err != nil {
+		return code.ErrorDBQuery.WithDetails(err.Error())
+	}
+	if len(ids) == 0 || s.historyRepo == nil {
+		return nil
+	}
+	if err := s.historyRepo.PurgeByNoteIDs(ctx, ids, uid); err != nil {
+		// 历史快照清理失败不回滚墓碑清理：正文已释放，下次任务会重新尝试关联清理
+		// 之外的路径，且不阻塞其它用户。
+		// History purge failure must not undo the body purge; log and continue.
+		zap.L().Warn("failed to purge note history for expired tombstones",
+			zap.Int64(logger.FieldUID, uid),
+			zap.Int("count", len(ids)),
+			zap.Error(err))
+	}
+	return nil
 }
 
 // ListNeedSnapshot retrieves notes that need snapshot

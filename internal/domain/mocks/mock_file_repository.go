@@ -99,12 +99,12 @@ func (m *MockFileRepository) Delete(ctx context.Context, id, uid int64) error {
 	return args.Error(0)
 }
 
-func (m *MockFileRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
+func (m *MockFileRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) error {
 	args := m.Called(ctx, timestamp, uid)
 	return args.Error(0)
 }
 
-func (m *MockFileRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
+func (m *MockFileRepository) PurgeContentByTimeAll(ctx context.Context, timestamp int64) error {
 	args := m.Called(ctx, timestamp)
 	return args.Error(0)
 }

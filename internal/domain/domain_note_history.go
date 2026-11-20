@@ -58,4 +58,11 @@ type NoteHistoryRepository interface {
 
 	// DeleteByVaultID 删除仓库下的所有历史记录（包含物理目录）
 	DeleteByVaultID(ctx context.Context, vaultID, uid int64) error
+
+	// PurgeByNoteIDs 删除指定笔记的全部历史记录（包含物理目录）。
+	// 用于笔记墓碑正文超过保留期被清理时，一并释放历史快照占用的空间。
+	// PurgeByNoteIDs deletes all history records of the given notes (including their
+	// stored folders). Used when a note tombstone's body is purged after the retention
+	// period, so history snapshots do not keep the deleted content alive.
+	PurgeByNoteIDs(ctx context.Context, noteIDs []int64, uid int64) error
 }

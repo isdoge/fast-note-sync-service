@@ -389,6 +389,55 @@ func (r *noteHistoryRepository) Delete(ctx context.Context, id, uid int64) error
 	})
 }
 
+// PurgeByNoteIDs deletes every history record of the given notes, including their
+// stored folders. Used when a note tombstone's body is purged after the retention
+// period, so history snapshots cannot keep the deleted content alive or resurrect it.
+// PurgeByNoteIDs 删除指定笔记的全部历史记录（含物理目录）。用于笔记墓碑正文超过保留期
+// 被清理时，避免历史快照继续保留已删内容或把它复活。
+func (r *noteHistoryRepository) PurgeByNoteIDs(ctx context.Context, noteIDs []int64, uid int64) error {
+	if len(noteIDs) == 0 {
+		return nil
+	}
+	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		u := r.noteHistory(uid).NoteHistory
+		// 分块处理，避免 SQLite 等驱动的参数上限。
+		// Chunked to stay below driver parameter limits (e.g. SQLite).
+		const chunkSize = 200
+		for start := 0; start < len(noteIDs); start += chunkSize {
+			end := start + chunkSize
+			if end > len(noteIDs) {
+				end = len(noteIDs)
+			}
+			rows, err := u.WithContext(ctx).Where(u.NoteID.In(noteIDs[start:end]...)).Select(u.ID).Find()
+			if err != nil {
+				return err
+			}
+			if len(rows) == 0 {
+				continue
+			}
+			ids := make([]int64, 0, len(rows))
+			for _, m := range rows {
+				ids = append(ids, m.ID)
+			}
+			if _, err := u.WithContext(ctx).Where(u.ID.In(ids...)).Delete(); err != nil {
+				return err
+			}
+			for _, id := range ids {
+				folder := r.dao.GetNoteHistoryFolderPath(uid, id)
+				if err := r.dao.RemoveContentFolder(folder); err != nil {
+					r.dao.Logger().Warn("failed to delete history folder",
+						zap.Int64(logger.FieldUID, uid),
+						zap.Int64("historyId", id),
+						zap.String("folder", folder),
+						zap.Error(err),
+					)
+				}
+			}
+		}
+		return nil
+	})
+}
+
 // DeleteByVaultID physically deletes all history in a vault
 // DeleteByVaultID 物理删除仓库下的所有历史记录
 func (r *noteHistoryRepository) DeleteByVaultID(ctx context.Context, vaultID, uid int64) error {

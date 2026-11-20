@@ -69,6 +69,7 @@ func (r *settingRepository) toDomain(m *model.Setting, uid int64) (*domain.Setti
 		ContentHash:      m.ContentHash,
 		Size:             m.Size,
 		Rename:           m.Rename,
+		ContentPurged:    m.ContentPurged,
 		Ctime:            m.Ctime,
 		Mtime:            m.Mtime,
 		UpdatedTimestamp: m.UpdatedTimestamp,
@@ -85,6 +86,12 @@ func (r *settingRepository) toDomain(m *model.Setting, uid int64) (*domain.Setti
 // fillSettingContent 填充配置内容
 func (r *settingRepository) fillSettingContent(uid int64, s *domain.Setting) error {
 	if s == nil {
+		return nil
+	}
+	// 正文已过保留期清理：磁盘文件已删除，读取应返回空正文而不是“读取失败”。
+	// Body already purged: the file is gone, so return empty content instead of an error.
+	if s.ContentPurged != 0 {
+		s.Content = ""
 		return nil
 	}
 	folder := r.dao.GetSettingFolderPath(uid, s.ID)
@@ -188,6 +195,7 @@ func (r *settingRepository) ListByPathHashesMeta(ctx context.Context, pathHashes
 					ContentHash:      m.ContentHash,
 					Size:             m.Size,
 					Rename:           m.Rename,
+					ContentPurged:    m.ContentPurged,
 					Ctime:            m.Ctime,
 					Mtime:            m.Mtime,
 					UpdatedTimestamp: m.UpdatedTimestamp,
@@ -216,6 +224,7 @@ func (r *settingRepository) Create(ctx context.Context, setting *domain.Setting,
 			ContentHash:      setting.ContentHash,
 			Size:             setting.Size,
 			Rename:           setting.Rename,
+			ContentPurged:    setting.ContentPurged,
 			Ctime:            setting.Ctime,
 			Mtime:            setting.Mtime,
 			UpdatedTimestamp: timex.Now().UnixMilli(),
@@ -270,6 +279,7 @@ func (r *settingRepository) Update(ctx context.Context, setting *domain.Setting,
 			ContentHash:      setting.ContentHash,
 			Size:             setting.Size,
 			Rename:           setting.Rename,
+			ContentPurged:    setting.ContentPurged,
 			Ctime:            setting.Ctime,
 			Mtime:            setting.Mtime,
 			UpdatedTimestamp: timex.Now().UnixMilli(),
@@ -357,49 +367,124 @@ func (r *settingRepository) Delete(ctx context.Context, id, uid int64) error {
 	})
 }
 
-// DeletePhysicalByTime physically deletes settings marked for deletion based on time
-// DeletePhysicalByTime 根据时间物理删除已标记删除的配置
-func (r *settingRepository) DeletePhysicalByTime(ctx context.Context, timestamp, uid int64) error {
+// PurgeContentByTime releases stored bodies of expired setting tombstones while keeping
+// the lightweight metadata row (same rationale as notes/files): rows are never
+// physically deleted by retention cleanup, so offline devices still receive the delete
+// and content_hash is retained for the tombstone-style comparisons to come.
+// PurgeContentByTime 清理已超过保留期的配置墓碑正文，但保留轻量元数据行（理由同笔记/
+// 附件）：保留期清理绝不物理删行，离线设备回连仍能收到删除，content_hash 也继续保留。
+func (r *settingRepository) PurgeContentByTime(ctx context.Context, timestamp, uid int64) error {
 	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
 		u := r.setting(uid).Setting
 
-		// Find records to be physically deleted, clean up files
-		// 查找待物理删除的记录，清理文件
+		// 只处理尚未清理正文的过期墓碑，重复执行时不会再次命中。
+		// Only unpurged expired tombstones are selected, so repeated runs are no-ops.
 		mList, err := u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
+			u.Action.Eq(string(domain.SettingActionDelete)),
 			u.UpdatedTimestamp.Lt(timestamp),
-		).Find()
-
-		if err == nil {
-			for _, m := range mList {
-				folder := r.dao.GetSettingFolderPath(uid, m.ID)
-				_ = r.dao.RemoveContentFolder(folder)
-			}
+			u.ContentPurged.Eq(0),
+		).Select(u.ID).Find()
+		if err != nil {
+			return err
+		}
+		if len(mList) == 0 {
+			return nil
 		}
 
-		_, err = u.WithContext(ctx).Where(
-			u.Action.Eq("delete"),
-			u.UpdatedTimestamp.Lt(timestamp),
-		).Delete()
+		ids := make([]int64, 0, len(mList))
+		for _, m := range mList {
+			ids = append(ids, m.ID)
+		}
 
-		return err
+		if err := forEachIDChunk(ids, func(chunk []int64) error {
+			_, err := u.WithContext(ctx).Where(
+				u.ID.In(chunk...),
+				u.ContentPurged.Eq(0),
+				u.Action.Eq(string(domain.SettingActionDelete)),
+			).UpdateSimple(
+				u.ContentPurged.Value(1),
+				u.Rename.Value(2),
+				u.Content.Value(""),
+			)
+			return err
+		}); err != nil {
+			return err
+		}
+
+		for _, id := range ids {
+			folder := r.dao.GetSettingFolderPath(uid, id)
+			_ = r.dao.RemoveContentFolder(folder)
+		}
+		return nil
 	})
 }
 
-// DeletePhysicalByTimeAll physically deletes settings marked for deletion for all users based on time
-// DeletePhysicalByTimeAll 根据时间物理删除所有用户的已标记删除的配置
-func (r *settingRepository) DeletePhysicalByTimeAll(ctx context.Context, timestamp int64) error {
+// PurgeContentByTimeAll runs PurgeContentByTime for every user
+// PurgeContentByTimeAll 对所有用户执行 PurgeContentByTime
+func (r *settingRepository) PurgeContentByTimeAll(ctx context.Context, timestamp int64) error {
 	uids, err := r.dao.GetAllUserUIDs()
 	if err != nil {
 		return err
 	}
 
 	for _, uid := range uids {
-		if err := r.DeletePhysicalByTime(ctx, timestamp, uid); err != nil {
+		if err := r.PurgeContentByTime(ctx, timestamp, uid); err != nil {
 			continue
 		}
 	}
 	return nil
+}
+
+// TombstoneByVaultID converts all live settings of a vault into deletion tombstones
+// instead of physically deleting the rows. Live rows get action=delete, rename=2,
+// content_purged=1, refreshed updated_timestamp and have their stored bodies released,
+// so other clients learn about the deletion through incremental sync and the deletion
+// evidence survives. Already-existing tombstones are left untouched.
+//
+// TombstoneByVaultID 把某仓库的存活配置转为删除墓碑而不是物理删行：存活行置
+// action=delete、rename=2、content_purged=1，刷新 updated_timestamp，并释放正文文件，
+// 使其它客户端能通过增量同步收到删除且删除证据得以保留。已有墓碑行保持原样。
+func (r *settingRepository) TombstoneByVaultID(ctx context.Context, vaultID, uid int64) error {
+	return r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		u := r.setting(uid).Setting
+
+		list, err := u.WithContext(ctx).Where(
+			u.VaultID.Eq(vaultID),
+			u.Action.Neq(string(domain.SettingActionDelete)),
+		).Select(u.ID).Find()
+		if err != nil {
+			return err
+		}
+		if len(list) == 0 {
+			return nil
+		}
+
+		ids := make([]int64, 0, len(list))
+		for _, m := range list {
+			ids = append(ids, m.ID)
+		}
+
+		now := timex.Now()
+		if err := forEachIDChunk(ids, func(chunk []int64) error {
+			_, err := u.WithContext(ctx).Where(u.ID.In(chunk...)).UpdateSimple(
+				u.Action.Value(string(domain.SettingActionDelete)),
+				u.Rename.Value(2),
+				u.ContentPurged.Value(1),
+				u.Content.Value(""),
+				u.UpdatedTimestamp.Value(now.UnixMilli()),
+				u.UpdatedAt.Value(now),
+			)
+			return err
+		}); err != nil {
+			return err
+		}
+
+		for _, id := range ids {
+			folder := r.dao.GetSettingFolderPath(uid, id)
+			_ = r.dao.RemoveContentFolder(folder)
+		}
+		return nil
+	})
 }
 
 // List gets the setting list with pagination

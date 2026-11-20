@@ -131,4 +131,5 @@ var en_messages = map[int]string{
 	521: "Cloudflared binary not found, please download the tunnel program first",
 	530: "Sync conflict detected, a conflict copy has been created",
 	531: "Resource was deleted on the server; stale upload ignored",
+	532: "Resource content was purged after the retention period and can no longer be restored",
 }
