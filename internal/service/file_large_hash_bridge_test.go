@@ -214,3 +214,44 @@ func TestUpdateCheck_AlreadyAlignedHashSkipsBridge(t *testing.T) {
 	require.Equal(t, current, fileDTO.ContentHash)
 	repo.AssertNotCalled(t, "UpdateContentHashIfCurrent", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
+
+// TestBaselineDelete_AfterLegacyLargeHashRealignRejectsOldHash pins the self-healing
+// conflict a second device sees after the stored hash was upgraded in place: its old
+// base_hash is rejected once as local_deleted, the conflict carries the new server hash,
+// and retrying with that hash under the same revision token succeeds.
+// This is a known, one-time conflict, not data loss — the revision token never moved.
+//
+// TestBaselineDelete_AfterLegacyLargeHashRealignRejectsOldHash 固定哈希就地升级后的一次性
+// 冲突：另一台设备仍拿升级前的旧哈希做条件删除会被拒一次（local_deleted），冲突里带着
+// 服务端的新哈希；换成新哈希、同一版本令牌重试即放行。这是已知且可自愈的一次性冲突，
+// 不是数据丢失——版本令牌始终没有变化。
+func TestBaselineDelete_AfterLegacyLargeHashRealignRejectsOldHash(t *testing.T) {
+	svc, repo, file, current, legacy := newBridgeFixture(t, bridgeSize)
+	const rev = "rev-1"
+	file.Revision = rev
+	repo.On("UpdateContentHashIfCurrent", mock.Anything, bridgeFileID, bridgeUID, legacy, current).
+		Return(true, nil)
+
+	_, _, err := svc.UpdateCheck(context.Background(), bridgeUID, bridgeCheckRequest(current, 1000))
+	require.NoError(t, err)
+	require.Equal(t, current, file.ContentHash, "哈希必须就地升级为三分段口径")
+	require.Equal(t, rev, file.Revision, "哈希升级不得改动版本令牌")
+	repo.AssertExpectations(t)
+
+	conflictOf := func(reason string) error { return baselineConflictFromFile(reason, file) }
+
+	// 旧哈希 + 当前令牌：内容校验失败，拒绝一次。
+	// Old hash + current token: the content check rejects it once.
+	staleCommit := dto.BuildBaselineCommit(legacy, false, rev, false)
+	err = checkBaselineDelete(staleCommit, file.Revision, file.ContentHash, conflictOf)
+	var conflict *dto.BaselineConflictError
+	require.ErrorAs(t, err, &conflict)
+	require.Equal(t, dto.SyncConflictReasonLocalDeleted, conflict.Reason)
+	require.Equal(t, current, conflict.ServerHash, "冲突里必须带服务端当前的新哈希")
+	require.Equal(t, rev, conflict.ServerRevision)
+
+	// 冲突里给的新哈希 + 同一令牌：放行。
+	// New hash from the conflict + same token: accepted.
+	freshCommit := dto.BuildBaselineCommit(current, false, rev, false)
+	require.NoError(t, checkBaselineDelete(freshCommit, file.Revision, file.ContentHash, conflictOf))
+}
