@@ -71,6 +71,7 @@ The following items have been removed in this independently maintained fork. **I
   - API tokens restricted to a specific vault must now include the vault parameter in requests.
   - When the Git-synced repository is on a private network or in `100.64.0.0/10` (e.g., a Gitea accessed via Tailscale), add the address or subnet to `git.allowed-private-hosts`.
   - WebSocket connections with no response at all are closed after about 100 seconds (previously about 75). If connections drop frequently behind Cloudflare Tunnel or similar links, increase `app.ws-ping-wait`.
+  - Starting with v3.8.9, system junk files are rejected by default (`.DS_Store`, `Thumbs.db`, `desktop.ini`, and files starting with `._`): when a client uploads such a file it receives error code 444. Files already in the vault are unaffected and can still be deleted. To keep syncing them, set `app.sync-exclude-system-junk` to `false`.
 
 ## 🎯 Key Features
 
@@ -78,9 +79,12 @@ The following items have been removed in this independently maintained fork. **I
   * `FNS` can be integrated as an MCP server into compatible AI clients such as `Cherry Studio` and `Cursor`. This enables the AI to read and write your personal notes and attachments, with all changes synchronized across all clients in real-time.
   * Adds 7 knowledge query tools: full-text search, broken links, orphan notes, tags, recent changes, list by prefix, and vault statistics; `note_list` and `file_list` support pagination.
   * Supports connecting to ChatGPT as a connector via the OpenAI Secure MCP Tunnel.
+  * Writes and deletes support conditional commits: pass the `revision` you received when reading, and the change is rejected instead of overwritten if someone else has modified the content; also adds note history view / restore and folder listing tools.
 * **🚀 REST API Support**:
   * Provides standard REST API interfaces to support programmatic CRUD operations on Obsidian notes (e.g., via automation scripts or AI assistant integrations).
   * For details, please refer to the [RESTful API Documentation](REST_API.md) or [OpenAPI Documentation](swagger.yaml).
+  * Note and attachment writes and deletes support conditional commits (`baseRevision` / `baseHash`) to avoid overwriting concurrent modifications.
+  * A token can query its own effective permissions (`GET /api/user/token-capabilities`), making it easier for clients to find out why a write is rejected.
 * **💻 Web Admin Panel**:
   * Built-in modern administration interface to easily create users, generate plugin configurations, and manage vaults and note content.
   * Supports WebGUI OIDC login. See the [OIDC login runbook](runbook/OIDC.en.md).
@@ -88,6 +92,7 @@ The following items have been removed in this independently maintained fork. **I
 * **🔄 Multi-Device Note Synchronization**:
   * Supports automatic creation of `Vaults`.
   * Supports note management (CRUD), with millisecond-level real-time change distribution to all online devices.
+  * System junk files are rejected by default (`.DS_Store`, `Thumbs.db`, `desktop.ini`, and files starting with `._`); set `app.sync-exclude-system-junk` to `false` to turn this off.
 * **🖼️ Attachment Sync Support**:
   * Perfectly supports synchronization of non-note files such as images.
   * Supports chunked upload and download for large attachments, with configurable chunk sizes to improve sync efficiency.
@@ -111,6 +116,7 @@ The following items have been removed in this independently maintained fork. **I
   * Provides sharing access statistics.
   * Allows password protection for shared notes.
   * Supports generating short URLs for shared notes.
+  * The public address used by share links can be updated at runtime without a restart (useful where the public address changes).
 * **📂 Folder Sync**:
   * Supports folder synchronization for creation, renaming, moving, and deletion.
 
