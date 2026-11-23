@@ -84,6 +84,11 @@ func (m *MockFileRepository) UpdateMtime(ctx context.Context, mtime int64, id, u
 	return args.Error(0)
 }
 
+func (m *MockFileRepository) UpdateContentHashIfCurrent(ctx context.Context, id, uid int64, expectedHash, newHash string) (bool, error) {
+	args := m.Called(ctx, id, uid, expectedHash, newHash)
+	return args.Bool(0), args.Error(1)
+}
+
 func (m *MockFileRepository) UpdateActionMtime(ctx context.Context, action domain.FileAction, mtime int64, id, uid int64) error {
 	args := m.Called(ctx, action, mtime, id, uid)
 	return args.Error(0)
