@@ -133,6 +133,48 @@ func TestBaselineCAS_ConcurrentChangeRejected(t *testing.T) {
 	require.Equal(t, "H2", got.ContentHash)
 }
 
+// TestBaselineCAS_NoBaseRevisionMovedReportsRevisionChanged 客户端只带版本令牌、没带可信内容
+// 基线时，令牌过期只能报 revision_changed；不能因为服务端内容与"空基线"不同就断言双方都改了。
+// A client carrying only a revision token (no trusted content baseline) must be told
+// revision_changed when the token moved; a missing baseline is not evidence of
+// concurrent edits.
+func TestBaselineCAS_NoBaseRevisionMovedReportsRevisionChanged(t *testing.T) {
+	env := newBaselineEnv(t)
+	ctx := context.Background()
+	pathHash := util.EncodeHash32("a.md")
+	created := env.seed(t, "a.md", "H1")
+	oldRevision := created.Revision
+
+	// 另一设备先写入新内容，令牌随之变化。
+	// Another device writes first, moving the revision.
+	_, other, err := env.svc.ModifyOrCreate(ctx, 1, &dto.NoteModifyOrCreateRequest{
+		Vault: "vault", Path: "a.md", PathHash: pathHash,
+		Content: "other", ContentHash: "H2", Ctime: 1000, Mtime: 2000,
+	}, false)
+	require.NoError(t, err)
+	require.NotEqual(t, oldRevision, other.Revision)
+
+	// 只带过期令牌、没有内容基线的写入：报令牌已移动。
+	// A write with a stale token and no content baseline reports a moved revision.
+	_, _, err = env.svc.ModifyOrCreate(ctx, 1, &dto.NoteModifyOrCreateRequest{
+		Vault: "vault", Path: "a.md", PathHash: pathHash,
+		Content: "stale", ContentHash: "H3", Ctime: 1000, Mtime: 3000,
+		Baseline: &dto.BaselineCommit{HasBase: false, BaseRevision: oldRevision},
+	}, false)
+	require.Error(t, err, "过期令牌的写入必须被条件提交拒绝")
+	var conflict *dto.BaselineConflictError
+	require.True(t, errors.As(err, &conflict), "实际 %v", err)
+	require.Equal(t, dto.BaselineRejectRevisionMoved, conflict.Reason)
+	require.Equal(t, other.Revision, conflict.ServerRevision)
+	require.False(t, conflict.ServerDeleted)
+
+	// 服务端内容未被覆盖。
+	// The server content was not overwritten.
+	got, err := env.noteRepo.GetByPathHashAndPath(ctx, pathHash, "a.md", 1, 1)
+	require.NoError(t, err)
+	require.Equal(t, "H2", got.ContentHash)
+}
+
 // TestBaselineCAS_ResolvedStillBlockedBySecondChange isConflictResolved 只表示用户做过
 // 选择，不能跳过版本校验：提交前版本再次变化必须重新报冲突（设计 §2.6 规则 5）。
 func TestBaselineCAS_ResolvedStillBlockedBySecondChange(t *testing.T) {
@@ -430,6 +472,23 @@ func TestFileServiceBaselineCAS(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "F3", legacy.ContentHash)
 	require.NotEqual(t, committed.Revision, legacy.Revision)
+
+	// 只带过期令牌、没有内容基线的附件写入：报 revision_changed，而不是 both_modified。
+	// An attachment write with a stale token and no content baseline reports
+	// revision_changed, not both_modified.
+	_, _, err = svc.UpdateOrCreate(ctx, 1, &dto.FileUpdateRequest{
+		Vault: "vault", Path: "img.png", PathHash: "fh",
+		ContentHash: "F4", Size: 40, Ctime: 1000, Mtime: 4000,
+		Baseline: &dto.BaselineCommit{HasBase: false, BaseRevision: created.Revision},
+	}, false)
+	require.Error(t, err, "过期令牌的上传必须被条件提交拒绝")
+	require.True(t, errors.As(err, &conflict), "实际 %v", err)
+	require.Equal(t, dto.BaselineRejectRevisionMoved, conflict.Reason)
+	require.Equal(t, legacy.Revision, conflict.ServerRevision)
+
+	got, err = fileRepo.GetByPathHashAndPath(ctx, "fh", "img.png", 1, 1)
+	require.NoError(t, err)
+	require.Equal(t, "F3", got.ContentHash, "被拒绝的上传不得替换活跃附件")
 }
 
 // TestBuildBaselineCommit_Gating 验证 REST/MCP 侧的启用规则：只有显式基线字段才构造
