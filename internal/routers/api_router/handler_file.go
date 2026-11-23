@@ -503,9 +503,13 @@ func (h *FileHandler) Rename(c *gin.Context) {
 
 	// Validate and clean both paths (#342 S-8)
 	// 校验并清洗新旧两个路径（#342 S-8）
-	newPath, ok := cleanAPIPath(params.Path)
+	newPath, codeErr := h.cleanWriteAPIPath(params.Path)
 	oldPath, okOld := cleanAPIPath(params.OldPath)
-	if !ok || !okOld {
+	if codeErr != nil {
+		response.ToResponse(codeErr)
+		return
+	}
+	if !okOld {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
@@ -594,9 +598,9 @@ func (h *FileHandler) Upload(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8)
 	// 校验并清洗路径（#342 S-8）
-	cleaned, ok := cleanAPIPath(input.Path)
-	if !ok {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleaned, codeErr := h.cleanWriteAPIPath(input.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if input.Path != cleaned {

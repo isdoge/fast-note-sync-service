@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
+	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 )
 
@@ -60,6 +61,26 @@ func (h *Handler) getClientInfo(c *gin.Context) (string, string, string) {
 // 一律不补 ".md"——REST 也被第三方客户端用于写非笔记文件（如 x.canvas）。
 func cleanAPIPath(path string) (string, bool) {
 	return util.CleanVaultPath(path)
+}
+
+// cleanWriteAPIPath is cleanAPIPath plus the optional system junk rejection for REST
+// entry points that create or overwrite entries. It returns ErrorInvalidPath for both
+// malformed and junk paths, matching the existing invalid-path contract. Read, list,
+// download, delete, restore and recycle-clear paths must keep using cleanAPIPath so
+// legacy junk entries stay readable and deletable.
+// cleanWriteAPIPath 在 cleanAPIPath 基础上，对新建或覆盖条目的 REST 入口按开关
+// 拒收系统垃圾文件；非法路径与垃圾文件都返回 ErrorInvalidPath，沿用既有非法路径
+// 契约。读取、列表、下载、删除、恢复与清理回收站必须继续用 cleanAPIPath，
+// 以保证库里已有的垃圾条目仍可读取和删除。
+func (h *Handler) cleanWriteAPIPath(path string) (string, *code.Code) {
+	cleaned, ok := cleanAPIPath(path)
+	if !ok {
+		return "", code.ErrorInvalidPath
+	}
+	if h != nil && h.App != nil && h.App.Config().App.SyncExcludeSystemJunkEnabled() && util.IsSystemJunkPath(cleaned) {
+		return "", code.ErrorInvalidPath.WithDetails("system junk file is not synced")
+	}
+	return cleaned, nil
 }
 
 // effectiveAdminUID resolves the effective admin UID.

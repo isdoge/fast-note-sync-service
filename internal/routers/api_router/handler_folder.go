@@ -96,9 +96,9 @@ func (h *FolderHandler) Create(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8)
 	// 校验并清洗路径（#342 S-8）
-	cleaned, ok := cleanAPIPath(params.Path)
-	if !ok {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleaned, codeErr := h.cleanWriteAPIPath(params.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if params.Path != cleaned {
