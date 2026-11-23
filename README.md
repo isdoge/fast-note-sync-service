@@ -71,6 +71,7 @@
   - 限定了笔记库的 API 令牌，请求里必须带上笔记库参数。
   - Git 同步的仓库在内网或 `100.64.0.0/10`（例如通过 Tailscale 访问的 Gitea）时，需要把地址或网段加入 `git.allowed-private-hosts`。
   - 完全没有响应的 WebSocket 连接约 100 秒后断开（原来约 75 秒）。经 Cloudflare Tunnel 等链路频繁断线时，可以调大 `app.ws-ping-wait`。
+  - v3.8.9 起默认不接收系统垃圾文件（`.DS_Store`、`Thumbs.db`、`desktop.ini`、`._` 开头的文件）：客户端上传这类文件会收到错误码 444，库里已有的不受影响、仍可删除。需要照常同步时把 `app.sync-exclude-system-junk` 设为 `false`。
 
 ## 🎯 核心功能
 
@@ -78,9 +79,12 @@
   * `FNS` 可以作为 MCP 服务端接入 `Cherry Studio`、`Cursor` 等兼容的 AI 客户端，即可让 AI 具备读写私人笔记与附件的能力，且所有变更实时同步到各端。
   * 新增 7 个知识查询工具：全文搜索、失效链接、孤立笔记、标签、最近修改、按前缀列出、库统计；`note_list`、`file_list` 支持分页。
   * 支持通过 OpenAI Secure MCP Tunnel 接入 ChatGPT 连接器。
+  * 写入和删除支持条件提交：带上读取时拿到的 `revision`，内容已被别人改动时拒绝而不是覆盖；另新增笔记历史查看 / 恢复与文件夹列表工具。
 * **🚀 REST API 支持**：
   * 提供标准的 REST API 接口，支持通过编程方式（如自动化脚本、AI 助手集成）对 Obsidian 笔记进行增删改查。
   * 详情请参阅 [RESTful API 文档](/docs/REST_API.md) 或 [OpenAPI 文档](/docs/swagger.yaml)。
+  * 笔记与附件的写入、删除支持条件提交（`baseRevision` / `baseHash`），避免覆盖并发修改。
+  * 令牌可以查询自己的实际权限（`GET /api/user/token-capabilities`），方便客户端排查「为什么写不进去」。
 * **💻 Web 管理面板**：
   * 内置现代化管理界面，轻松创建用户、生成插件配置、管理仓库及笔记内容。
   * 支持 WebGUI OIDC 登录。请参阅 [OIDC 登录运行手册](/docs/runbook/OIDC.zh-CN.md)。
@@ -88,6 +92,7 @@
 * **🔄 多端笔记同步**：
   * 支持 **Vault (仓库)** 自动创建。
   * 支持笔记管理（增、删、改、查），变更毫秒级实时分发至所有在线设备。
+  * 默认不接收系统垃圾文件（`.DS_Store`、`Thumbs.db`、`desktop.ini`、`._` 开头的文件），可用 `app.sync-exclude-system-junk` 关闭。
 * **🖼️ 附件同步支持**：
   * 完美支持图片等非笔记文件同步。
   * 支持大附件 分片上传下载，分片大小可配置，提升同步效率。
@@ -111,6 +116,7 @@
   * 提供分享访问统计功能。
   * 可以设置分享笔记的访问密码。
   * 可以对分享笔记生成短链接。
+  * 分享链接使用的公开地址可以在运行时更新，不用重启（适合公网地址会变的环境）。
 * **📂 目录同步**：
   * 支持文件夹的 创建/重命名/移动/删除 同步。
 

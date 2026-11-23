@@ -67,6 +67,7 @@
 | `ws-write-timeout` | int 秒 | `10` | 应用层写超时；显式 `0` 禁用。 |
 | `ws-ping-interval` | int 秒 | `25` | WebSocket ping 间隔；代码校验要求大于 0。Tunnel 空闲断线时可与下一项一起调整。 |
 | `ws-ping-wait` | int 秒 | `60` | 上行存活超时，之后还有宽限；Tunnel 可先试 `180`。只延后重连，不能修复持续丢 pong 的链路。 |
+| `sync-exclude-system-junk` | bool | `true` | 不接收系统垃圾文件（`.DS_Store`、`Thumbs.db`、`desktop.ini`、`._` 开头的文件）的新建、修改、上传与改名；库里已有的这类文件仍可读取、下载和删除。设为 `false` 时照常同步。 |
 | `pull-source` | string | `auto` | 更新数据拉取源；支持 `auto` / `github`，旧值按 GitHub 处理。 |
 | `pull-release-channel` | string | `stable` | 更新通道 `stable` / `beta`；示例 YAML 未列出但代码支持。 |
 | `fts-bleve-enabled` | bool | `true` | Bleve 全文搜索；32 位 ARM 自动禁用，其余架构遵循此项。 |

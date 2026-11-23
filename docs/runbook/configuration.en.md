@@ -67,6 +67,7 @@ This reference follows the 3.8.0 implementation in `internal/config/*.go`, `inte
 | `ws-write-timeout` | int seconds | `10` | Application write deadline; explicit `0` disables it. |
 | `ws-ping-interval` | int seconds | `25` | WebSocket ping interval; code requires a positive value. Adjust with the next setting for idle Tunnel disconnects. |
 | `ws-ping-wait` | int seconds | `60` | Inbound liveness timeout followed by a grace period; try `180` for Cloudflare Tunnel. This only delays reconnection when pongs are continuously lost. |
+| `sync-exclude-system-junk` | bool | `true` | Refuse to create, modify, upload or rename-to system junk files (`.DS_Store`, `Thumbs.db`, `desktop.ini`, and names starting with `._`). Junk entries already in a vault stay readable, downloadable and deletable. Set to `false` to sync them as before. |
 | `pull-source` | string | `auto` | Update source: `auto` or `github`; legacy values fall back to GitHub. |
 | `pull-release-channel` | string | `stable` | Update channel `stable` or `beta`; supported by code but absent from the sample YAML. |
 | `fts-bleve-enabled` | bool | `true` | Bleve full-text search; automatically disabled on 32-bit ARM. |

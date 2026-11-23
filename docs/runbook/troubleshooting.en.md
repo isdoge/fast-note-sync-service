@@ -118,7 +118,7 @@ Business codes normally appear in an HTTP 200 response body and are not HTTP sta
 | 441 | Target note already exists | Resolve the conflicting target; distinct from the sync conflict reported as 530. |
 | 442 | No match found | Change the search. |
 | 443 | Invalid regex | Correct the expression. |
-| 444 | Path contains `..` | Use a vault-relative path without traversal. |
+| 444 | Path contains `..`, or the write targets a system junk file | Use a vault-relative path without traversal. When the details read `system junk file is not synced`, a `.DS_Store`, `Thumbs.db`, `desktop.ini` or `._*` file was refused, which is expected; set `app.sync-exclude-system-junk` to `false` if you really need to sync them. |
 | 445 / 446 | Folder missing / already exists | Refresh folder state. |
 | 447–451 | Folder get/save/delete/list/rename failed | Inspect paths and storage logs. |
 | 455 / 456 | Attachment missing / retrieval failed | Refresh attachment state and inspect storage. |

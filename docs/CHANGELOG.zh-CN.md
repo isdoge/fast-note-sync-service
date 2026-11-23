@@ -6,13 +6,44 @@
 
 ---
 
-## 未发布
+## v3.8.9
+> *2026/11/24*
+
+### ✨ 新增
+
+- **同步**: 默认不再接收系统垃圾文件 `.DS_Store`、`Thumbs.db`、`desktop.ini` 和 `._` 开头的文件（按完整文件名或目录名匹配，规则与插件 v2.6.8 一致）。实时同步、REST API、MCP 的新建、修改、上传和改名目标都会拒绝：REST API 与实时同步返回错误码 444，MCP 返回工具错误；全量同步比对时也不再要求客户端上传这类文件。库里已有的这类文件不受影响，仍可读取、下载和删除。
+- **配置**: 新增 `app.sync-exclude-system-junk`（默认 `true`）；设为 `false` 时系统垃圾文件照常同步。
+
+### 🛠️ 修复
+
+- **附件**: 修复超过 10MiB 的附件在服务端与插件的哈希算法不一致，导致经 REST API、MCP、WebGUI 上传的大附件被插件反复重传的问题。服务端改用与插件相同的算法；升级前已存在的大附件在下次同步时自动对齐，不触发重传，也不会让其它设备误以为文件变了。
+
+---
+
+## v3.8.8
+> *2026/11/24*
 
 ### ✨ 新增
 
 - **令牌自检**: 新增 `GET /api/user/token-capabilities`，任何已登录令牌（含只读、限定库的受限令牌）都能查询自己的生效能力：是否为管理员、令牌 ID、协议、是否受限、可访问的库列表、笔记/附件/设置/库的读写权限与只读标记。权限按 REST 与 WebSocket 两条通道取并集，与实际鉴权逻辑完全一致；返回值不含任何密钥、密码或原始令牌，客户端可据此自动切换到只读界面。
 - **分享基址运行时更新**: 新增 `POST /api/admin/share-base-url` 与 `GET /api/admin/share-base-url`。适合 CGNAT / 内网穿透等公网地址会变的场景，由外部通知脚本推送最新分享基址即可立即生效，无需改配置重启容器；传空值清除覆盖、回落 `server.share-base-url`。覆盖值原子持久化到 `storage/share_base_url`（权限 0600），重启后自动加载。鉴权支持生效管理员，或新增配置项 `security.share-base-url-token` 配置的静态令牌（`Authorization: Bearer` 或 `X-Share-Base-Url-Token`，常量时间比较，不写日志）；静态令牌只能推送与清除，回读仍仅限管理员。
 - **CLI 升级中转**: 新增 `GET /api/upgrade/cli`，需要已登录用户令牌。服务端代为查询固定的上游 `Go1c/FastNodeSync-CLI` 最新发布并做 10 分钟内存缓存，供无法直连 GitHub 的受限内网客户端升级；上游短暂失败时回退到缓存并标记为过期数据。
+
+---
+
+## v3.8.7
+> *2026/11/24*
+
+### ✨ 新增
+
+- **REST API / MCP**: 笔记与附件的写入、删除支持「条件提交」，避免覆盖别人刚做的修改。REST 的 `POST/DELETE /api/note`、`POST/DELETE /api/file` 可选带 `baseRevision`、`baseHash`；MCP 的 `note_create_or_update`、`note_delete`、`file_write`、`file_delete` 可选带 `base_revision`、`base_hash`；条件删除须同时给出这两个参数。不带时与以前一样直接写入；带了而服务端内容已被改动，就拒绝这次操作并返回错误码 530 与冲突信息（原因、服务端当前版本与哈希、是否已删除），不生成冲突副本。
+- **MCP**: 新增 4 个工具：`note_history_list`、`note_history_get`、`note_history_restore`（查看与恢复笔记历史版本）、`folder_list`（列出文件夹）。
+- **REST API / MCP**: 笔记列表、附件的读取 / 列表 / 写入结果，以及附件变更的实时推送都带上 `revision`，可直接用作下一次条件提交的依据。
+
+### 🚀 优化
+
+- **错误提示**: 错误码 530 的提示由「同步冲突，已生成冲突副本」改为「检测到同步冲突」：条件提交被拒时并不会生成副本，原提示容易误导。
+- **MCP**: 写入工具的说明补充了冲突时的返回形式，以及已删除的笔记或附件应使用 `note_restore` / `file_restore` 恢复。
 
 ---
 
