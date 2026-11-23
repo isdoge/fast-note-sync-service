@@ -93,6 +93,18 @@ type AppSettings struct {
 	SyncDownChunkNum int   `yaml:"sync-down-chunk-num" default:"200"`   // Serial download sync page chunk size // 串行下载同步的分块数量
 	SyncUpChunkNum   int   `yaml:"sync-up-chunk-num" default:"100"`     // Serial upload sync batch size // 串行上传同步的分包大小
 
+	// SyncExcludeSystemJunk rejects system junk files (.DS_Store, Thumbs.db, desktop.ini,
+	// ._*) at write entry points when true. Existing junk entries stay readable and
+	// deletable. MUST be *bool, not bool: LoadConfig runs defaults.Set after
+	// yaml.Unmarshal, and a plain bool can't distinguish an explicit `false` from an
+	// unset field, so setting it to false would be silently overwritten back to true.
+	// SyncExcludeSystemJunk 是否在写入入口拒收系统垃圾文件（.DS_Store、Thumbs.db、
+	// desktop.ini、._*）。关闭后行为与旧版本一致，垃圾文件照常同步；库里已有的
+	// 垃圾条目仍可读取和删除。必须用 *bool 而非 bool：LoadConfig 在 yaml.Unmarshal
+	// 之后会再次 defaults.Set，普通 bool 无法区分显式 `false` 与未写字段，显式关闭
+	// 会被静默覆盖回 true。
+	SyncExcludeSystemJunk *bool `yaml:"sync-exclude-system-junk" default:"true"`
+
 	// PipelineWindowUp negotiated upload sliding-window size for pv>=2 connections; 0 disables
 	// the window (stop-and-wait, same as pre-3.6.0 behavior — this is the runtime rollback
 	// switch). Read sites clamp to [0,32]. MUST be *int, not int: LoadConfig runs defaults.Set
@@ -125,6 +137,18 @@ func clampWindow(v, max int) int {
 		return max
 	}
 	return v
+}
+
+// SyncExcludeSystemJunkEnabled reports whether system junk files should be rejected at
+// write entry points. A nil pointer (config built without LoadConfig/defaults.Set) falls
+// back to true defensively, matching the documented default.
+// SyncExcludeSystemJunkEnabled 返回是否在写入入口拒收系统垃圾文件。nil 指针（未经
+// LoadConfig/defaults.Set 构造的配置）防御性回退为 true，与文档默认值一致。
+func (a AppSettings) SyncExcludeSystemJunkEnabled() bool {
+	if a.SyncExcludeSystemJunk == nil {
+		return true
+	}
+	return *a.SyncExcludeSystemJunk
 }
 
 // PipelineWindowUpClamped returns PipelineWindowUp clamped to [0,32]. A nil pointer (config
