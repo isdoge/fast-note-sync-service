@@ -88,21 +88,27 @@ type mcpFileWriteOutput struct {
 	File  *dto.McpFileDTO `json:"file"`
 }
 
-// mcpConditionalConflictOutput carries the structured conflict body of a rejected
-// conditional write. It is returned as an error result (IsError=true) so clients see
-// a failure, while the structured content still names the reason and the server state.
-// mcpConditionalConflictOutput 承载条件写被拒时的结构化冲突体。它作为错误结果
-// （IsError=true）返回，客户端因此看到失败，但结构化内容仍给出原因与服务端状态。
+// mcpConditionalConflictOutput is the JSON shape of a rejected conditional write.
+// It is serialized into the error result's text content rather than returned as
+// structured content: the tool declares a different output schema
+// (mcpNoteMutationOutput / mcpFileWriteOutput ...), and spec-validating clients
+// reject a mismatch as a protocol error, hiding the conflict from the agent.
+// mcpConditionalConflictOutput 是条件写被拒时的 JSON 形状。它被序列化进错误结果
+// 的文本内容，而不是作为结构化内容返回：这些工具声明的是另一套输出结构
+// （mcpNoteMutationOutput / mcpFileWriteOutput 等），按规范校验的客户端会把结构
+// 不匹配当作协议错误整体抛掉，Agent 反而读不到冲突信息。
 type mcpConditionalConflictOutput struct {
 	Vault    string                      `json:"vault"`
 	Conflict *dto.McpBaselineConflictDTO `json:"conflict"`
 }
 
 // mcpConflictResult builds the error tool result of a rejected conditional write:
-// IsError=true with the structured conflict body, so a client sees a failure while
-// an agent can still read conflict/reason/serverRevision and retry deliberately.
-// mcpConflictResult 构造条件写被拒的错误结果：IsError=true 且带结构化冲突体，
-// 客户端看到失败，Agent 仍能读到 conflict/reason/serverRevision 并有意识地重试。
+// IsError=true and no structured content, with the conflict body (same shape as
+// mcpConditionalConflictOutput) in the text content so an agent can still read
+// conflict/reason/serverRevision and retry deliberately.
+// mcpConflictResult 构造条件写被拒的错误结果：IsError=true 且不填结构化内容，
+// 冲突体（与 mcpConditionalConflictOutput 同形状）放进文本内容，Agent 仍能读到
+// conflict/reason/serverRevision 并有意识地重试。
 func mcpConflictResult(vault string, conflict *dto.BaselineConflictError, kind, path, pathHash, baseHash string) *mcp.CallToolResult {
 	if conflict == nil {
 		conflict = &dto.BaselineConflictError{Reason: dto.SyncConflictReasonRevisionChanged}
@@ -118,17 +124,13 @@ func mcpConflictResult(vault string, conflict *dto.BaselineConflictError, kind, 
 		ServerDeleted:  conflict.ServerDeleted,
 		BaseHash:       baseHash,
 	}
-	text, err := json.Marshal(body)
+	text, err := json.Marshal(mcpConditionalConflictOutput{Vault: vault, Conflict: body})
 	if err != nil {
-		text = []byte(`{"conflict":true}`)
+		text = []byte(`{"conflict":{"conflict":true}}`)
 	}
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{mcp.TextContent{Type: "text", Text: string(text)}},
-		StructuredContent: mcpConditionalConflictOutput{
-			Vault:    vault,
-			Conflict: body,
-		},
 	}
 }
 
