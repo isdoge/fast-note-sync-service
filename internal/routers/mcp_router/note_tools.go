@@ -153,7 +153,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNewNotePath(path)
+		path, err := cleanNewWriteNotePath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -274,7 +274,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		newPath, err = cleanNewNotePath(newPath)
+		newPath, err = cleanNewWriteNotePath(cfg, newPath)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -443,7 +443,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanToolPath(path)
+		path, err := cleanWriteToolPath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -510,7 +510,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanToolPath(path)
+		path, err := cleanWriteToolPath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -561,7 +561,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanToolPath(path)
+		path, err := cleanWriteToolPath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -616,7 +616,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanToolPath(path)
+		path, err := cleanWriteToolPath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

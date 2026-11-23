@@ -264,7 +264,7 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		newPath, err = cleanToolPath(newPath)
+		newPath, err = cleanWriteToolPath(cfg, newPath)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -435,7 +435,7 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, pathErr := cleanToolPath(path)
+		path, pathErr := cleanWriteToolPath(cfg, path)
 		if pathErr != nil {
 			return mcp.NewToolResultError(pathErr.Error()), nil
 		}
