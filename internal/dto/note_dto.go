@@ -44,11 +44,18 @@ type NoteModifyOrCreateRequest struct {
 	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"` // Marks if conflict is resolved manually // 标记是否为手动解决冲突
 	// BaseRevision is the server revision token the client saw when confirming the base.
 	// Empty means "no trusted version token"; it must never authorize a conditional delete.
+	// REST/MCP callers that send any baseline field (baseHash, baseHashMissing,
+	// baseRevision) switch to a conditional write through BuildBaselineCommit; omitting
+	// all of them keeps the old unconditional behavior.
 	// BaseRevision 是客户端确认基线时看到服务端版本令牌；为空表示没有可信版本令牌，不得据此执行条件删除。
+	// REST/MCP 调用方只要发送任一基线字段（baseHash、baseHashMissing、baseRevision）就通过
+	// BuildBaselineCommit 切换为条件写；全部省略时保持旧的无条件行为。
 	BaseRevision string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"`
-	// Baseline is the conditional-commit contract, attached only by baseline-mode
-	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
-	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	// Baseline is the conditional-commit contract, attached by baseline-mode
+	// WebSocket handlers and by REST/MCP callers that sent baseline fields; nil keeps
+	// the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，由基线模式 WebSocket 处理器以及发送了基线字段的 REST/MCP
+	// 调用方附加；nil 保持旧的无条件写入。
 	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 
@@ -76,16 +83,19 @@ type ContentModifyRequest struct {
 // NoteDeleteRequest Parameters required for deleting a note
 // 删除笔记所需参数
 type NoteDeleteRequest struct {
-	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
-	Path            string `json:"path" form:"path" binding:"required" example:"ReadMe.md"`                     // Note path // 笔记路径
-	PathHash        string `json:"pathHash" form:"pathHash" example:"hash123"`                                  // Path hash // 路径哈希
-	Context         string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
-	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
-	// Baseline is the conditional-commit contract, attached only by baseline-mode
-	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
-	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path               string `json:"path" form:"path" binding:"required" example:"ReadMe.md"`                     // Note path // 笔记路径
+	PathHash           string `json:"pathHash" form:"pathHash" example:"hash123"`                                  // Path hash // 路径哈希
+	Context            string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
+	BaseHash           string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
+	BaseRevision       string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"`                // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+	// Baseline is the conditional-commit contract, attached by baseline-mode
+	// WebSocket handlers and by REST/MCP callers that sent baseline fields; nil keeps
+	// the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，由基线模式 WebSocket 处理器以及发送了基线字段的 REST/MCP
+	// 调用方附加；nil 保持旧的无条件写入。
 	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 
@@ -320,6 +330,10 @@ type NoteNoContentDTO struct {
 	UpdatedTimestamp int64      `json:"lastTime" form:"updatedTimestamp"` // Record update timestamp // 记录更新时间戳
 	UpdatedAt        timex.Time `json:"updatedAt"`                        // Updated at time // 更新时间
 	CreatedAt        timex.Time `json:"createdAt"`                        // Created at time // 创建时间
+	// Revision lets a REST client take the current version token from a list page
+	// and use it as baseRevision for a conditional write.
+	// Revision 让 REST 客户端直接从列表页拿到当前版本令牌，作为条件写的 baseRevision。
+	Revision string `json:"revision,omitempty"` // Server revision token // 服务端版本令牌
 }
 
 // NoteReplaceResponse response for replace operation
@@ -341,18 +355,19 @@ type NoteLinkItem struct {
 // NoteWithFileLinksResponse Note response structure with file links
 // NoteWithFileLinksResponse 带有文件链接的笔记响应结构体
 type NoteWithFileLinksResponse struct {
-	ID               int64             `json:"-"`           // Note ID // 笔记 ID
-	Path             string            `json:"path"`        // Note path // 笔记路径
-	PathHash         string            `json:"pathHash"`    // Path hash // 路径哈希
-	Content          string            `json:"content"`     // Note content // 笔记内容
-	ContentHash      string            `json:"contentHash"` // Content hash // 内容哈希
-	FileLinks        map[string]string `json:"fileLinks"`   // Map of file link to actual path // 文件链接到实际路径的映射
-	Version          int64             `json:"version"`     // Version number // 版本号
-	Ctime            int64             `json:"ctime"`       // Creation timestamp // 创建时间戳
-	Mtime            int64             `json:"mtime"`       // Modification timestamp // 修改时间戳
-	UpdatedTimestamp int64             `json:"lastTime"`    // Record update timestamp // 记录更新时间戳
-	UpdatedAt        interface{}       `json:"updatedAt"`   // Updated at time // 更新时间
-	CreatedAt        interface{}       `json:"createdAt"`   // Created at time // 创建时间
+	ID               int64             `json:"-"`                  // Note ID // 笔记 ID
+	Path             string            `json:"path"`               // Note path // 笔记路径
+	PathHash         string            `json:"pathHash"`           // Path hash // 路径哈希
+	Content          string            `json:"content"`            // Note content // 笔记内容
+	ContentHash      string            `json:"contentHash"`        // Content hash // 内容哈希
+	FileLinks        map[string]string `json:"fileLinks"`          // Map of file link to actual path // 文件链接到实际路径的映射
+	Version          int64             `json:"version"`            // Version number // 版本号
+	Ctime            int64             `json:"ctime"`              // Creation timestamp // 创建时间戳
+	Mtime            int64             `json:"mtime"`              // Modification timestamp // 修改时间戳
+	UpdatedTimestamp int64             `json:"lastTime"`           // Record update timestamp // 记录更新时间戳
+	UpdatedAt        interface{}       `json:"updatedAt"`          // Updated at time // 更新时间
+	CreatedAt        interface{}       `json:"createdAt"`          // Created at time // 创建时间
+	Revision         string            `json:"revision,omitempty"` // Server revision token // 服务端版本令牌
 }
 
 // NoteHistoryDTO Note history data transfer object

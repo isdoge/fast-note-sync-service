@@ -431,3 +431,90 @@ func TestFileServiceBaselineCAS(t *testing.T) {
 	require.Equal(t, "F3", legacy.ContentHash)
 	require.NotEqual(t, committed.Revision, legacy.Revision)
 }
+
+// TestBuildBaselineCommit_Gating 验证 REST/MCP 侧的启用规则：只有显式基线字段才构造
+// 条件提交，全部省略（或只给空串）时返回 nil，保证旧的无条件写入路径。
+func TestBuildBaselineCommit_Gating(t *testing.T) {
+	require.Nil(t, dto.BuildBaselineCommit("", false, "", false), "未提供任何基线字段时必须为 nil")
+
+	revisionOnly := dto.BuildBaselineCommit("", false, "rev1", false)
+	require.NotNil(t, revisionOnly)
+	require.Equal(t, "rev1", revisionOnly.BaseRevision)
+	require.False(t, revisionOnly.HasBase, "只有令牌时没有可信内容基线")
+
+	hashOnly := dto.BuildBaselineCommit("H1", false, "", false)
+	require.NotNil(t, hashOnly)
+	require.True(t, hashOnly.HasBase)
+	require.Equal(t, "H1", hashOnly.BaseHash)
+
+	missing := dto.BuildBaselineCommit("H1", true, "rev1", true)
+	require.NotNil(t, missing)
+	require.False(t, missing.HasBase, "baseHashMissing 优先，视为没有可信基线")
+	require.True(t, missing.IsConflictResolved)
+
+	emptyText := dto.BuildBaselineCommit(dto.EmptyContentHash, false, "rev1", false)
+	require.NotNil(t, emptyText)
+	require.True(t, emptyText.HasBase, "空文本的哈希 0 是有效基线")
+	require.Equal(t, dto.EmptyContentHash, emptyText.BaseHash)
+}
+
+// TestRESTConditionalWriteContract_AgainstRealService 用真实服务层验证 REST 侧契约：
+// 用 BuildBaselineCommit 构造的契约在真实 CAS 临界区里被正确执行，旧路径（nil）不受影响。
+func TestRESTConditionalWriteContract_AgainstRealService(t *testing.T) {
+	env := newBaselineEnv(t)
+	ctx := context.Background()
+	path, pathHash := "rest.md", util.EncodeHash32("rest.md")
+
+	// 无条件创建（REST 未传基线字段时 Baseline 为 nil）。
+	_, created, err := env.svc.ModifyOrCreate(ctx, 1, &dto.NoteModifyOrCreateRequest{
+		Vault: "vault", Path: path, PathHash: pathHash,
+		Content: "v1", ContentHash: "H1", Ctime: 1000, Mtime: 1000,
+		Baseline: dto.BuildBaselineCommit("", false, "", false),
+	}, false)
+	require.NoError(t, err)
+
+	// 用列表拿到的 revision 做条件写：成功。
+	_, updated, err := env.svc.ModifyOrCreate(ctx, 1, &dto.NoteModifyOrCreateRequest{
+		Vault: "vault", Path: path, PathHash: pathHash,
+		Content: "v2", ContentHash: "H2", Ctime: 1000, Mtime: 2000,
+		Baseline: dto.BuildBaselineCommit("H1", false, created.Revision, false),
+	}, false)
+	require.NoError(t, err)
+	require.Equal(t, "H2", updated.ContentHash)
+
+	// 用旧 revision 再写：530 冲突，且正文不被覆盖。
+	_, _, err = env.svc.ModifyOrCreate(ctx, 1, &dto.NoteModifyOrCreateRequest{
+		Vault: "vault", Path: path, PathHash: pathHash,
+		Content: "stale", ContentHash: "H3", Ctime: 1000, Mtime: 3000,
+		Baseline: dto.BuildBaselineCommit("H1", false, created.Revision, false),
+	}, false)
+	var conflict *dto.BaselineConflictError
+	require.True(t, errors.As(err, &conflict), "实际 %v", err)
+	require.Equal(t, updated.Revision, conflict.ServerRevision)
+
+	got, err := env.noteRepo.GetByPathHashAndPath(ctx, pathHash, path, 1, 1)
+	require.NoError(t, err)
+	require.Equal(t, "H2", got.ContentHash, "冲突不得修改正文")
+	require.Equal(t, int64(2000), got.Mtime, "冲突不得修改 mtime")
+
+	// 条件删除：匹配 revision 成功。
+	deleted, err := env.svc.Delete(ctx, 1, &dto.NoteDeleteRequest{
+		Vault: "vault", Path: path, PathHash: pathHash,
+		Baseline: dto.BuildBaselineCommit("H2", false, updated.Revision, false),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "delete", deleted.Action)
+
+	// 旧客户端（Baseline nil）删除仍然无条件成功。
+	path2, pathHash2 := "legacy2.md", util.EncodeHash32("legacy2.md")
+	_, _, err = env.svc.ModifyOrCreate(ctx, 1, &dto.NoteModifyOrCreateRequest{
+		Vault: "vault", Path: path2, PathHash: pathHash2,
+		Content: "v", ContentHash: "L1", Ctime: 1000, Mtime: 1000,
+	}, false)
+	require.NoError(t, err)
+	legacyDeleted, err := env.svc.Delete(ctx, 1, &dto.NoteDeleteRequest{
+		Vault: "vault", Path: path2, PathHash: pathHash2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "delete", legacyDeleted.Action)
+}

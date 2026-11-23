@@ -39,6 +39,13 @@ type FileUploadRequest struct {
 	PathHash string `form:"pathHash" example:"fhash123"`                 // Path hash // 路径哈希
 	Ctime    int64  `form:"ctime" example:"1700000000"`                  // Creation timestamp // 创建时间戳
 	Mtime    int64  `form:"mtime" example:"1700000000"`                  // Modification timestamp // 修改时间戳
+	// Conditional-write fields (optional; omit all of them for the legacy
+	// unconditional upload).
+	// 条件写字段（可选；全部省略即保持旧的无条件上传）。
+	BaseHash           string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
+	BaseRevision       string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"`                // Marks if conflict is resolved manually // 标记是否为手动解决冲突
 }
 
 // FileUpdateRequest Request parameters for creating or modifying a file
@@ -53,26 +60,39 @@ type FileUpdateRequest struct {
 	Ctime       int64  `json:"ctime" form:"ctime" example:"1700000000"`                      // Creation timestamp // 创建时间戳
 	Mtime       int64  `json:"mtime" form:"mtime" example:"1700000000"`                      // Modification timestamp // 修改时间戳
 
-	// Baseline is the conditional-commit contract, attached only by baseline-mode
-	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
-	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	// Conditional-write fields, bound from JSON/form for REST and MCP callers that
+	// want a guarded write; omitting all of them keeps the legacy behavior.
+	// 条件写字段，供需要保护写入的 REST / MCP 调用方从 JSON / 表单绑定；全部省略保持旧行为。
+	BaseHash           string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
+	BaseRevision       string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"`                // Marks if conflict is resolved manually // 标记是否为手动解决冲突
+
+	// Baseline is the conditional-commit contract, attached by baseline-mode
+	// WebSocket handlers and by REST/MCP callers that sent baseline fields; nil keeps
+	// the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，由基线模式 WebSocket 处理器以及发送了基线字段的 REST/MCP
+	// 调用方附加；nil 保持旧的无条件写入。
 	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 
 // FileDeleteRequest Parameters required for deleting a file
 // 删除文件所需参数
 type FileDeleteRequest struct {
-	Vault           string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
-	Path            string `json:"path" form:"path" binding:"required" example:"Image.png"`                     // File path // 文件路径
-	PathHash        string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash123"`              // Path hash // 路径哈希
-	Context         string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
-	BaseHash        string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
-	BaseHashMissing bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
-	BaseRevision    string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	Vault              string `json:"vault" form:"vault" binding:"required" example:"MyVault"`                     // Vault name // 保险库名称
+	Path               string `json:"path" form:"path" binding:"required" example:"Image.png"`                     // File path // 文件路径
+	PathHash           string `json:"pathHash" form:"pathHash" binding:"required" example:"fhash123"`              // Path hash // 路径哈希
+	Context            string `json:"context" form:"context" example:"ctx123"`                                     // Context // 同步上下文
+	BaseHash           string `json:"baseHash" form:"baseHash" example:"bhash789"`                                 // Content baseline // 内容基线
+	BaseHashMissing    bool   `json:"baseHashMissing" form:"baseHashMissing" example:"false"`                      // No trusted content baseline // 没有可信内容基线
+	BaseRevision       string `json:"baseRevision" form:"baseRevision" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the baseline // 基线的服务端版本令牌
+	IsConflictResolved bool   `json:"isConflictResolved" form:"isConflictResolved" example:"false"`                // Marks if conflict is resolved manually // 标记是否为手动解决冲突
 
-	// Baseline is the conditional-commit contract, attached only by baseline-mode
-	// WebSocket handlers; nil keeps the unconditional legacy write behavior.
-	// Baseline 是条件提交契约，仅由基线模式 WebSocket 处理器附加；nil 保持旧的无条件写入。
+	// Baseline is the conditional-commit contract, attached by baseline-mode
+	// WebSocket handlers and by REST/MCP callers that sent baseline fields; nil keeps
+	// the unconditional legacy write behavior.
+	// Baseline 是条件提交契约，由基线模式 WebSocket 处理器以及发送了基线字段的 REST/MCP
+	// 调用方附加；nil 保持旧的无条件写入。
 	Baseline *BaselineCommit `json:"-" form:"-"`
 }
 

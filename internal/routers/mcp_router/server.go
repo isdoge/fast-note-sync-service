@@ -117,6 +117,32 @@ func checkVaultAccess(ctx context.Context, vault string) error {
 	return nil
 }
 
+// checkVaultIDAccess enforces the token's vault allowlist for tools that address a
+// resource by ID rather than by vault name (note_history_get/restore). The resource
+// carries only its VaultID, so the vault name has to be resolved first; otherwise a
+// restricted token could read or rewrite a note in another vault by guessing an ID
+// (#458, same rule as the REST history handlers).
+// checkVaultIDAccess 对按 ID 寻址资源（note_history_get/restore）的工具执行令牌库白名单校验。
+// 资源只带 VaultID，必须先解析库名；否则受限令牌可以靠猜 ID 读取或改写其它库的笔记
+// （#458，与 REST 历史处理器同一规则）。
+func checkVaultIDAccess(ctx context.Context, appContainer *app.App, uid, vaultID int64) error {
+	allowedVaults, _ := ctx.Value("vaults").(string)
+	if allowedVaults == "" {
+		return nil
+	}
+	if appContainer.VaultService == nil {
+		return fmt.Errorf("vault access restricted: vault service unavailable")
+	}
+	vault, err := appContainer.VaultService.Get(ctx, uid, vaultID)
+	if err != nil || vault == nil {
+		return fmt.Errorf("vault access restricted: unknown vault %d", vaultID)
+	}
+	if !util.VerifyVaultAccess(allowedVaults, vault.Name) {
+		return fmt.Errorf("vault access restricted: %s", vault.Name)
+	}
+	return nil
+}
+
 // cleanToolPath normalizes a vault-relative path for MCP write tools:
 // it strips leading "/" and rejects empty paths, absolute paths, ".."-segment
 // and NUL paths, segment-wise with no URL decoding (#342 S-8). Backslashes are
@@ -169,6 +195,10 @@ func NewMCPServer(appContainer *app.App, wss *pkgapp.WebsocketServer) *mcpsrv.MC
 
 	// Folder Tools
 	registerFolderTools(srv, appContainer, wss)
+	registerFolderListTool(srv, appContainer)
+
+	// Note history tools
+	registerHistoryTools(srv, appContainer, wss)
 
 	// Vault Tools
 	registerVaultTools(srv, appContainer)

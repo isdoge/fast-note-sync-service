@@ -181,9 +181,12 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 
 	// 4. Delete File
 	toolDeleteFile := mcp.NewTool("file_delete",
-		mcp.WithDescription("Delete a file"),
+		mcp.WithDescription(mcpBaselineHint("Delete a file")),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("File path, relative to the vault root, separated by '/'; a leading '/' is stripped")),
+		mcpBaseRevisionOption(),
+		mcpBaseHashOption(),
+		mcpBaseHashMissingOption(),
 		mcp.WithOutputSchema[mcpFileMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolDeleteFile, cfg, true, "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -208,13 +211,18 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
+		pathHash := util.EncodeHash32(path)
 		file, err := fileSvc.WithClient(getClientInfoFromContext(ctx)).Delete(ctx, uid, &dto.FileDeleteRequest{
 			Vault:    vault,
 			Path:     path,
-			PathHash: util.EncodeHash32(path),
+			PathHash: pathHash,
+			Baseline: mcpBaselineFromArgs(args),
 		})
 
 		if err != nil {
+			if conflict, ok := mcpBaselineConflict(err); ok {
+				return mcpConflictResult(vault, conflict, dto.SyncConflictKindFile, path, pathHash, stringArg(args, "base_hash")), nil
+			}
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
@@ -402,10 +410,13 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	// 8. Write File (Create or update file/attachment via MCP)
 	// 8. 写入文件（通过 MCP 新建或更新文件/附件）
 	toolWriteFile := mcp.NewTool("file_write",
-		mcp.WithDescription("Create or update a file (attachment) in the vault by uploading its base64 encoded content"),
+		mcp.WithDescription(mcpBaselineHint("Create or update a file (attachment) in the vault by uploading its base64 encoded content")),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Target file path in the vault, relative to the vault root, separated by '/'; a leading '/' is stripped (e.g. 'images/my_pic.png')")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Base64 encoded file content")),
+		mcpBaseRevisionOption(),
+		mcpBaseHashOption(),
+		mcpBaseHashMissingOption(),
 		mcp.WithOutputSchema[mcpFileWriteOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolWriteFile, cfg, false, "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -457,20 +468,25 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		defer os.Remove(tempPath)
 
 		now := time.Now().UnixMilli()
+		pathHash := util.EncodeHash32(path)
 		params := &dto.FileUpdateRequest{
 			Vault:       vault,
 			Path:        path,
-			PathHash:    util.EncodeHash32(path),
+			PathHash:    pathHash,
 			ContentHash: util.EncodeHash32Bytes(data),
 			SavePath:    tempPath,
 			Size:        int64(len(data)),
 			Ctime:       now,
 			Mtime:       now,
+			Baseline:    mcpBaselineFromArgs(args),
 		}
 
 		cType, cName, cVer := getClientInfoFromContext(ctx)
 		_, fileDTO, err := fileSvc.WithClient(cType, cName, cVer).UpdateOrCreate(ctx, uid, params, false)
 		if err != nil {
+			if conflict, ok := mcpBaselineConflict(err); ok {
+				return mcpConflictResult(vault, conflict, dto.SyncConflictKindFile, path, pathHash, stringArg(args, "base_hash")), nil
+			}
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
