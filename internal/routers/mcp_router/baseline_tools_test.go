@@ -65,9 +65,18 @@ func structuredAs[T any](t *testing.T, result *mcp.CallToolResult) T {
 	return out
 }
 
+// structuredConflict decodes the conflict body from the result's text content.
+// Conflict results intentionally carry no structured content, so per the MCP spec
+// clients never validate it against the tool's declared output schema.
+// structuredConflict 从结果的文本内容解析冲突体。冲突结果刻意不填结构化内容，
+// 以免客户端按工具声明的输出结构去校验而把整个调用当成协议错误。
 func structuredConflict(t *testing.T, result *mcp.CallToolResult) *dto.McpBaselineConflictDTO {
 	t.Helper()
-	out := structuredAs[mcpConditionalConflictOutput](t, result)
+	require.NotEmpty(t, result.Content, "冲突结果应带文本内容")
+	text, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok, "首段内容应为文本")
+	var out mcpConditionalConflictOutput
+	require.NoError(t, json.Unmarshal([]byte(text.Text), &out))
 	require.NotNil(t, out.Conflict)
 	return out.Conflict
 }

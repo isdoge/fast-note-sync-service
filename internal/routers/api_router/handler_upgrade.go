@@ -17,6 +17,7 @@ import (
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -52,6 +53,20 @@ type CLIUpgradeHandler struct {
 	cachedAt  time.Time
 	fetchURL  string // overridable in tests; empty uses cliUpgradeAPIURL // 测试可覆盖；空则用固定地址
 	httpClint *http.Client
+
+	// fetchGroup collapses concurrent cache-miss refreshes into a single upstream
+	// request, so an expired cache cannot fan out into N GitHub calls.
+	// fetchGroup 合并缓存过期瞬间的并发刷新，只向上游发一次请求，避免并发
+	// 请求把 GitHub 未认证限额打满。
+	fetchGroup singleflight.Group
+}
+
+// cliUpgradeFetchFlight is the value shared by all callers of one collapsed fetch.
+// cliUpgradeFetchFlight 是一次合并刷新中由所有调用方共享的结果。
+type cliUpgradeFetchFlight struct {
+	resp      *dto.CLIUpgradeResponse
+	cachedAt  time.Time
+	fromCache bool // the flight found a fresh cache instead of hitting upstream // 本轮未打上游而是命中缓存
 }
 
 // NewCLIUpgradeHandler creates CLIUpgradeHandler instance.
@@ -106,46 +121,84 @@ func (h *CLIUpgradeHandler) CLI(c *gin.Context) {
 
 // latest returns the cached release, refreshing it when stale. A stale cached
 // value is served (marked stale) if a refresh attempt fails, so a transient
-// GitHub outage does not break existing clients.
+// GitHub outage does not break existing clients. Concurrent refreshes are
+// collapsed into one upstream request; every caller that joins that request
+// shares its result and reports Cached=false.
 // latest 返回缓存的发布信息，过期时刷新；刷新失败时回退到过期缓存（标记
-// stale），GitHub 短暂不可用不会让客户端完全拿不到信息。
+// stale），GitHub 短暂不可用不会让客户端完全拿不到信息。并发刷新会被合并成
+// 一次上游请求，参与该请求的调用方共用结果并返回 Cached=false。
 func (h *CLIUpgradeHandler) latest(ctx context.Context) (*dto.CLIUpgradeResponse, error) {
-	h.mu.Lock()
-	cached := h.cached
-	cachedAt := h.cachedAt
-	h.mu.Unlock()
-
-	if cached != nil && time.Since(cachedAt) < cliUpgradeCacheTTL {
-		fresh := *cached
-		fresh.Cached = true
-		fresh.Stale = false
-		fresh.CachedAt = cachedAt.UTC().Format(time.RFC3339)
-		return &fresh, nil
+	if resp, cachedAt := h.freshCache(); resp != nil {
+		return withCLICacheFlags(resp, cachedAt, true, false), nil
 	}
 
-	fetched, err := h.fetch(ctx)
+	v, err, _ := h.fetchGroup.Do("latest", func() (any, error) {
+		// Double-check: a flight that just finished may have refreshed the cache
+		// between the caller's check and this flight starting.
+		// 双检：可能刚好有上一轮刷新在调用方取缓存之后写入了新缓存。
+		if resp, cachedAt := h.freshCache(); resp != nil {
+			return cliUpgradeFetchFlight{resp: resp, cachedAt: cachedAt, fromCache: true}, nil
+		}
+		// Detach from the caller's request context so one client disconnecting
+		// does not fail every waiter; fetch still applies cliUpgradeFetchTimeout.
+		// 与调用方请求上下文解绑，单个客户端断开不会让所有等待者一起失败；
+		// 耗时仍由 fetch 内部的 cliUpgradeFetchTimeout 限制。
+		fetched, err := h.fetch(context.WithoutCancel(ctx))
+		if err != nil {
+			return nil, err
+		}
+		now := time.Now()
+		h.mu.Lock()
+		h.cached = fetched
+		h.cachedAt = now
+		h.mu.Unlock()
+		return cliUpgradeFetchFlight{resp: fetched, cachedAt: now}, nil
+	})
 	if err != nil {
-		if cached != nil {
-			stale := *cached
-			stale.Cached = true
-			stale.Stale = true
-			stale.CachedAt = cachedAt.UTC().Format(time.RFC3339)
-			return &stale, nil
+		// Failure is not cached; the next caller may retry upstream. Fall back to
+		// the previous cache when there is one.
+		// 失败不写缓存，下一次请求可重新发起；有旧缓存则回退并标记 stale。
+		if stale, cachedAt := h.snapshotCache(); stale != nil {
+			staleFlag := time.Since(cachedAt) >= cliUpgradeCacheTTL
+			return withCLICacheFlags(stale, cachedAt, true, staleFlag), nil
 		}
 		return nil, err
 	}
 
-	now := time.Now()
-	h.mu.Lock()
-	h.cached = fetched
-	h.cachedAt = now
-	h.mu.Unlock()
+	flight := v.(cliUpgradeFetchFlight)
+	return withCLICacheFlags(flight.resp, flight.cachedAt, flight.fromCache, false), nil
+}
 
-	fresh := *fetched
-	fresh.Cached = false
-	fresh.Stale = false
-	fresh.CachedAt = now.UTC().Format(time.RFC3339)
-	return &fresh, nil
+// snapshotCache copies the current cache entry under the lock.
+// snapshotCache 在锁内复制当前缓存条目。
+func (h *CLIUpgradeHandler) snapshotCache() (*dto.CLIUpgradeResponse, time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cached == nil {
+		return nil, time.Time{}
+	}
+	cp := *h.cached
+	return &cp, h.cachedAt
+}
+
+// freshCache returns a copy of the cache only when it is still within TTL.
+// freshCache 仅在缓存仍在有效期内时返回其副本。
+func (h *CLIUpgradeHandler) freshCache() (*dto.CLIUpgradeResponse, time.Time) {
+	resp, cachedAt := h.snapshotCache()
+	if resp == nil || time.Since(cachedAt) >= cliUpgradeCacheTTL {
+		return nil, time.Time{}
+	}
+	return resp, cachedAt
+}
+
+// withCLICacheFlags stamps the cache flags on a caller-owned copy.
+// withCLICacheFlags 在调用方私有的副本上填充缓存标记。
+func withCLICacheFlags(resp *dto.CLIUpgradeResponse, cachedAt time.Time, cached, stale bool) *dto.CLIUpgradeResponse {
+	out := *resp
+	out.Cached = cached
+	out.Stale = stale
+	out.CachedAt = cachedAt.UTC().Format(time.RFC3339)
+	return &out
 }
 
 // githubRelease is the subset of the GitHub release payload we consume.
