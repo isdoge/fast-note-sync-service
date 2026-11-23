@@ -122,8 +122,8 @@ func CleanVaultPath(path string) (string, bool) {
 // systemJunkSegmentNames 整段即系统垃圾文件的文件名（比较时大小写不敏感）。
 // 与 Obsidian 插件 isSystemJunkPath 的规则保持一致。
 var systemJunkSegmentNames = map[string]struct{}{
-	".ds_store":    {},
-	"thumbs.db":    {},
+	".ds_store":   {},
+	"thumbs.db":   {},
 	"desktop.ini": {},
 }
 
@@ -134,7 +134,7 @@ var systemJunkSegmentNames = map[string]struct{}{
 // foo._.bar.md) are not junk. Empty segments are ignored, so empty paths return false.
 // IsSystemJunkPath 判断路径是否含有系统垃圾文件段：按 "/" 与 "\" 切段，
 // .DS_Store、Thumbs.db、desktop.ini 整段且大小写不敏感命中，任一段以 "._" 开头
-//（macOS AppleDouble）也算；只是包含这些字样的正常文件名（my._notes.md、
+// （macOS AppleDouble）也算；只是包含这些字样的正常文件名（my._notes.md、
 // foo._.bar.md）不命中。空段忽略，空路径返回 false。
 func IsSystemJunkPath(path string) bool {
 	if path == "" {

@@ -96,7 +96,7 @@ func TestWS_SystemJunkWriteTargetsRejected(t *testing.T) {
 		},
 		{
 			name: "folder modify", action: "FolderModify",
-			payload: map[string]any{"vault": "v", "path": "notes/._junk", "pathHash": "h7"},
+			payload:  map[string]any{"vault": "v", "path": "notes/._junk", "pathHash": "h7"},
 			wantPath: "notes/._junk",
 		},
 		{
