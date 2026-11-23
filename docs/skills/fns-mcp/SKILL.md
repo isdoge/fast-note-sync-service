@@ -47,7 +47,7 @@ Before using this skill, the agent needs to connect to the MCP SSE interface.
 | `note_list` | List notes in a vault / 列出笔记 | `vault`, `keyword` |
 | `note_get` | Get note content / 获取笔记内容 | `vault`, `path` |
 | `note_create_or_update` | Create/Update note / 创建或更新笔记 | `vault`, `path`, `content`; optional `base_revision`, `base_hash`, `base_hash_missing` for a guarded compare-and-set write |
-| `note_delete` | Delete note / 删除笔记 | `vault`, `path`; optional `base_revision`, `base_hash`, `base_hash_missing` for a guarded delete |
+| `note_delete` | Delete note / 删除笔记 | `vault`, `path`; a guarded delete requires both `base_revision` and `base_hash` |
 | `note_rename` | Rename note / 重命名笔记 | `vault`, `oldPath`, `newPath` |
 | `note_restore` | Restore note / 恢复笔记 | `vault`, `path` |
 | `note_append` | Append content / 追加内容 | `vault`, `path`, `content` |
@@ -64,7 +64,7 @@ Before using this skill, the agent needs to connect to the MCP SSE interface.
 | `file_list` | List files / 列出文件 | `vault`, `keyword` |
 | `file_get_info` | Get metadata / 获取元数据 | `vault`, `path` |
 | `file_read` | Read content (Base64) / 读取内容 | `vault`, `path` |
-| `file_delete` | Delete file / 删除文件 | `vault`, `path`; optional `base_revision`, `base_hash`, `base_hash_missing` for a guarded delete |
+| `file_delete` | Delete file / 删除文件 | `vault`, `path`; a guarded delete requires both `base_revision` and `base_hash` |
 | `file_rename` | Rename file / 重命名文件 | `vault`, `oldPath`, `newPath` |
 | `file_write` | Create/update file from Base64 / 以 Base64 新建或更新附件 | `vault`, `path`, `content` (Base64); optional `base_revision`, `base_hash`, `base_hash_missing` for a guarded write |
 
@@ -117,4 +117,4 @@ History tools address a version by ID, so the version's vault is checked against
 3. **Encoding**: `file_read` returns Base64. (文件读取返回 Base64 编码)
 4. **Consistency**: Be aware of path changes after rename/move. (重命名后注意路径变更)
 5. **Search first, then read**: `note_search` returns snippets, not bodies — narrow the candidates first and call `note_get` only for the notes you actually need. (先用 `note_search` 拿片段缩小范围，再用 `note_get` 读全文)
-6. **Guard your writes**: reads and lists return a `revision` token. Pass it as `base_revision` (plus the `contentHash` as `base_hash`) to `note_create_or_update`, `note_delete`, `file_write`, or `file_delete` to avoid overwriting a concurrent change; a conflict comes back as a structured error with `conflict: true` and the current `serverRevision`. (读和列表都会返回 `revision`；把它作为 `base_revision` 传给写入工具即可避免覆盖并发改动，冲突会以带 `conflict: true` 与当前 `serverRevision` 的结构化错误返回)
+6. **Guard your writes**: reads and lists return a `revision` token. Pass it as `base_revision` (plus the `contentHash` as `base_hash`) to `note_create_or_update`, `note_delete`, `file_write`, or `file_delete` to avoid overwriting a concurrent change; `note_delete` and `file_delete` require both fields in guarded mode. A conflict comes back as a structured error with `conflict: true` and the current `serverRevision`. (读和列表都会返回 `revision`；把它作为 `base_revision` 传给写入工具即可避免覆盖并发改动，`note_delete` 与 `file_delete` 的条件删除必须两个字段都给；冲突会以带 `conflict: true` 与当前 `serverRevision` 的结构化错误返回)

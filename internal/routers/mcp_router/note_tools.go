@@ -191,12 +191,11 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 
 	// 4. Delete Note
 	toolDeleteNote := mcp.NewTool("note_delete",
-		mcp.WithDescription(mcpBaselineHint("Delete a note")),
+		mcp.WithDescription(mcpBaselineDeleteHint("Delete a note")),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
 		mcpBaseRevisionOption(),
-		mcpBaseHashOption(),
-		mcpBaseHashMissingOption(),
+		mcpBaseHashDeleteOption(),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolDeleteNote, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

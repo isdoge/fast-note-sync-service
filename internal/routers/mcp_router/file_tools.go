@@ -181,12 +181,11 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 
 	// 4. Delete File
 	toolDeleteFile := mcp.NewTool("file_delete",
-		mcp.WithDescription(mcpBaselineHint("Delete a file")),
+		mcp.WithDescription(mcpBaselineDeleteHint("Delete a file")),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("File path, relative to the vault root, separated by '/'; a leading '/' is stripped")),
 		mcpBaseRevisionOption(),
-		mcpBaseHashOption(),
-		mcpBaseHashMissingOption(),
+		mcpBaseHashDeleteOption(),
 		mcp.WithOutputSchema[mcpFileMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolDeleteFile, cfg, true, "files:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

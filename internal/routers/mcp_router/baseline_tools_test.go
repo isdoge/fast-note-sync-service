@@ -311,6 +311,39 @@ func TestMCPHistoryTools_RequireScope(t *testing.T) {
 	require.Contains(t, result.Content[0].(mcp.TextContent).Text, "note_w")
 }
 
+// 删除工具的条件删除必须同时带 base_revision 与 base_hash，且不再声明 base_hash_missing；
+// 写入工具仍保留 base_hash_missing。
+// Delete tools require both base_revision and base_hash and no longer declare
+// base_hash_missing; write tools keep base_hash_missing.
+func TestMCPDeleteTools_BaselineArgsMatchContract(t *testing.T) {
+	noteSvc := new(svcmocks.MockNoteService)
+	fileSvc := new(svcmocks.MockFileService)
+	folderSvc := new(svcmocks.MockFolderService)
+	vaultSvc := new(svcmocks.MockVaultService)
+	historySvc := new(svcmocks.MockNoteHistoryService)
+	srv := newBaselineMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc, historySvc)
+
+	for _, name := range []string{"note_delete", "file_delete"} {
+		tool := srv.GetTool(name)
+		require.NotNil(t, tool, "工具 %s 必须已注册", name)
+		props := tool.Tool.InputSchema.Properties
+		require.NotContains(t, props, "base_hash_missing", "删除工具 %s 不应声明 base_hash_missing", name)
+		require.Contains(t, props, "base_revision", "删除工具 %s 必须声明 base_revision", name)
+		require.Contains(t, props, "base_hash", "删除工具 %s 必须声明 base_hash", name)
+	}
+
+	// 写入工具仍保留 base_hash_missing。
+	// Write tools keep base_hash_missing.
+	for _, name := range []string{"note_create_or_update", "file_write"} {
+		tool := srv.GetTool(name)
+		require.NotNil(t, tool, "工具 %s 必须已注册", name)
+		props := tool.Tool.InputSchema.Properties
+		require.Contains(t, props, "base_hash_missing", "写入工具 %s 必须保留 base_hash_missing", name)
+		require.Contains(t, props, "base_revision", "写入工具 %s 必须声明 base_revision", name)
+		require.Contains(t, props, "base_hash", "写入工具 %s 必须声明 base_hash", name)
+	}
+}
+
 // 条件写字段只在显式传入时生效：空 base_revision 不触发条件写。
 func TestMCPBaselineFromArgs_EmptyIsNil(t *testing.T) {
 	require.Nil(t, mcpBaselineFromArgs(map[string]interface{}{}))
