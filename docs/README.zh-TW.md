@@ -1,4 +1,4 @@
-[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
+[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.en.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
 
 > [!IMPORTANT]
 > **本倉庫是獨立維護的修復版。** 上游 [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) 自 2026 年 8 月起沒有再更新。本倉庫由 [isdoge](https://github.com/isdoge) 從上游 v3.6.1 分出，合併了上游積壓的 PR 並修復已知問題，此後獨立演進，版本號不再跟隨上游。映像檔與下載位址都已變更，詳見下文「關於本倉庫」。

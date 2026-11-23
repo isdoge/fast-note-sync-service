@@ -1,9 +1,9 @@
-[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
+[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.en.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
 
 > [!IMPORTANT]
-> **This repository is an independently maintained bugfix fork.** The upstream [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) has not been updated since August 2026. This repository was forked by [isdoge](https://github.com/isdoge) from upstream v3.6.1, merges the backlog of upstream PRs and fixes known issues, and evolves independently from here on — version numbers no longer follow upstream. The image and download URLs have changed; see "About This Repository" below.
+> **本仓库是独立维护的修复版。** 上游 [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) 自 2026 年 8 月起没有再更新。本仓库由 [isdoge](https://github.com/isdoge) 从上游 v3.6.1 分出，合并了上游积压的 PR 并修复已知问题，此后独立演进，版本号不再跟随上游。镜像与下载地址都已变更，详见下文「关于本仓库」。
 
-If you run into problems or have feature requests, please open an [issue](https://github.com/isdoge/fast-note-sync-service/issues/new) in this repository.
+有问题或需求，请在本仓库新建 [issue](https://github.com/isdoge/fast-note-sync-service/issues/new)。
 
 
 <h1 align="center">Fast Note Sync Service</h1>
@@ -16,13 +16,13 @@ If you run into problems or have feature requests, please open an [issue](https:
 </p>
 
 <p align="center">
-  <strong>High-performance, low-latency note synchronization, online management, and remote REST API service platform</strong>
+  <strong>高性能、低延迟的笔记同步, 在线管理, 远端 REST API 服务平台</strong>
   <br>
-  <em>Built with Golang + Websocket + React</em>
+  <em>基于 Golang + Websocket + React 构建</em>
 </p>
 
 <p align="center">
-  Data provisioning requires integration with the client plugin: <a href="https://github.com/isdoge/obsidian-fast-note-sync">Obsidian Fast Note Sync Plugin</a>
+  数据提供需配合客户端插件使用：<a href="https://github.com/isdoge/obsidian-fast-note-sync">Obsidian Fast Note Sync Plugin</a>
 </p>
 
 <div align="center">
@@ -38,162 +38,162 @@ If you run into problems or have feature requests, please open an [issue](https:
 
 ---
 
-## 📌 About This Repository
+## 📌 关于本仓库
 
-This repository is an independently maintained fork of [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service), maintained by [isdoge](https://github.com/isdoge). Many thanks to the original author HaierKeys for creating this project.
+本仓库是 [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) 的独立维护版本，维护者 [isdoge](https://github.com/isdoge)。感谢原作者 HaierKeys 创建了这个项目。
 
-- **Origin**: Forked from upstream v3.6.1, it merges the 13 PRs that were pending upstream at the time and fixes a batch of known issues. See the [changelog](docs/CHANGELOG.en.md) for the complete list.
-- **Versioning**: Version numbers increment independently starting from v3.7.0 and no longer follow upstream.
-- **Release channels**: Binaries are published only on this repository's [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases), and the container image is published only to `ghcr.io/isdoge/fast-note-sync-service`. The in-app update check and download URLs have also been pointed at this repository.
-- **Companion plugin**: Pair it with the likewise independently maintained [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync) (v2.5.0 or newer). Some fixes only take effect when both the server and the plugin are upgraded.
-- **Unchanged**: The original author's copyright attribution and sponsorship information, and the Go module path (`github.com/haierkeys/fast-note-sync-service`); existing configuration files and data directories can be used as they are.
-- **Feedback**: Please report issues and feature requests to this repository's [Issues](https://github.com/isdoge/fast-note-sync-service/issues), not to the upstream repository.
+- **来源**：从上游 v3.6.1 分出，合并了上游当时未处理的 13 个 PR，并修复了一批已知问题。完整清单见[更新日志](/docs/CHANGELOG.zh-CN.md)。
+- **版本号**：自 v3.7.0 起独立递增，不再跟随上游。
+- **发布渠道**：二进制只在本仓库的 [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases) 发布，镜像只发布到 `ghcr.io/isdoge/fast-note-sync-service`。程序内的更新检查与下载地址也已指向本仓库。
+- **配套插件**：请搭配同样独立维护的 [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)（v2.5.0 及以上）。部分修复需要服务端和插件都升级才生效。
+- **保持不变**：原作者的版权署名与赞助信息、Go module 路径（`github.com/haierkeys/fast-note-sync-service`）；原有的配置文件和数据目录可以直接沿用。
+- **反馈**：问题和需求请提到本仓库的 [Issues](https://github.com/isdoge/fast-note-sync-service/issues)，不要提到上游仓库。
 
-### Removed
+### 已移除的内容
 
-The following items have been removed in this independently maintained fork. **If you need any of them, please [open an issue](https://github.com/isdoge/fast-note-sync-service/issues/new) and let me know** your use case — I'll consider whether to bring it back.
+下面这些在独立维护版里已经移除。**如果你需要其中某一项，请[提 issue](https://github.com/isdoge/fast-note-sync-service/issues/new) 告诉我**，说明使用场景，我会评估是否恢复。
 
-| Removed | Note | Use instead |
+| 已移除 | 说明 | 现在请用 |
 | --- | --- | --- |
-| Docker Hub image `haierkeys/fast-note-sync-service` | This repository does not publish to Docker Hub; that image is still the old upstream version | `ghcr.io/isdoge/fast-note-sync-service` |
-| Tencent `cnb.cool` image registry and download source | No longer synced to cnb; the one-click script's `--cnb` flag and image-switch menu, and the cnb option in the admin panel, have been removed as well | GitHub |
-| Feiniu fnOS `.fpk` installers | No longer built | Docker or binary deployment |
-| `ssh://`, `git://`, and `user@host:path` repository URLs for Git sync | These URL forms never actually worked for syncing; saving and validation now reject them with a clear message | `http` / `https` URLs |
+| Docker Hub 镜像 `haierkeys/fast-note-sync-service` | 本仓库不向 Docker Hub 发布，该地址上仍是上游的旧版本 | `ghcr.io/isdoge/fast-note-sync-service` |
+| 腾讯 `cnb.cool` 镜像仓库与下载源 | 不再同步到 cnb；一键脚本的 `--cnb` 参数和镜像切换菜单、管理面板里的 cnb 选项一并移除 | GitHub |
+| 飞牛 fnOS `.fpk` 安装包 | 不再构建 | Docker 或二进制部署 |
+| Git 同步的 `ssh://`、`git://`、`user@host:path` 仓库地址 | 这几种地址此前就无法完成同步，现在保存和验证时直接提示 | `http` / `https` 地址 |
 
-### Upgrading from upstream
+### 从上游版本升级
 
-- **Back up** your data directory and configuration first. On first start, v3.7.0 runs three one-time data migrations (tag index backfill, note size backfill, and second-to-millisecond timestamp conversion). On first start, v3.8.0 also runs a path normalization migration to convert backslashes in historical paths to forward slashes; if the target path is already occupied, the entry containing backslashes is renamed to `*.conflict.<timestamp>.*` and preserved without overwriting or deleting data. For existing MySQL / MariaDB deployments, the first start on v3.8.0 converts path and vault-name columns to case-sensitive binary types (`varbinary(1024)` / `varbinary(255)`) and automatically runs a byte-length precheck beforehand; if any historical path exceeds 1024 UTF-8 bytes (or any vault name exceeds 255 bytes), the precheck reports the specific table name and record ID and aborts migration — shorten the value and start again.
-- **Docker**: Change the image to `ghcr.io/isdoge/fast-note-sync-service:latest`; volumes and configuration can stay as they are.
-- **v3.8.4 first start** backfills a 128-bit random `revision` token for every existing note, attachment, setting and folder row (SQLite, PostgreSQL and MySQL / MariaDB alike). No manual step is needed, but the first start writes every row once, so back up the database first on large instances.
-- **Binary**: Download the package for your platform from this repository's Releases and replace the binary, or re-run the one-click script below.
-- **Behavior changes** (excerpt; see the "Changes" and "Security" sections of the changelog for the full list):
-  - `trusted-proxies` trusts only loopback addresses by default. For same-host Docker + Nginx deployments with IP-bound tokens, add the gateway address to `trusted-proxies`.
-  - API tokens restricted to a specific vault must now include the vault parameter in requests.
-  - When the Git-synced repository is on a private network or in `100.64.0.0/10` (e.g., a Gitea accessed via Tailscale), add the address or subnet to `git.allowed-private-hosts`.
-  - WebSocket connections with no response at all are closed after about 100 seconds (previously about 75). If connections drop frequently behind Cloudflare Tunnel or similar links, increase `app.ws-ping-wait`.
+- **先备份**数据目录与配置。首次启动 v3.7.0 会执行三个一次性数据迁移（标签索引回填、笔记大小回填、秒级时间戳转毫秒）。v3.8.0 首次启动还会执行一次路径规范化迁移，把历史数据里带反斜杠的路径改成正斜杠；目标路径已被占用时，带反斜杠的那一条会改名为 `*.conflict.<时间戳>.*` 保留，不覆盖、不删除。既有 MySQL / MariaDB 部署升级到 v3.8.0 后，首次启动会将路径与库名列改为区分大小写的二进制类型（`varbinary(1024)` / `varbinary(255)`），并在改列前自动预检字节长度；若历史数据存在超过 1024 UTF-8 字节的超长路径（或超过 255 字节的库名），预检会提示具体表名与记录 ID 并中止迁移，缩短后再启动即可。
+- **Docker 部署**：把镜像地址换成 `ghcr.io/isdoge/fast-note-sync-service:latest`，数据卷和配置不用动。
+- **v3.8.4 首次启动**会为已有的每条笔记、附件、配置与目录回填一个 128 位随机 `revision` 版本令牌（SQLite、PostgreSQL 与 MySQL / MariaDB 均适用），无需手工操作；首次启动会把每行各写一次，数据量大的实例请先备份数据库。
+- **二进制部署**：从本仓库的 Releases 下载对应平台的包替换原程序，或重新执行下文的一键脚本。
+- **行为变化**（节选，完整内容见更新日志的「变更」与「安全」部分）：
+  - `trusted-proxies` 默认只信任回环地址。同机 Docker + Nginx 部署且令牌绑定了 IP 时，需要把网关地址加入 `trusted-proxies`。
+  - 限定了笔记库的 API 令牌，请求里必须带上笔记库参数。
+  - Git 同步的仓库在内网或 `100.64.0.0/10`（例如通过 Tailscale 访问的 Gitea）时，需要把地址或网段加入 `git.allowed-private-hosts`。
+  - 完全没有响应的 WebSocket 连接约 100 秒后断开（原来约 75 秒）。经 Cloudflare Tunnel 等链路频繁断线时，可以调大 `app.ws-ping-wait`。
 
-## 🎯 Key Features
+## 🎯 核心功能
 
-* **🧰 Native MCP (Model Context Protocol) Support**:
-  * `FNS` can be integrated as an MCP server into compatible AI clients such as `Cherry Studio` and `Cursor`. This enables the AI to read and write your personal notes and attachments, with all changes synchronized across all clients in real-time.
-  * Adds 7 knowledge query tools: full-text search, broken links, orphan notes, tags, recent changes, list by prefix, and vault statistics; `note_list` and `file_list` support pagination.
-  * Supports connecting to ChatGPT as a connector via the OpenAI Secure MCP Tunnel.
-* **🚀 REST API Support**:
-  * Provides standard REST API interfaces to support programmatic CRUD operations on Obsidian notes (e.g., via automation scripts or AI assistant integrations).
-  * For details, please refer to the [RESTful API Documentation](docs/REST_API.md) or [OpenAPI Documentation](docs/swagger.yaml).
-* **💻 Web Admin Panel**:
-  * Built-in modern administration interface to easily create users, generate plugin configurations, and manage vaults and note content.
-  * Supports WebGUI OIDC login. See the [OIDC login runbook](docs/runbook/OIDC.en.md).
-  * Expired login tokens are cleaned up automatically every day.
-* **🔄 Multi-Device Note Synchronization**:
-  * Supports automatic creation of `Vaults`.
-  * Supports note management (CRUD), with millisecond-level real-time change distribution to all online devices.
-* **🖼️ Attachment Sync Support**:
-  * Perfectly supports synchronization of non-note files such as images.
-  * Supports chunked upload and download for large attachments, with configurable chunk sizes to improve sync efficiency.
-* **⚙️ Configuration Sync**:
-  * Supports synchronization of `.obsidian` configuration files.
-  * Supports `PDF` reading progress synchronization.
-* **📝 Note History**:
-  * View historical revision versions of each note via the Web UI or client plugin.
-  * (Requires server v1.2+)
-* **🗑️ Trash Bin**:
-  * Deleted notes automatically go to the trash bin.
-  * Supports restoring notes from the trash. (Attachment restoration feature will be added sequentially in the future.)
+* **🧰 MCP (Model Context Protocol) 原生支持**：
+  * `FNS` 可以作为 MCP 服务端接入 `Cherry Studio`、`Cursor` 等兼容的 AI 客户端，即可让 AI 具备读写私人笔记与附件的能力，且所有变更实时同步到各端。
+  * 新增 7 个知识查询工具：全文搜索、失效链接、孤立笔记、标签、最近修改、按前缀列出、库统计；`note_list`、`file_list` 支持分页。
+  * 支持通过 OpenAI Secure MCP Tunnel 接入 ChatGPT 连接器。
+* **🚀 REST API 支持**：
+  * 提供标准的 REST API 接口，支持通过编程方式（如自动化脚本、AI 助手集成）对 Obsidian 笔记进行增删改查。
+  * 详情请参阅 [RESTful API 文档](/docs/REST_API.md) 或 [OpenAPI 文档](/docs/swagger.yaml)。
+* **💻 Web 管理面板**：
+  * 内置现代化管理界面，轻松创建用户、生成插件配置、管理仓库及笔记内容。
+  * 支持 WebGUI OIDC 登录。请参阅 [OIDC 登录运行手册](/docs/runbook/OIDC.zh-CN.md)。
+  * 过期的登录令牌每天自动清理。
+* **🔄 多端笔记同步**：
+  * 支持 **Vault (仓库)** 自动创建。
+  * 支持笔记管理（增、删、改、查），变更毫秒级实时分发至所有在线设备。
+* **🖼️ 附件同步支持**：
+  * 完美支持图片等非笔记文件同步。
+  * 支持大附件 分片上传下载，分片大小可配置，提升同步效率。
+* **⚙️ 配置同步**：
+  * 支持 `.obsidian` 配置文件的同步。
+  * 支持 `PDF` 进度状态同步。
+* **📝 笔记历史**：
+  * 可以在 Web 页面，插件端查看每一个笔记的 历史修改版本。
+  * (需服务端 v1.2+ )
+* **🗑️ 回收站**：
+  * 支持笔记删除后，自动进入回收站。
+  * 支持从回收站恢复笔记。(后续会陆续新增附件恢复功能)
 
-* **🚫 Offline Synchronization Strategy**:
-  * Supports automatic merging of offline note edits. (Requires client plugin configuration)
-  * Offline deletions are automatically resolved (re-synced or deleted) upon reconnection. (Requires client plugin configuration)
+* **🚫 离线同步策略**：
+  * 支持笔记离线编辑自动合并。(需要插件端设置)
+  * 离线删除，重连之后自动补全或删除同步。(需要插件端设置)
 
-* **🔗 Sharing Feature**:
-  * Easily share or unshare notes.
-  * Automatically parses images, audio, video, and other attachments referenced in shared notes.
-  * Provides sharing access statistics.
-  * Allows password protection for shared notes.
-  * Supports generating short URLs for shared notes.
-* **📂 Folder Sync**:
-  * Supports folder synchronization for creation, renaming, moving, and deletion.
+* **🔗 分享功能**：
+  * 可以 创建/取消 笔记分享。
+  * 自动解析分享笔记中引用的图片、音视频等附件。
+  * 提供分享访问统计功能。
+  * 可以设置分享笔记的访问密码。
+  * 可以对分享笔记生成短链接。
+* **📂 目录同步**：
+  * 支持文件夹的 创建/重命名/移动/删除 同步。
 
-* **🌳 Git Automation**:
-  * Automatically updates and pushes changes to a remote Git repository when notes or attachments change.
-  * Repository URLs support http / https; repositories on private networks must be added to the `git.allowed-private-hosts` whitelist.
-  * Automatically releases system memory after tasks complete.
-  * Supports subdirectory sandboxes and static-blog publishing (Astro / Firefly): export only a source directory into a target subdirectory, filter by frontmatter, validate posts before export, bundle referenced images into `./assets/`, and fire a deploy webhook after a real push. See the [Firefly blog runbook](docs/runbook/firefly-blog.en.md).
+* **🌳 Git 自动化**：
+  * 当附件和笔记发生变更时，自动更新并推送至远程 Git 仓库。
+  * 仓库地址支持 http / https；内网仓库需要加入白名单 `git.allowed-private-hosts`。
+  * 任务结束后自动释放系统内存。
+  * 支持子目录沙箱与静态博客发布（Astro / Firefly）：只导出指定源目录到仓库目标子目录、按 Frontmatter 过滤、导出前预检文章、把引用图片汇聚到 `./assets/`，并在真实推送后触发部署 Webhook。详见[对接 Firefly 博客运行手册](/docs/runbook/firefly-blog.zh-CN.md)。
 
-* **☁️ Multi-Storage Backup & One-way Mirror Sync**:
-  * Adapts to S3, OSS, R2, WebDAV, local filesystem, and other storage protocols.
-  * Supports scheduled full or incremental ZIP archive backups.
-  * Supports one-way mirror synchronization of Vault resources to remote storage.
-  * Automatically cleans up expired backups with custom retention days.
+* **☁️ 多存储备份与单向镜像同步**：
+  * 适配 S3/OSS/R2/WebDAV/本地 等多种存储协议。
+  * 支持全量/增量 ZIP 定时归档备份。
+  * 支持 Vault 资源单向镜像同步至远程存储。
+  * 自动清理过期备份，支持自定义保留天数。
 
-* **🗄️ Multi-Database Support**:
-  * Supports SQLite, PostgreSQL, and MySQL / MariaDB (verified on MySQL 8.4 and MariaDB 11.4), meeting deployment needs from individuals to teams. To store user data such as notes and attachments in PostgreSQL or MySQL / MariaDB, you must also explicitly configure `user-database.type` and connection parameters (when left empty, user data is still written to local SQLite files by default; the MySQL / MariaDB account needs `CREATE DATABASE` privileges).
+* **🗄️ 多数据库支持**：
+  * 支持 SQLite、PostgreSQL 与 MySQL / MariaDB（已在 MySQL 8.4、MariaDB 11.4 验证），满足从个人到团队的不同部署需求；使用 PostgreSQL 或 MySQL / MariaDB 存放笔记等用户数据时，需同时显式配置 `user-database.type` 与连接参数（留空默认仍写本地 SQLite 文件；MySQL / MariaDB 账号需具备 `CREATE DATABASE` 权限）。
 
-## ☕ Sponsorship and Support
+## ☕ 赞助与支持
 
-- This project was created by HaierKeys. If you find it helpful, you can support the original author in the following ways (donations go to the original author and are unrelated to the maintenance of this repository):
+- 本项目由 HaierKeys 创建。如果它对你有帮助，可以通过以下方式支持原作者（款项归原作者，与本仓库的维护无关）：
 
-  | Ko-fi *Outside China*                                                                            |    | WeChat Pay *China*                             |
+  | Ko-fi *非中国地区*                                                                               |    | 微信扫码打赏 *中国地区*                        |
   |--------------------------------------------------------------------------------------------------|----|------------------------------------------------|
-  | [<img src="/docs/images/kofi.png" alt="BuyMeACoffee" height="150">](https://ko-fi.com/haierkeys) | or | <img src="/docs/images/wxds.png" height="150"> |
+  | [<img src="/docs/images/kofi.png" alt="BuyMeACoffee" height="150">](https://ko-fi.com/haierkeys) | 或 | <img src="/docs/images/wxds.png" height="150"> |
 
-  - Sponsor List:
-    - <a href="https://github.com/isdoge/fast-note-sync-service/blob/master/docs/Support.en.md">Support.en.md</a>
+  - 已支持名单：
+    - <a href="https://github.com/isdoge/fast-note-sync-service/blob/master/docs/Support.zh-CN.md">Support.zh-CN.md</a>
 
-## ⏱️ Changelog
+## ⏱️ 更新日志
 
-- ♨️ [Click to View Changelog](docs/CHANGELOG.en.md)
+- ♨️ [访问查看更新日志](/docs/CHANGELOG.zh-CN.md)
 
-## 🗺️ Roadmap
+## 🗺️ 路线图 (Roadmap)
 
-- [x] Add support for WebSocket `Protobuf` transfer format to enhance synchronization efficiency.
-- [x] Isolate and optimize the existing authorization mechanism to improve overall security.
-- [x] Add real-time note updates to the Web UI.
-- [ ] Add peer-to-peer message transfer between clients (non-notes & attachments, similar to LocalSend; client-side storage is not supported, but server-side is).
-- [x] Improve various help documentations.
-- [ ] Provide support for more intranet penetration (relay gateway) options.
-- [x] Quick deployment plan:
-  * Deploy the FNS server by simply providing the server address (public IP) and account credentials.
-- [x] Optimize the existing offline note merging scheme and introduce conflict resolution mechanisms.
+- [x] 增加 WebSocket `Protobuf` 传输格式的支持, 强化同步传输效率.
+- [x] 对现有授权机制进行隔离以及优化,  提升整体安全性.
+- [x] 增加 WebGui 笔记实时更新
+- [ ] 增加客户端 点对点 消息传送(非笔记&附件,类似localsend功能,不支持客户端保存, 可保存到服务端)
+- [x] 各类帮助文档完善
+- [ ] 更多的内网穿透(中继网关)的支持
+- [x] 快速部署计划
+  * 只需要提供服务器地址(公网), 账号密码 即可完成 FNS 服务端的部署
+- [x] 优化现有的离线笔记合并方案, 增加冲突处理机制
 
-This roadmap follows the original author's plan. The independently maintained fork will work through the list item by item, checking off each one as it is completed.
+路线图沿用原作者的规划。独立维护版会按这份清单逐项推进，完成一项勾选一项。
 
-> **If you have suggestions for improvement or new ideas, feel free to share them with us by submitting an issue — we will carefully evaluate and adopt suitable ones.**
+> **如果您有改进建议或新想法，欢迎通过提交 issue 与我们分享——我们会认真评估并采纳合适的建议。**
 
-## 🚀 Quick Deployment
+## 🚀 快速部署
 
-We provide multiple installation methods. We highly recommend using the **One-click Script** or **Docker**.
+我们提供多种安装方式，推荐使用 **一键脚本** 或 **Docker**。
 
-### Method 1: One-click Script (Recommended)
+### 方式一：一键脚本（推荐）
 
-Automatically detects the system environment and completes the installation and service registration.
+自动检测系统环境并完成安装、服务注册。
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/isdoge/fast-note-sync-service/master/scripts/quest_install.sh)
 ```
 
 
-**Main Script Behaviors:**
+**脚本主要行为：**
 
-  * Automatically downloads the Release binary adapted to the current system.
-  * Installs to `/opt/fast-note` by default and creates a global shortcut command `fns` in `/usr/local/bin/fns`.
-  * Configures and starts Systemd (Linux) or Launchd (macOS) services to enable startup on boot.
-  * **Interactive menu**: Running `fns` directly opens an interactive menu with install/upgrade, service control, and auto-start configuration.
-  * **Management commands**: `fns [install|uninstall|start|stop|status|update|menu]`
+  * 自动下载适配当前系统的 Release 二进制文件。
+  * 默认安装至 `/opt/fast-note`，并在 `/usr/local/bin/fns` 创建全局快捷命令 `fns`。
+  * 配置并启动 Systemd（Linux）或 Launchd（macOS）服务，实现开机自启。
+  * **交互菜单**：直接运行 `fns` 可进入交互菜单，支持安装/升级、服务控制、开机自启配置。
+  * **管理命令**：`fns [install|uninstall|start|stop|status|update|menu]`
 
 -----
 
-### Method 2: Docker Deployment
+### 方式二：Docker 部署
 
-The image is published on GitHub Container Registry for linux/amd64, linux/arm64, and linux/arm/v7. The `haierkeys/fast-note-sync-service` image on Docker Hub is the old upstream version — do not mix the two.
+镜像发布在 GitHub Container Registry，支持 linux/amd64、linux/arm64、linux/arm/v7。Docker Hub 上的 `haierkeys/fast-note-sync-service` 是上游旧版本，请不要混用。
 
 #### Docker Run
 
 ```bash
-# 1. Pull Image
+# 1. 拉取镜像
 docker pull ghcr.io/isdoge/fast-note-sync-service:latest
 
-# 2. Start Container
+# 2. 启动容器
 docker run -tid --name fast-note-sync-service \
     -p 9000:9000 \
     -v /data/fast-note-sync/storage/:/fast-note-sync/storage/ \
@@ -203,7 +203,7 @@ docker run -tid --name fast-note-sync-service \
 
 #### Docker Compose
 
-Create the `docker-compose.yaml` file:
+创建 `docker-compose.yaml` 文件：
 
 ```yaml
 version: '3'
@@ -213,13 +213,13 @@ services:
     container_name: fast-note-sync-service
     restart: always
     ports:
-      - "9000:9000"  # RESTful API & WebSocket port (where /api/user/sync is the WebSocket interface address)
+      - "9000:9000"  # RESTful API & WebSocket 端口 其中 /api/user/sync 为 WebSocket 接口地址
     volumes:
-      - ./storage:/fast-note-sync/storage  # Data storage
-      - ./config:/fast-note-sync/config    # Configuration files
+      - ./storage:/fast-note-sync/storage  # 数据存储
+      - ./config:/fast-note-sync/config    # 配置文件
 ```
 
-Start the service:
+启动服务：
 
 ```bash
 docker compose up -d
@@ -227,82 +227,82 @@ docker compose up -d
 
 -----
 
-### Method 3: Manual Binary Installation
+### 方式三：手动二进制安装
 
-Download the latest version for your system from [Releases](https://github.com/isdoge/fast-note-sync-service/releases), extract it, and run:
+从 [Releases](https://github.com/isdoge/fast-note-sync-service/releases) 下载对应系统的最新版本，解压后运行：
 
 ```bash
 ./fast-note-sync-service run -c config/config.yaml
 ```
 
-### Method 4: Remote Deployment Script
+### 方式四：远程部署脚本
 
-Run `scripts/remote_deploy.sh` locally and provide the server address and SSH account to deploy to a remote Linux server. Both binary + systemd and Docker Compose deployments are supported; see the [remote deployment guide](/docs/runbook/remote-deploy.en.md).
+在本地执行 `scripts/remote_deploy.sh`，提供服务器地址与 SSH 账号即可部署到远端 Linux 服务器，支持“二进制 + systemd”与 Docker Compose 两种方式，详见[远程部署文档](/docs/runbook/remote-deploy.zh-CN.md)。
 
 ```bash
 ./scripts/remote_deploy.sh 203.0.113.10 -u root
 ```
 
-## 📖 User Guide
+## 📖 使用指南
 
-1.  **Access Admin Panel**:
-    Open `http://{Server_IP}:9000` in your browser.
-2.  **Initial Setup**:
-    Register an account on your first visit. *(To disable registration, set `user.register-is-enable: false` in the configuration file)*
-3.  **Configure Client**:
-    Log in to the admin panel and click **"Copy API Config"**.
-4.  **Connect to Obsidian**:
-    Open the Obsidian plugin settings page and paste the configuration information you just copied.
+1.  **访问管理面板**：
+    在浏览器打开 `http://{服务器IP}:9000`。
+2.  **初始化设置**：
+    首次访问需注册账号。*(如需关闭注册功能，请在配置文件中设置 `user.register-is-enable: false`)*
+3.  **配置客户端**：
+    登录管理面板，点击 **“复制 API 配置”**。
+4.  **连接 Obsidian**：
+    打开 Obsidian 插件设置页面，粘贴刚才复制的配置信息即可。
 
 
-## ⚙️ Configuration Description
+## ⚙️ 配置说明
 
-The default configuration file is `config.yaml`. The application automatically searches in the **root directory** or the **config/** directory.
+默认配置文件为 `config.yaml`，程序会自动在 **根目录** 或 **config/** 目录下查找。
 
-View the complete configuration example: [config/config.yaml](https://github.com/isdoge/fast-note-sync-service/blob/master/config/config.yaml)
+查看完整配置示例：[config/config.yaml](https://github.com/isdoge/fast-note-sync-service/blob/master/config/config.yaml)
 
-More documentation:
-- [Configuration reference](/docs/runbook/configuration.en.md)
-- [Reverse proxy and private network access](/docs/runbook/reverse-proxy.en.md)
-- [Upgrade guide](/docs/runbook/upgrade.en.md)
-- [Troubleshooting and error codes](/docs/runbook/troubleshooting.en.md)
-- [Remote deployment](/docs/runbook/remote-deploy.en.md)
-- [Publishing to a Firefly blog (loopback Git gateway)](/docs/runbook/firefly-blog.en.md)
+更多文档：
+- [配置项参考](/docs/runbook/configuration.zh-CN.md)
+- [反向代理与内网访问](/docs/runbook/reverse-proxy.zh-CN.md)
+- [升级指南](/docs/runbook/upgrade.zh-CN.md)
+- [排错与错误码](/docs/runbook/troubleshooting.zh-CN.md)
+- [远程部署](/docs/runbook/remote-deploy.zh-CN.md)
+- [对接 Firefly 博客（回环 Git 网关）](/docs/runbook/firefly-blog.zh-CN.md)
 
-## 🌐 Nginx Reverse Proxy Example
+## 🌐 Nginx 反代配置示例
 
-View the complete configuration example: [https-nginx-example.conf](https://github.com/isdoge/fast-note-sync-service/blob/master/scripts/https-nginx-example.conf)
+查看完整配置示例：[https-nginx-example.conf](https://github.com/isdoge/fast-note-sync-service/blob/master/scripts/https-nginx-example.conf)
 
-## 🧰 MCP (Model Context Protocol) Support
+## 🧰 MCP (模型上下文协议) 支持
 
-FNS now natively supports **MCP (Model Context Protocol)** and provides both **SSE** and **StreamableHTTP** transport protocols.
+FNS 现已原生支持 **MCP (Model Context Protocol)**，并同时提供 **SSE** 和 **StreamableHTTP** 两种传输协议。
 
-You can integrate FNS as an MCP server directly into compatible AI clients like Cherry Studio, Cursor, Claude Code, and hermes-agent. Once integrated, the AI will gain the ability to read and write your personal notes and attachments. In addition, all modifications made via MCP will be synchronized to your client devices in real-time via WebSocket.
+您可以将 FNS 作为 MCP 服务端直接接入 Cherry Studio、Cursor、Claude Code、hermes-agent 等兼容的 AI 客户端。接入后，AI 即可具备读写私人笔记和附件的能力。同时，所有由 MCP 产生的修改，都会通过 WebSocket 实时同步到您的各个设备终端。
 
-For OAuth-protected MCP deployments with Stytch, see [docs/runbook/mcp-oauth-stytch.md](docs/runbook/mcp-oauth-stytch.md) ([简体中文](docs/runbook/mcp-oauth-stytch.zh-CN.md), [繁體中文](docs/runbook/mcp-oauth-stytch.zh-TW.md)).
+如需使用 Stytch 配置受 OAuth 保护的 MCP 部署，请阅读 [MCP OAuth 与 Stytch 运行手册](docs/runbook/mcp-oauth-stytch.zh-CN.md)。
 
-### Common Request Header Parameters
+### 通用请求头参数
 
-The following request headers are supported regardless of the transport mode used:
+无论使用哪种传输模式，均支持以下请求头：
 
-- **Authorization Header**: `Authorization: Bearer <Your API Token>` (obtained from the Copy API Config option in the WebGUI)
-- **Optional Header**: `X-Default-Vault-Name: <Vault Name>` (specifies the default Vault name for MCP operations if no `vault` parameter is provided during a tool call)
-- **Optional Header**: `X-Client: <Client Type>` (the type of client connecting to MCP, e.g., `Cherry Studio`, `OpenClaw`)
-- **Optional Header**: `X-Client-Version: <Client Version>` (the version of the client connecting, e.g., `1.1`)
-- **Optional Header**: `X-Client-Name: <Client Name>` (the name of the client connecting, e.g., `Mac`)
+- **鉴权 Header**：`Authorization: Bearer <您的 API Token>`（在 WebGUI 的复制 API 配置中获取）
+- **可选 Header**：`X-Default-Vault-Name: <笔记库名称>`（用于指定 MCP 操作的默认笔记库，若工具调用时未指定 `vault` 参数，则使用此值）
+- **可选 Header**：`X-Client: <客户端类型>`（用于连接 MCP 的客户端类型，如：Cherry Studio / OpenClaw）
+- **可选 Header**：`X-Client-Version: <客户端版本>`（用于连接 MCP 的客户端版本，如：1.1）
+- **可选 Header**：`X-Client-Name: <客户端名称>`（用于连接 MCP 的客户端名称，如：Mac）
 
 ---
 
-### Integration Config: StreamableHTTP Mode (Recommended)
+### 接入配置：StreamableHTTP 模式（推荐）
 
-StreamableHTTP is the standard transport protocol in the MCP ecosystem. A single endpoint can handle all requests, making it more firewall-friendly. It is natively supported by newer MCP clients (such as Claude Code and hermes-agent).
+StreamableHTTP 是 MCP 生态的标准传输协议，单个端点即可完成请求，对防火墙更友好，被较新的 MCP 客户端（如 Claude Code、hermes-agent）原生支持。
 
-- **Interface Address**: `http://<Your_Server_IP_or_Domain>:<Port>/api/mcp`
-- **Request Method**: `POST` (send requests/notifications), `GET` (listen for server-side push notifications), `DELETE` (terminate sessions)
+- **接口地址**：`http://<您的服务器IP或域名>:<端口>/api/mcp`
+- **请求方式**：`POST`（发送请求/通知）、`GET`（监听服务端推送）、`DELETE`（终止会话）
 
-#### Example: Claude Code / hermes-agent / Cursor, etc.
+#### 示例：Claude Code / hermes-agent / Cursor 等
 
-*(Note: Please replace `<ServerIP>`, `<Port>`, `<Token>`, and `<VaultName>` with your actual information)*
+*(注：请将 `<ServerIP>`、`<Port>`、`<Token>` 和 `<VaultName>` 替换为您自己的实际信息)*
 
 ```json
 {
@@ -325,15 +325,15 @@ StreamableHTTP is the standard transport protocol in the MCP ecosystem. A single
 
 ---
 
-### Integration Config: SSE Mode (Backward Compatible)
+### 接入配置：SSE 模式（向后兼容）
 
-SSE mode is the legacy transport protocol. It is fully retained to maintain backward compatibility, suitable for MCP clients that only support SSE (such as Cherry Studio).
+SSE 模式为旧版传输协议，仍完整保留以保持向后兼容，适用于仅支持 SSE 的 MCP 客户端（如 Cherry Studio）。
 
-- **Interface Address**: `http://<Your_Server_IP_or_Domain>:<Port>/api/mcp/sse`
+- **接口地址**：`http://<您的服务器IP或域名>:<端口>/api/mcp/sse`
 
-#### Example: Cherry Studio / Cline, etc.
+#### 示例：Cherry Studio / Cline 等
 
-*(Note: Please replace `<ServerIP>`, `<Port>`, `<Token>`, and `<VaultName>` with your actual information)*
+*(注：请将 `<ServerIP>`、`<Port>`、`<Token>` 和 `<VaultName>` 替换为您自己的实际信息)*
 
 ```json
 {
@@ -354,13 +354,13 @@ SSE mode is the legacy transport protocol. It is fully retained to maintain back
 }
 ```
 
-## 🔗 Clients, Client Plugins & Collaboration Projects
+## 🔗 客户端 & 客户端插件 & 协作项目
 
-* Obsidian Fast Note Sync Plugin
+* Obsidian Fast Note Sync 插件
   * [Obsidian Fast Note Sync Plugin](https://github.com/isdoge/obsidian-fast-note-sync)
-* Third-Party Clients
-  * [FastNodeSync-CLI](https://github.com/Go1c/FastNodeSync-CLI) A command-line client implemented in Python based on the FNS WebSocket synchronization protocol. It enables real-time, bi-directional sync, suitable for GUI-less Linux server environments (such as OpenClaw), providing the same sync capabilities as the Obsidian desktop and mobile clients.
-  * [go-fast-note-sync](https://github.com/erichll/go-fast-note-sync) A Go CLI background synchronization daemon implemented in Go based on the FNS WebSocket sync protocol, primarily targetting headless Linux environments while also supporting macOS and Windows.
-  * [Fast-note-sync-docker](https://github.com/youpingfang/obsidian-note-sync-docker) A rapid containerized deployment solution based on Docker, Python, and the FNS WebSocket sync protocol to sync vaults and configuration files to a remote server.
-* Collaboration Projects
-  * [Share to Save](https://github.com/chenxiccc/Obsidian-Share-to-Save) An Obsidian plugin that automatically downloads shared web page URLs as Markdown notes.
+* 三方客户端
+  * [FastNodeSync-CLI ](https://github.com/Go1c/FastNodeSync-CLI) 一款基于 Python 和 FNS WebSocket 同步协议实现的双向实时同步的命令行客户端, 适用于无 GUI 的 Linux 服务器环境（如 OpenClaw），实现与 Obsidian 桌面/移动端等价的同步能力。
+  * [go-fast-note-sync](https://github.com/erichll/go-fast-note-sync) 一款基于 Go 和 FNS WebSocket 同步协议的 Go CLI 后台同步守护进程，主要面向 Linux 无头（headless）环境，同时也支持 macOS 和 Windows。
+  * [Fast-note-sync-docker](https://github.com/youpingfang/obsidian-note-sync-docker) 一款基于 Docker ， Python ， FNS WebSocket 同步协议 的 快速容器化部署方案，实现 笔记库和配置文件到远程服务器。
+* 协作项目
+  * [Share to Save](https://github.com/chenxiccc/Obsidian-Share-to-Save) 是一款 Obsidian 插件，将分享的网页 URL 自动下载为 Markdown 笔记。
