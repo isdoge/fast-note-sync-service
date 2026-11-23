@@ -1,11 +1,14 @@
 package api_router
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
@@ -144,4 +147,70 @@ func TestCLIUpgrade_BadPayload(t *testing.T) {
 func TestCLIUpgrade_FixedUpstreamURL(t *testing.T) {
 	handler := NewCLIUpgradeHandler(app.NewTestApp(nil))
 	assert.Equal(t, "https://api.github.com/repos/Go1c/FastNodeSync-CLI/releases/latest", handler.upstreamURL())
+}
+
+// 缓存过期瞬间的并发请求应合并成一次上游请求，所有调用方共用结果。
+func TestCLIUpgrade_ConcurrentRequestsShareOneFetch(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cliUpgradeFixture))
+	}))
+	defer srv.Close()
+
+	handler := NewCLIUpgradeHandler(app.NewTestApp(nil))
+	handler.setFetchURL(srv.URL)
+
+	const n = 20
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]*dto.CLIUpgradeResponse, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = handler.latest(context.Background())
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&hits), "并发请求只应打上游一次")
+	for i := 0; i < n; i++ {
+		require.NoError(t, errs[i], "第 %d 个并发调用应成功", i)
+		require.NotNil(t, results[i])
+		assert.Equal(t, "v1.4.2", results[i].Version, "所有调用方共用同一结果")
+	}
+}
+
+// 上游失败不缓存：修复后下一次调用可重新请求上游并成功。
+func TestCLIUpgrade_RetryAfterUpstreamFailure(t *testing.T) {
+	var hits int32
+	var failFirst int32 = 1
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		if atomic.CompareAndSwapInt32(&failFirst, 1, 0) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cliUpgradeFixture))
+	}))
+	defer srv.Close()
+
+	handler := NewCLIUpgradeHandler(app.NewTestApp(nil))
+	handler.setFetchURL(srv.URL)
+
+	_, err := handler.latest(context.Background())
+	require.Error(t, err, "首次上游失败应报错")
+
+	data, err := handler.latest(context.Background())
+	require.NoError(t, err, "失败不缓存，下一次应重新请求上游")
+	assert.Equal(t, "v1.4.2", data.Version)
+	assert.False(t, data.Cached, "来自重新发起的上游请求")
+	assert.Equal(t, int32(2), atomic.LoadInt32(&hits), "两次调用应各打一次上游")
 }
