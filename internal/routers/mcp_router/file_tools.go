@@ -409,7 +409,7 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 	// 8. Write File (Create or update file/attachment via MCP)
 	// 8. 写入文件（通过 MCP 新建或更新文件/附件）
 	toolWriteFile := mcp.NewTool("file_write",
-		mcp.WithDescription(mcpBaselineHint("Create or update a file (attachment) in the vault by uploading its base64 encoded content")),
+		mcp.WithDescription(mcpBaselineHint("Create or update a file (attachment) in the vault by uploading its base64 encoded content", "file_restore")),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Target file path in the vault, relative to the vault root, separated by '/'; a leading '/' is stripped (e.g. 'images/my_pic.png')")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Base64 encoded file content")),

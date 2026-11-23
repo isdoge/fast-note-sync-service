@@ -127,7 +127,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 
 	// 3. Create or Update Note
 	toolCreateUpdateNote := mcp.NewTool("note_create_or_update",
-		mcp.WithDescription(mcpBaselineHint("Create or update a note")),
+		mcp.WithDescription(mcpBaselineHint("Create or update a note", "note_restore")),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Note content")),

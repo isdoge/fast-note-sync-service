@@ -14,7 +14,7 @@ import (
 // mcpBaseRevisionOption 声明可选的 base_revision 参数。写工具与 base_hash、base_hash_missing
 // 一起列出，删除工具只与 base_hash 配对；全部省略时保持无条件行为。
 func mcpBaseRevisionOption() mcp.ToolOption {
-	return mcp.WithString("base_revision", mcp.Description("Optional. Server revision token you last saw for this item (returned as revision by reads/lists). Supplying it turns the operation into a guarded compare-and-set: if the server moved, the tool returns a structured conflict instead of applying the change."))
+	return mcp.WithString("base_revision", mcp.Description("Optional. Server revision token you last saw for this item (returned as revision by reads/lists). Supplying it turns the operation into a guarded compare-and-set: if the server moved, the tool returns an error result whose text is a JSON conflict instead of applying the change."))
 }
 
 // mcpBaseHashOption declares the optional base_hash argument for write tools.
@@ -27,7 +27,7 @@ func mcpBaseHashOption() mcp.ToolOption {
 // delete requires both the revision token and the content hash.
 // mcpBaseHashDeleteOption 声明删除工具的 base_hash 参数：条件删除必须同时提供版本令牌与内容哈希。
 func mcpBaseHashDeleteOption() mcp.ToolOption {
-	return mcp.WithString("base_hash", mcp.Description("Content hash you last saw for this item. A guarded delete requires both base_revision and base_hash; supplying only one, or a moved item, returns a structured conflict and deletes nothing."))
+	return mcp.WithString("base_hash", mcp.Description("Content hash you last saw for this item. A guarded delete requires both base_revision and base_hash; supplying only one, or a moved item, returns an error result whose text is a JSON conflict and deletes nothing."))
 }
 
 // mcpBaseHashMissingOption declares the optional base_hash_missing argument on
@@ -66,10 +66,11 @@ func mcpBaselineConflict(err error) (*dto.BaselineConflictError, bool) {
 }
 
 // mcpBaselineHint appends the conditional-write contract to a tool description so an
-// agent knows the guarded mode exists without reading the source.
-// mcpBaselineHint 把条件写契约追加到工具描述，使 Agent 无需读源码就知道存在受保护模式。
-func mcpBaselineHint(desc string) string {
-	return strings.TrimSpace(desc) + " Optional base_revision/base_hash/base_hash_missing enable a guarded compare-and-set write that returns a structured conflict instead of overwriting a moved item."
+// agent knows the guarded mode exists and which restore tool revives a deleted item.
+// mcpBaselineHint 把条件写契约追加到工具描述，使 Agent 无需读源码就知道存在受保护模式，
+// 以及已删除的项应改用哪个恢复工具。
+func mcpBaselineHint(desc string, restoreTool string) string {
+	return strings.TrimSpace(desc) + " Optional base_revision/base_hash/base_hash_missing enable a guarded compare-and-set write instead of overwriting a moved item. A rejected write returns an error result whose text is a JSON conflict carrying conflict.reason, conflict.serverRevision and conflict.serverHash. A guarded write never restores a deleted item: when the conflict has serverDeleted true or reason remote_deleted/server_missing, call " + restoreTool + " instead, or retry without baseline arguments to recreate it."
 }
 
 // mcpBaselineDeleteHint appends the conditional-delete contract to a delete tool
@@ -78,5 +79,5 @@ func mcpBaselineHint(desc string) string {
 // mcpBaselineDeleteHint 把条件删除契约追加到删除工具描述：与写入不同，条件删除必须同时
 // 提供版本令牌与内容哈希。
 func mcpBaselineDeleteHint(desc string) string {
-	return strings.TrimSpace(desc) + " Pass both base_revision and base_hash to turn the delete into a guarded compare-and-delete: supplying only one, or deleting a moved item, returns a structured conflict and deletes nothing."
+	return strings.TrimSpace(desc) + " Pass both base_revision and base_hash to turn the delete into a guarded compare-and-delete: supplying only one, or deleting a moved item, returns an error result whose text is a JSON conflict and deletes nothing."
 }

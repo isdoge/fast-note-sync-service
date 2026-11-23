@@ -353,6 +353,33 @@ func TestMCPDeleteTools_BaselineArgsMatchContract(t *testing.T) {
 	}
 }
 
+// 写入工具描述必须讲清条件写的后果：冲突以错误结果的文本 JSON 返回，且不会恢复已删除项，
+// 应改用对应的 restore 工具。
+// Write tool descriptions must state that a rejected guarded write returns a JSON
+// conflict in the error text and never restores a deleted item — point agents at the
+// matching restore tool.
+func TestMCPWriteTools_DescriptionExplainsDeletedRestore(t *testing.T) {
+	noteSvc := new(svcmocks.MockNoteService)
+	fileSvc := new(svcmocks.MockFileService)
+	folderSvc := new(svcmocks.MockFolderService)
+	vaultSvc := new(svcmocks.MockVaultService)
+	historySvc := new(svcmocks.MockNoteHistoryService)
+	srv := newBaselineMCPTestServer(t, noteSvc, fileSvc, folderSvc, vaultSvc, historySvc)
+
+	for name, restoreTool := range map[string]string{
+		"note_create_or_update": "note_restore",
+		"file_write":            "file_restore",
+	} {
+		tool := srv.GetTool(name)
+		require.NotNil(t, tool, "工具 %s 必须已注册", name)
+		desc := tool.Tool.Description
+		require.Contains(t, desc, restoreTool, "工具 %s 的描述必须指向恢复工具 %s", name, restoreTool)
+		require.Contains(t, desc, "error result", "工具 %s 的描述必须说明冲突是错误结果", name)
+		require.Contains(t, desc, "conflict.reason", "工具 %s 的描述必须提到文本 JSON 里的冲突字段", name)
+		require.Contains(t, desc, "serverDeleted", "工具 %s 的描述必须提到 serverDeleted", name)
+	}
+}
+
 // 条件写字段只在显式传入时生效：空 base_revision 不触发条件写。
 func TestMCPBaselineFromArgs_EmptyIsNil(t *testing.T) {
 	require.Nil(t, mcpBaselineFromArgs(map[string]interface{}{}))
