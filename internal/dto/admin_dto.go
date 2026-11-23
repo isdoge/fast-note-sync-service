@@ -185,3 +185,73 @@ type AdminRuntimeInfo struct {
 	NextGC       uint64 `json:"nextGc"`       // Target heap size for the next GC cycle // 下次 GC 的目标堆大小
 	NumGC        uint32 `json:"numGc"`        // Number of completed GC cycles // GC 次数
 }
+
+// ShareBaseURLUpdateRequest request body for updating the runtime share base URL.
+// An empty baseUrl clears the override and falls back to server.share-base-url.
+// ShareBaseURLUpdateRequest 运行时分享基址更新请求。baseUrl 为空表示清除
+// 覆盖值，回落到 server.share-base-url。
+type ShareBaseURLUpdateRequest struct {
+	BaseURL string `json:"baseUrl" form:"baseUrl"` // New public base URL, http(s) only; empty clears the override // 新的公开基址，仅支持 http(s)；空值清除覆盖
+}
+
+// ShareBaseURLResponse current effective share base URL and its source.
+// ShareBaseURLResponse 当前生效的分享基址及其来源。
+type ShareBaseURLResponse struct {
+	BaseURL string `json:"baseUrl"` // Effective base URL (empty when unset) // 生效的基址（未设置时为空）
+	Source  string `json:"source"`  // "override" (runtime) or "config" (server.share-base-url) // override（运行时）或 config（配置）
+}
+
+// TokenCapabilitiesResponse describes the effective capabilities of the
+// authenticated token. It never contains secrets, passwords or the raw token.
+// TokenCapabilitiesResponse 描述当前已认证令牌的有效能力，绝不包含密钥、密码
+// 或原始令牌字符串。
+type TokenCapabilitiesResponse struct {
+	UID         int64                    `json:"uid"`         // User ID // 用户 ID
+	IsAdmin     bool                     `json:"isAdmin"`     // Effective admin flag // 是否生效管理员
+	TokenID     string                   `json:"tokenId"`     // Database token ID (string for plugin convenience) // 数据库令牌 ID（字符串，便于插件消费）
+	Protocol    string                   `json:"protocol"`    // Protocol dimension from scope // scope 中的协议维度
+	Restricted  bool                     `json:"restricted"`  // Vault-restricted or not full permissions // 是否限制库或非全权限
+	Vaults      []string                 `json:"vaults"`      // Allowed vaults (empty = unrestricted) // 允许的库（空 = 不限制）
+	Permissions TokenCapabilityFunctions `json:"permissions"` // Effective function permissions // 有效功能权限
+	ReadOnly    bool                     `json:"readOnly"`    // True when neither note nor file write is allowed // 不允许笔记与附件写时为 true
+}
+
+// TokenCapabilityFunctions effective read/write permissions per resource.
+// TokenCapabilityFunctions 各资源的有效读写权限。
+type TokenCapabilityFunctions struct {
+	NoteRead     bool `json:"noteRead"`     // note_r // 笔记读
+	NoteWrite    bool `json:"noteWrite"`    // note_w // 笔记写
+	FileRead     bool `json:"fileRead"`     // file_r // 附件读
+	FileWrite    bool `json:"fileWrite"`    // file_w // 附件写
+	SettingRead  bool `json:"settingRead"`  // config_r // 设置读
+	SettingWrite bool `json:"settingWrite"` // config_w // 设置写
+	VaultRead    bool `json:"vaultRead"`    // vault_r // 库读
+	VaultWrite   bool `json:"vaultWrite"`   // vault_w // 库写
+}
+
+// CLIUpgradeResponse metadata of the latest FastNodeSync-CLI release, proxied
+// and cached by the server so restricted intranet clients can upgrade without
+// direct GitHub access.
+// CLIUpgradeResponse 服务端代理并缓存的最新 FastNodeSync-CLI 版本元数据，
+// 供受限内网客户端在无法直连 GitHub 时升级。
+type CLIUpgradeResponse struct {
+	Repository  string     `json:"repository"`  // Fixed upstream repository // 固定上游仓库
+	Version     string     `json:"version"`     // Latest tag name // 最新 tag
+	Name        string     `json:"name"`        // Release name // 发布名称
+	PublishedAt string     `json:"publishedAt"` // Publish time (RFC3339) // 发布时间
+	HTMLURL     string     `json:"htmlUrl"`     // Release page URL // 发布页地址
+	Body        string     `json:"body"`        // Release notes // 发布说明
+	Assets      []CLIAsset `json:"assets"`      // Release assets // 发布资源
+	Prerelease  bool       `json:"prerelease"`  // Prerelease flag // 预发布标记
+	Cached      bool       `json:"cached"`      // Whether served from the short-lived cache // 是否来自短时缓存
+	CachedAt    string     `json:"cachedAt"`    // When the cached payload was fetched // 缓存抓取时间
+	Stale       bool       `json:"stale"`       // Served from cache after an upstream failure // 上游失败时回退到缓存
+}
+
+// CLIAsset a downloadable CLI release asset.
+// CLIAsset 可下载的 CLI 发布资源。
+type CLIAsset struct {
+	Name        string `json:"name"`        // File name // 文件名
+	DownloadURL string `json:"downloadUrl"` // Download URL // 下载地址
+	Size        int64  `json:"size"`        // Size in bytes // 字节大小
+}

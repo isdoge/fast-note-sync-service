@@ -237,6 +237,17 @@ security:
   # scopes are denied. Verification-side only; newly issued tokens no longer
   # produce an empty protocol dimension.
   strict-empty-protocol: false
+  # 运行时分享基址管理接口（POST/GET /api/admin/share-base-url）的可选静态令牌。
+  # 设置后，外部动态地址通知脚本（如 CGNAT / 内网穿透的换址脚本）可用该令牌
+  # 通过 `Authorization: Bearer <token>` 或 `X-Share-Base-Url-Token` 头推送
+  # 最新公开基址，无需管理员登录令牌，也不用改配置重启容器。
+  # 留空时仅生效管理员可调用这些接口。
+  # Optional static token for the runtime share base URL admin endpoints. When
+  # set, an external address notifier can push a new public base URL with this
+  # token (via `Authorization: Bearer <token>` or `X-Share-Base-Url-Token`)
+  # instead of an admin login token. When empty, only the effective admin may
+  # call them.
+  share-base-url-token: ""
 
 # 主数据库配置
 # Main database configuration

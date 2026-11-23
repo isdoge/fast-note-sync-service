@@ -65,6 +65,9 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 		tokenHandler := api_router.NewTokenHandler(appContainer)
 		stytchOAuthHandler := api_router.NewStytchOAuthHandler(appContainer)
 		oidcHandler := api_router.NewOIDCHandler(appContainer)
+		userCapabilityHandler := api_router.NewUserCapabilityHandler(appContainer)
+		shareBaseURLHandler := api_router.NewShareBaseURLHandler(appContainer)
+		cliUpgradeHandler := api_router.NewCLIUpgradeHandler(appContainer)
 
 		// No-auth WebGUI restricted routes
 		// 免认证但仅限 WebGUI 访问的路由组
@@ -150,9 +153,34 @@ func registerAPIRoutes(r *gin.Engine, appContainer *app.App, wss *pkgapp.Websock
 			// 生效管理员；路由功能点归类为配置写。
 			auth.GET("/admin/upgrade", adminControlHandler.Upgrade)
 
+			// Runtime share base URL management: accepts either an effective
+			// admin user token or the configured static token (for external
+			// dynamic-address notifiers), so it uses its own auth middleware
+			// instead of the plain user-token group.
+			// 运行时分享基址管理：接受生效管理员用户令牌或配置的静态令牌
+			//（供外部动态地址通知脚本），因此使用独立鉴权中间件而非普通用户令牌组。
+			shareBaseURLGroup := api.Group("/admin")
+			shareBaseURLGroup.Use(middleware.ShareBaseURLAuth(cfg.Security.AuthTokenKey, appContainer.TokenService, cfg.Security.StrictEmptyProtocol, cfg.Security.ShareBaseURLToken))
+			{
+				shareBaseURLGroup.GET("/share-base-url", shareBaseURLHandler.Get)
+				shareBaseURLGroup.POST("/share-base-url", shareBaseURLHandler.Update)
+			}
+
 			auth.GET("/user/info", userHandler.UserInfo)
 			auth.POST("/oauth/stytch/authorize/start", stytchOAuthHandler.AuthorizeStart)
 			auth.POST("/oauth/stytch/authorize/submit", stytchOAuthHandler.AuthorizeSubmit)
+
+			// Effective token capabilities: any authenticated user token (full or
+			// restricted) may query its own scope, so clients can adapt their UI
+			// to read-only / vault-limited tokens. No function point required.
+			// 令牌有效能力查询：任何已认证用户令牌（全权或受限）都可查询自己的
+			// scope，客户端据此适配只读 / 限定库令牌的界面。无需功能点。
+			auth.GET("/user/token-capabilities", userCapabilityHandler.TokenCapabilities)
+
+			// CLI upgrade relay: requires an authenticated user token to prevent
+			// unauthenticated SSRF-style proxying, but needs no function point.
+			// CLI 升级中转：需要已登录用户令牌以防未授权的代理滥用，但无需功能点。
+			auth.GET("/upgrade/cli", cliUpgradeHandler.CLI)
 
 			auth.GET("/note", noteHandler.Get)
 			auth.POST("/note", noteHandler.CreateOrUpdate)
