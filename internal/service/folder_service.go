@@ -606,6 +606,7 @@ func (s *folderService) ListNotes(ctx context.Context, uid int64, params *dto.Fo
 			UpdatedTimestamp: n.UpdatedTimestamp,
 			UpdatedAt:        timex.Time(n.UpdatedAt),
 			CreatedAt:        timex.Time(n.CreatedAt),
+			Revision:         n.Revision,
 		})
 	}
 	return res, int(count), nil
@@ -654,6 +655,7 @@ func (s *folderService) ListFiles(ctx context.Context, uid int64, params *dto.Fo
 			Size:             f.Size,
 			Ctime:            f.Ctime,
 			Mtime:            f.Mtime,
+			Revision:         f.Revision,
 			UpdatedTimestamp: f.UpdatedTimestamp,
 			UpdatedAt:        timex.Time(f.UpdatedAt),
 			CreatedAt:        timex.Time(f.CreatedAt),

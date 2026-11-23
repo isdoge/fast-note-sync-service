@@ -279,6 +279,7 @@ func (s *noteService) domainToNoContentDTO(note *domain.Note) *dto.NoteNoContent
 		UpdatedTimestamp: note.UpdatedTimestamp,
 		UpdatedAt:        timex.Time(note.UpdatedAt),
 		CreatedAt:        timex.Time(note.CreatedAt),
+		Revision:         note.Revision,
 	}
 }
 
