@@ -130,6 +130,7 @@ func (file *FileDTO) ToMcpFileDTO() *McpFileDTO {
 		UpdatedTimestamp: file.UpdatedTimestamp,
 		UpdatedAt:        formatMcpTime(file.UpdatedAt),
 		CreatedAt:        formatMcpTime(file.CreatedAt),
+		Revision:         file.Revision,
 	}
 }
 
@@ -236,14 +237,14 @@ type McpBaselineConflictDTO struct {
 // McpNoteHistoryListOutput is the structured output of note_history_list
 // McpNoteHistoryListOutput 是 note_history_list 的结构化输出
 type McpNoteHistoryListOutput struct {
-	Vault      string                          `json:"vault"`
-	Path       string                          `json:"path"`
-	Count      int                             `json:"count"`
-	Page       int                             `json:"page"`
-	PageSize   int                             `json:"pageSize"`
-	TotalCount int64                           `json:"totalCount"`
-	HasMore    bool                            `json:"hasMore"`
-	Histories  []*McpNoteHistorySummaryDTO     `json:"histories"`
+	Vault      string                      `json:"vault"`
+	Path       string                      `json:"path"`
+	Count      int                         `json:"count"`
+	Page       int                         `json:"page"`
+	PageSize   int                         `json:"pageSize"`
+	TotalCount int64                       `json:"totalCount"`
+	HasMore    bool                        `json:"hasMore"`
+	Histories  []*McpNoteHistorySummaryDTO `json:"histories"`
 }
 
 // McpNoteHistorySummaryDTO is one history version without its body
@@ -262,8 +263,8 @@ type McpNoteHistorySummaryDTO struct {
 // McpNoteHistoryOutput is the structured output of note_history_get
 // McpNoteHistoryOutput 是 note_history_get 的结构化输出
 type McpNoteHistoryOutput struct {
-	Vault     string                `json:"vault"`
-	History   *McpNoteHistoryDetail `json:"history"`
+	Vault   string                `json:"vault"`
+	History *McpNoteHistoryDetail `json:"history"`
 }
 
 // McpNoteHistoryDetail is one history version with its full content
