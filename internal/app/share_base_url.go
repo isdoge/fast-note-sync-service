@@ -173,18 +173,37 @@ func (a *App) SetShareBaseURLStore(store *ShareBaseURLStore) {
 	a.shareBaseURL = store
 }
 
+// ConfiguredShareBaseURL returns the configured server.share-base-url only when
+// share link generation would actually use it, i.e. when both webgui-port and
+// share-port are configured. It returns an empty string otherwise so callers
+// can tell "no fixed base URL" apart from "configured but ignored".
+// ConfiguredShareBaseURL 返回配置项 server.share-base-url 中会被分享链接实际采用
+// 的值：只有 webgui-port 与 share-port 都配置了才返回，否则返回空字符串，调用
+// 方据此区分“没有固定基址”和“配置了但不会生效”。
+func (a *App) ConfiguredShareBaseURL() string {
+	if a == nil || a.config == nil {
+		return ""
+	}
+	cfg := a.config.Server
+	if cfg.WebGuiPort == "" || cfg.SharePort == "" {
+		return ""
+	}
+	return strings.TrimSpace(cfg.ShareBaseUrl)
+}
+
 // ShareBaseURLValue returns the effective share base URL and where it came
-// from: the runtime override when set, otherwise server.share-base-url.
+// from: the runtime override when set, otherwise the configured
+// server.share-base-url value that share links would use. An empty value means
+// there is no fixed share base URL right now and links are built from
+// ext-api-url or the request address.
 // ShareBaseURLValue 返回当前生效的分享基址及来源：有运行时覆盖时返回覆盖值，
-// 否则返回 server.share-base-url 配置值。
+// 否则返回分享链接实际会采用的 server.share-base-url 配置值。值为空表示当前
+// 没有固定的分享基址，链接按 ext-api-url 或请求地址生成。
 func (a *App) ShareBaseURLValue() (value string, source string) {
 	if a != nil && a.shareBaseURL != nil {
 		if override := a.shareBaseURL.Override(); override != "" {
 			return override, ShareBaseURLSourceOverride
 		}
 	}
-	if a != nil && a.config != nil {
-		return strings.TrimSpace(a.config.Server.ShareBaseUrl), ShareBaseURLSourceConfig
-	}
-	return "", ShareBaseURLSourceConfig
+	return a.ConfiguredShareBaseURL(), ShareBaseURLSourceConfig
 }
