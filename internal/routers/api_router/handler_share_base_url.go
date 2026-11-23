@@ -61,7 +61,7 @@ func (h *ShareBaseURLHandler) authorizeAdmin(c *gin.Context) bool {
 
 // Get returns the current effective share base URL and its source.
 // @Summary Get effective share base URL
-// @Description Return the currently effective share base URL and whether it comes from a runtime override or the config file.
+// @Description Return the currently effective share base URL and whether it comes from a runtime override or the config file. An empty baseUrl means there is no fixed share base URL right now, so links are built from ext-api-url or the request address.
 // @Tags Admin
 // @Security UserAuthToken
 // @Produce json

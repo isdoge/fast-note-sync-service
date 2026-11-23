@@ -149,6 +149,10 @@ func TestShareBaseURL_PersistAndReload(t *testing.T) {
 
 func TestShareBaseURL_GetReportsConfigSourceWhenNoOverride(t *testing.T) {
 	handler, testApp := newShareBaseURLHandler(t)
+	// The configured value only takes effect with both ports configured.
+	// 配置值只在两个端口都配置时生效。
+	testApp.Config().Server.WebGuiPort = "8080"
+	testApp.Config().Server.SharePort = "9100"
 	testApp.Config().Server.ShareBaseUrl = "https://config.example.com"
 
 	c, w := newAdminTestContext(http.MethodGet, "/api/admin/share-base-url", "", 1)
@@ -205,6 +209,32 @@ func TestShareBaseURLAuthMiddleware_NoStaticTokenConfigured(t *testing.T) {
 	middlewareFn(c)
 	assert.True(t, c.IsAborted(), "未配置静态令牌时静态头无效")
 	assert.False(t, middleware.ShareBaseURLStaticAuthorized(c))
+}
+
+// 管理接口报告的值必须与分享链接实际采用的配置值一致：端口没配齐时配置值
+// 不生效，两边都不能声称用了它。
+func TestShareBaseURL_ConfigValueConsistentWithShareLinks(t *testing.T) {
+	shareHandler := newTestShareHandler(nil, nil)
+	testApp := shareHandler.App
+	testApp.Config().Server.ShareBaseUrl = "https://config.example.com"
+
+	c, _ := newShareTestContext(http.MethodPost, "/api/share", "", 1)
+	c.Request.Host = "sync.example.com:9000"
+
+	// One port missing: links fall back to the request address and the admin
+	// value reports "no fixed base URL".
+	// 端口没配齐：链接回落到请求地址，管理接口报告“没有固定基址”。
+	assert.NotEqual(t, "https://config.example.com", shareHandler.getShareBaseUrl(c))
+	value, source := testApp.ShareBaseURLValue()
+	assert.Empty(t, value)
+	assert.Equal(t, app.ShareBaseURLSourceConfig, source)
+
+	testApp.Config().Server.WebGuiPort = "8080"
+	testApp.Config().Server.SharePort = "9100"
+	assert.Equal(t, "https://config.example.com", shareHandler.getShareBaseUrl(c))
+	value, source = testApp.ShareBaseURLValue()
+	assert.Equal(t, "https://config.example.com", value)
+	assert.Equal(t, app.ShareBaseURLSourceConfig, source)
 }
 
 // 分享链接生成优先使用运行时覆盖值。

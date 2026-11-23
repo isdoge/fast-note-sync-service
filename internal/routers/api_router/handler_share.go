@@ -493,10 +493,11 @@ func (h *ShareHandler) getShareBaseUrl(c *gin.Context) string {
 	}
 
 	cfg := h.App.Config().Server
-	if cfg.WebGuiPort != "" && cfg.SharePort != "" {
-		if cfg.ShareBaseUrl != "" {
-			return cfg.ShareBaseUrl
-		}
+	// Shared with the admin API so the reported value and the value used in
+	// generated links cannot drift apart.
+	// 与管理接口共用同一判定，保证“报告的值”和“生成链接实际用的值”一致。
+	if configured := h.App.ConfiguredShareBaseURL(); configured != "" {
+		return configured
 	}
 
 	// Priority 1: ExtApiUrl
