@@ -166,6 +166,12 @@ func (h *NoteWSHandler) doNoteSyncBaseline(c *pkgapp.WebsocketClient, params *dt
 			needModifyCount++
 			messageQueue[len(messageQueue)-1].NoteID = serverDTO.ID
 		case baselineActionUpload:
+			// 服务端没有该路径时，系统垃圾文件不再要求客户端上传：老客户端每轮都会
+			// 上报本地垃圾文件，要求上传只会被写入入口拒收。服务端已有垃圾行仍保持
+			// 原有决策（客户端内容更新时会被写入口拒收）。
+			if !server.Found && h.writeRejectsSystemJunk(path) {
+				break
+			}
 			enqueue(NoteSyncNeedPush, dto.NoteSyncNeedPushMessage{Path: path, PathHash: cs.pathHash})
 			needUploadCount++
 		case baselineActionDelete:

@@ -315,6 +315,12 @@ func (h *FolderWSHandler) doFolderSync(c *pkgapp.WebsocketClient, params *dto.Fo
 					zap.String(logpkg.FieldPath, folder.Path))
 				continue
 			}
+			if h.writeRejectsSystemJunk(folder.Path) {
+				h.App.Logger().Warn("websocket_router.folder.FolderSync: system junk folder path, skip creation",
+					zap.String(logpkg.FieldTraceID, c.TraceID),
+					zap.String(logpkg.FieldPath, folder.Path))
+				continue
+			}
 
 			// 墓碑闸门：服务端已删除的目录不得被客户端陈旧上报复活
 			// （客户端快照失效后的全量重报会把删除顶回来，是复活拉锯的主要目录通道）；
@@ -436,6 +442,10 @@ func (h *FolderWSHandler) FolderModify(c *pkgapp.WebsocketClient, msg *pkgapp.We
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path"))
 		return
 	}
+	if h.writeRejectsSystemJunk(params.Path) {
+		h.respondSystemJunkPath(c, clientSlotPath(c, msg, params.Path))
+		return
+	}
 
 	uid := c.User.UID
 	params.Baseline = baselineCommitFromFolder(c, params.BaseRevision, params.IsConflictResolved)
@@ -528,6 +538,11 @@ func (h *FolderWSHandler) FolderRename(c *pkgapp.WebsocketClient, msg *pkgapp.We
 	// 只校验、不改写新旧两个路径（#342 S-8）
 	if !validWSPath(params.Path) || !validWSPath(params.OldPath) {
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid folder path").WithData(errPathData(slotPath)))
+		return
+	}
+	// 改名只看新路径：旧路径是垃圾、新路径正常的放行，便于清理历史数据。
+	if h.writeRejectsSystemJunk(params.Path) {
+		h.respondSystemJunkPath(c, slotPath)
 		return
 	}
 

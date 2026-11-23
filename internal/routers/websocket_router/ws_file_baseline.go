@@ -135,6 +135,11 @@ func (h *FileWSHandler) doFileSyncBaseline(c *pkgapp.WebsocketClient, params *dt
 			})
 			needModifyCount++
 		case baselineActionUpload:
+			// 服务端没有该路径时，系统垃圾文件不再发起上传会话；老客户端每轮上报
+			// 本地垃圾文件，会话只会被写入入口拒收。服务端已有垃圾行保持原有决策。
+			if !server.Found && h.writeRejectsSystemJunk(path) {
+				break
+			}
 			if !hasWritePermission {
 				h.logWarn(c, "websocket_router.file.FileSync: permission denied for upload", zap.String(logger.FieldPath, path))
 				break
