@@ -25,6 +25,7 @@ func NewTestApp(svcs *Services, dbs ...*gorm.DB) *App {
 			config: &AppConfig{},
 			DB:     db,
 		},
-		Services: svcs,
+		Services:     svcs,
+		shareBaseURL: NewShareBaseURLStore(""), // memory-only override for tests // 测试用仅内存覆盖
 	}
 }

@@ -38,6 +38,16 @@ type SecurityConfig struct {
 	// "p:"），这类 scope 在默认匹配中等同通配。默认 false 以兼容存量令牌；
 	// 开启后这类已落库的 scope 将按拒绝处理。
 	StrictEmptyProtocol bool `yaml:"strict-empty-protocol"`
+	// ShareBaseURLToken is an optional static token for the runtime share base
+	// URL admin endpoints (POST/GET /api/admin/share-base-url). When set, an
+	// external notifier (e.g. a dynamic-DNS / tunnel script) can push a new
+	// public base URL with this token instead of an admin login token. When
+	// empty, only the effective administrator may call those endpoints.
+	// ShareBaseURLToken 是运行时分享基址管理接口（POST/GET
+	// /api/admin/share-base-url）的可选静态令牌。设置后，外部通知脚本
+	//（如动态 DNS / 内网穿透脚本）可用它推送新的公开基址，而无需管理员登录
+	// 令牌；留空时仅生效管理员可调用。
+	ShareBaseURLToken string `yaml:"share-base-url-token"`
 }
 
 // Validate rejects token lifetimes that are nonpositive or overflow time.Duration.

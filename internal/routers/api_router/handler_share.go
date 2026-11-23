@@ -478,6 +478,20 @@ func (h *ShareHandler) logError(ctx context.Context, method string, err error) {
 	)
 }
 func (h *ShareHandler) getShareBaseUrl(c *gin.Context) string {
+	// Runtime override (admin API / external dynamic-DNS notifier) wins over the
+	// configured value so a CGNAT or tunnel address change takes effect without
+	// a restart. Only the override is consulted here: the configured
+	// server.share-base-url keeps its original precedence rules below, so
+	// existing deployments see no behavior change.
+	// 运行时覆盖值（管理接口 / 外部动态地址通知脚本）优先于配置值，使 CGNAT 或
+	// 内网穿透地址变化后无需重启即可生效。此处只读覆盖值：配置项
+	// server.share-base-url 仍按原有优先级生效，既有部署行为不变。
+	if store := h.App.ShareBaseURLStore(); store != nil {
+		if override := store.Override(); override != "" {
+			return override
+		}
+	}
+
 	cfg := h.App.Config().Server
 	if cfg.WebGuiPort != "" && cfg.SharePort != "" {
 		if cfg.ShareBaseUrl != "" {

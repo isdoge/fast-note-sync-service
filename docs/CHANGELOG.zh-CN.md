@@ -6,6 +6,16 @@
 
 ---
 
+## 未发布
+
+### ✨ 新增
+
+- **令牌自检**: 新增 `GET /api/user/token-capabilities`，任何已登录令牌（含只读、限定库的受限令牌）都能查询自己的生效能力：是否为管理员、令牌 ID、协议、是否受限、可访问的库列表、笔记/附件/设置/库的读写权限与只读标记。权限按 REST 与 WebSocket 两条通道取并集，与实际鉴权逻辑完全一致；返回值不含任何密钥、密码或原始令牌，客户端可据此自动切换到只读界面。
+- **分享基址运行时更新**: 新增 `POST /api/admin/share-base-url` 与 `GET /api/admin/share-base-url`。适合 CGNAT / 内网穿透等公网地址会变的场景，由外部通知脚本推送最新分享基址即可立即生效，无需改配置重启容器；传空值清除覆盖、回落 `server.share-base-url`。覆盖值原子持久化到 `storage/share_base_url`（权限 0600），重启后自动加载。鉴权支持生效管理员，或新增配置项 `security.share-base-url-token` 配置的静态令牌（`Authorization: Bearer` 或 `X-Share-Base-Url-Token`，常量时间比较，不写日志）；静态令牌只能推送与清除，回读仍仅限管理员。
+- **CLI 升级中转**: 新增 `GET /api/upgrade/cli`，需要已登录用户令牌。服务端代为查询固定的上游 `Go1c/FastNodeSync-CLI` 最新发布并做 10 分钟内存缓存，供无法直连 GitHub 的受限内网客户端升级；上游短暂失败时回退到缓存并标记为过期数据。
+
+---
+
 ## v3.8.6
 > *2026/11/21*
 

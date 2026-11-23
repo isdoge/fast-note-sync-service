@@ -70,3 +70,22 @@ func splitVaultAllowlist(value string) []string {
 	}
 	return append(result, current.String())
 }
+
+// SplitVaultAllowlist exposes the parsed entries of a stored vault allowlist,
+// honoring the escaped-comma format written by JoinVaultAllowlist. It always
+// returns a non-nil slice and drops empty entries.
+// SplitVaultAllowlist 解析存储格式的库白名单，支持 JoinVaultAllowlist 写入的
+// 转义逗号格式；始终返回非 nil 切片并丢弃空项。
+func SplitVaultAllowlist(value string) []string {
+	out := make([]string, 0)
+	if strings.TrimSpace(value) == "" {
+		return out
+	}
+	for _, item := range splitVaultAllowlist(value) {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}

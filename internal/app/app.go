@@ -53,6 +53,11 @@ type App struct {
 	supportRecordsMu     sync.RWMutex
 	supportRecords       map[string][]pkgapp.SupportRecord
 	wss                  *pkgapp.WebsocketServer // WebSocket server reference // WebSocket 服务器引用
+	// shareBaseURL is the runtime share base URL override set through the admin
+	// API; empty means the configured server.share-base-url applies.
+	// shareBaseURL 是管理接口设置的运行时分享基址覆盖值；为空时沿用配置的
+	// server.share-base-url。
+	shareBaseURL *ShareBaseURLStore
 }
 
 // NewApp creates application container instance
@@ -107,6 +112,15 @@ func NewApp(cfg *AppConfig, logger *zap.Logger, db *gorm.DB, efs embed.FS) (*App
 
 	// Load support records
 	a.loadSupportRecords(efs)
+
+	// Restore a runtime share base URL override persisted by a previous run, so
+	// a CGNAT / tunnel address survives restarts without editing the config.
+	// 恢复上一次运行持久化的分享基址覆盖值，让 CGNAT / 内网穿透地址在重启后
+	// 继续生效，无需改配置。
+	a.shareBaseURL = NewShareBaseURLStore(defaultShareBaseURLStorePath())
+	if err := a.shareBaseURL.Load(); err != nil {
+		logger.Warn("failed to load runtime share base url override; using configured value", zap.Error(err))
+	}
 
 	logger.Info("App container initialized successfully")
 	return a, nil
