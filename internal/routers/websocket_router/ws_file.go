@@ -833,6 +833,12 @@ func (h *FileWSHandler) FileChunkDownload(c *pkgapp.WebsocketClient, msg *pkgapp
 			ChunkSize:   session.ChunkSize,
 			TotalChunks: session.TotalChunks,
 			Size:        session.Size,
+			// 带上该附件当前的 revision：插件下载完成后据此记录“已确认基线”，
+			// 否则后续改名/修改会被当成无基线冲突。
+			// Carry the attachment's current revision so the plugin can record a
+			// confirmed baseline after the download; without it every later
+			// rename/edit is rejected as a no-baseline conflict.
+			Revision: fileSvc.Revision,
 		},
 	).WithVault(params.Vault).WithContext(params.Context), FileSyncChunkDownload)
 

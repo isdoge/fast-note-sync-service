@@ -44,6 +44,7 @@ type FileSyncDownloadMessage struct {
 	ChunkSize   int64  `json:"chunkSize" example:"1048576"`     // Chunk size // 分块大小
 	TotalChunks int64  `json:"totalChunks" example:"10"`        // Total chunks // 总分块数
 	Size        int64  `json:"size" example:"10485760"`         // Total file size // 文件总大小
+	Revision    string `json:"revision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Server revision token of the downloaded version // 所下载版本的服务端版本令牌
 }
 
 // FileSyncMtimeMessage defines the message structure for file metadata update
