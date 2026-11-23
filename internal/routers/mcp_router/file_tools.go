@@ -491,15 +491,9 @@ func registerFileTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		}
 
 		// Broadcast WebSocket event to sync other clients // 广播 WebSocket 事件以同步其他客户端
-		wss.BroadcastToUser(uid, code.Success.WithData(dto.FileSyncModifyMessage{
-			Path:             fileDTO.Path,
-			PathHash:         fileDTO.PathHash,
-			ContentHash:      fileDTO.ContentHash,
-			Size:             fileDTO.Size,
-			Ctime:            fileDTO.Ctime,
-			Mtime:            fileDTO.Mtime,
-			UpdatedTimestamp: fileDTO.UpdatedTimestamp,
-		}).WithVault(vault), "FileSyncUpdate")
+		wss.BroadcastToUser(uid, code.Success.WithData(
+			fileDTO.ToSyncModifyMessage(),
+		).WithVault(vault), "FileSyncUpdate")
 
 		return mcp.NewToolResultStructured(mcpFileWriteOutput{
 			Vault: vault,

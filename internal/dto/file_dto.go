@@ -229,3 +229,25 @@ type FileDTO struct {
 	Unchanged bool   `json:"-" form:"-"`
 	Revision  string `json:"revision,omitempty"` // Server revision token // 服务端版本令牌
 }
+
+// ToSyncModifyMessage builds the FileSyncModifyMessage broadcast to other
+// clients after a file write. It carries the revision token so receivers can
+// record the update as a confirmed baseline. A nil receiver yields a zero
+// value.
+// ToSyncModifyMessage 构造文件写入后广播给其它客户端的 FileSyncModifyMessage，
+// 带上版本令牌，使接收方能将这次更新记为已确认基线。接收者为 nil 时返回零值。
+func (f *FileDTO) ToSyncModifyMessage() FileSyncModifyMessage {
+	if f == nil {
+		return FileSyncModifyMessage{}
+	}
+	return FileSyncModifyMessage{
+		Path:             f.Path,
+		PathHash:         f.PathHash,
+		ContentHash:      f.ContentHash,
+		Size:             f.Size,
+		Ctime:            f.Ctime,
+		Mtime:            f.Mtime,
+		UpdatedTimestamp: f.UpdatedTimestamp,
+		Revision:         f.Revision,
+	}
+}
