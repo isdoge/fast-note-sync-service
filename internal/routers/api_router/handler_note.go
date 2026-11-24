@@ -168,7 +168,7 @@ func (h *NoteHandler) List(c *gin.Context) {
 
 // CreateOrUpdate creates or updates a note
 // @Summary Create or update note
-// @Description Handle note creation, modification, or renaming (identified by path change)
+// @Description Handle note creation, modification, or renaming (identified by path change). Sending any baseline field turns the request into a conditional write; a mismatch returns code 530 with a structured conflict body and writes nothing.
 // @Tags Note
 // @Security UserAuthToken
 // @Accept json
@@ -305,7 +305,7 @@ func (h *NoteHandler) CreateOrUpdate(c *gin.Context) {
 
 // Delete deletes a note
 // @Summary Delete note
-// @Description Move note to trash
+// @Description Move note to trash. Sending both baseRevision and baseHash turns the delete into a conditional delete; a mismatch returns code 530 with a structured conflict body.
 // @Tags Note
 // @Security UserAuthToken
 // @Produce json

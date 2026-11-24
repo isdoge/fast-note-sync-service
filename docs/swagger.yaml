@@ -168,6 +168,11 @@ definitions:
       ftsBleveStoreRaw:
         description: Whether Bleve stores raw content // Bleve 全文搜索是否存储原始文本
         type: boolean
+      gitAllowedPrivateHosts:
+        description: Allowed private Git hosts // 允许访问的私网 Git 主机
+        items:
+          type: string
+        type: array
       gitEmail:
         description: Git author email // Git 提交的作者邮箱
         type: string
@@ -198,8 +203,8 @@ definitions:
         description: 'Update version channel: stable | beta // 更新版本通道：stable | beta'
         type: string
       pullSource:
-        description: 'Data pull source: auto | github (legacy values use GitHub) // 数据拉取源：auto | github
-          (legacy values use GitHub)'
+        description: 'Data pull source: auto | github (legacy values use GitHub) //
+          数据拉取源：auto | github (legacy values use GitHub)'
         type: string
       registerIsEnable:
         description: Registration enablement // 是否开启注册
@@ -227,6 +232,9 @@ definitions:
         type: string
       webguiLoginTokenBindIp:
         description: WebGUI login token bind IP // WebGUI 登录 Token 是否绑定 IP
+        type: boolean
+      webguiLoginTokenBindUa:
+        description: WebGUI login token bind User-Agent // WebGUI 登录 Token 是否绑定 User-Agent
         type: boolean
       webguiLoginTokenExpiry:
         description: WebGUI login token expiry // WebGUI 登录 Token 有效期
@@ -685,6 +693,56 @@ definitions:
         description: Updated at // 更新时间
         type: string
     type: object
+  dto.CLIAsset:
+    properties:
+      downloadUrl:
+        description: Download URL // 下载地址
+        type: string
+      name:
+        description: File name // 文件名
+        type: string
+      size:
+        description: Size in bytes // 字节大小
+        type: integer
+    type: object
+  dto.CLIUpgradeResponse:
+    properties:
+      assets:
+        description: Release assets // 发布资源
+        items:
+          $ref: '#/definitions/dto.CLIAsset'
+        type: array
+      body:
+        description: Release notes // 发布说明
+        type: string
+      cached:
+        description: Whether served from the short-lived cache // 是否来自短时缓存
+        type: boolean
+      cachedAt:
+        description: When the cached payload was fetched // 缓存抓取时间
+        type: string
+      htmlUrl:
+        description: Release page URL // 发布页地址
+        type: string
+      name:
+        description: Release name // 发布名称
+        type: string
+      prerelease:
+        description: Prerelease flag // 预发布标记
+        type: boolean
+      publishedAt:
+        description: Publish time (RFC3339) // 发布时间
+        type: string
+      repository:
+        description: Fixed upstream repository // 固定上游仓库
+        type: string
+      stale:
+        description: Served from cache after an upstream failure // 上游失败时回退到缓存
+        type: boolean
+      version:
+        description: Latest tag name // 最新 tag
+        type: string
+    type: object
   dto.FileDTO:
     properties:
       contentHash:
@@ -714,6 +772,9 @@ definitions:
       rename:
         description: Rename flag // 重命名标记
         type: integer
+      revision:
+        description: Server revision token // 服务端版本令牌
+        type: string
       size:
         description: File size // 文件大小
         type: integer
@@ -789,10 +850,18 @@ definitions:
     type: object
   dto.FolderCreateRequest:
     properties:
+      baseRevision:
+        description: Server revision token of the baseline // 基线的服务端版本令牌
+        example: 0123456789abcdef0123456789abcdef
+        type: string
       context:
         description: Context // 同步上下文
         example: ctx123
         type: string
+      isConflictResolved:
+        description: Marks if conflict is resolved manually // 标记是否为手动解决冲突
+        example: false
+        type: boolean
       path:
         description: Folder path // 文件夹路径
         example: NewFolder
@@ -829,12 +898,19 @@ definitions:
       pathHash:
         description: Path hash // 路径哈希值
         type: string
+      revision:
+        description: Server revision token // 服务端版本令牌
+        type: string
       updatedAt:
         description: Updated at time // 更新时间
         type: string
     type: object
   dto.FolderDeleteRequest:
     properties:
+      baseRevision:
+        description: Server revision token of the baseline // 基线的服务端版本令牌
+        example: 0123456789abcdef0123456789abcdef
+        type: string
       context:
         description: Context // 同步上下文
         example: ctx123
@@ -899,6 +975,9 @@ definitions:
       branch:
         description: Branch // 分支
         type: string
+      bundleAssets:
+        description: Bundle referenced assets // 是否汇聚引用附件
+        type: boolean
       configSyncRules:
         description: Config sync rules // 配置同步规则
         items:
@@ -935,9 +1014,18 @@ definitions:
       repoUrl:
         description: Repository URL // 仓库地址
         type: string
+      requireFrontmatter:
+        description: Frontmatter filter expression // Frontmatter 过滤条件
+        type: string
       retentionDays:
         description: History retention days // 历史记录保留天数
         type: integer
+      sourceDir:
+        description: Source directory prefix // 源目录前缀
+        type: string
+      targetSubdir:
+        description: Target repo subdirectory sandbox // 目标仓库子目录沙箱
+        type: string
       uid:
         description: User ID // 用户ID
         type: integer
@@ -947,14 +1035,22 @@ definitions:
       username:
         description: Username // 用户名
         type: string
+      validateFrontmatter:
+        description: Validate Astro frontmatter // 是否预检 Astro Frontmatter
+        type: boolean
       vault:
         description: Associated vault name // 关联库名称
+        type: string
+      webhookUrl:
+        description: Deploy webhook URL // 部署回调地址
         type: string
     type: object
   dto.GitSyncConfigRequest:
     properties:
       branch:
         type: string
+      bundleAssets:
+        type: boolean
       configSyncRules:
         items:
           type: string
@@ -972,12 +1068,26 @@ definitions:
         type: string
       repoUrl:
         type: string
+      requireFrontmatter:
+        type: string
       retentionDays:
         type: integer
+      sourceDir:
+        description: |-
+          Blog/Astro mapping extensions (v3.8.5). Optional; zero values keep the legacy
+          whole-vault mirror behavior.
+          博客/Astro 映射扩展（v3.8.5）。可选；零值即保持原有整库镜像行为。
+        type: string
+      targetSubdir:
+        type: string
       username:
         type: string
+      validateFrontmatter:
+        type: boolean
       vault:
         description: Associated vault name // 关联笔记本名称
+        type: string
+      webhookUrl:
         type: string
     required:
     - repoUrl
@@ -1014,6 +1124,41 @@ definitions:
         description: 0:Idle, 1:Running, 2:Success, 3:Failed, 4:Shutdown
         type: integer
     type: object
+  dto.GitSyncPublicStatusDTO:
+    properties:
+      branch:
+        type: string
+      bundleAssets:
+        type: boolean
+      id:
+        type: integer
+      isEnabled:
+        type: boolean
+      lastMessage:
+        type: string
+      lastStatus:
+        type: integer
+      lastSyncTime:
+        type: string
+      requireFrontmatter:
+        type: string
+      sourceDir:
+        description: |-
+          Read-only, non-secret mapping summary. These describe how notes are exported
+          (which local folder, which frontmatter filter, whether assets are bundled) and
+          never expose repository endpoints or credentials.
+          只读、非敏感的映射摘要：导出源目录、Frontmatter 过滤条件、是否预检与汇聚附件；
+          不包含仓库地址或任何凭据。
+        type: string
+      targetSubdir:
+        type: string
+      updatedAt:
+        type: string
+      validateFrontmatter:
+        type: boolean
+      vault:
+        type: string
+    type: object
   dto.GitSyncValidateRequest:
     properties:
       branch:
@@ -1026,6 +1171,15 @@ definitions:
         type: string
     required:
     - repoUrl
+    type: object
+  dto.GitSyncVaultTriggerRequest:
+    properties:
+      configId:
+        type: integer
+      vault:
+        type: string
+    required:
+    - vault
     type: object
   dto.NoteAppendRequest:
     properties:
@@ -1087,6 +1241,9 @@ definitions:
         type: string
       pathHash:
         description: Path hash // 路径哈希
+        type: string
+      revision:
+        description: Server revision token // 服务端版本令牌
         type: string
       size:
         description: Note size // 笔记大小
@@ -1178,6 +1335,18 @@ definitions:
         description: Marks if baseHash is unavailable // 标记基准哈希是否缺失
         example: false
         type: boolean
+      baseRevision:
+        description: |-
+          BaseRevision is the server revision token the client saw when confirming the base.
+          Empty means "no trusted version token"; it must never authorize a conditional delete.
+          REST/MCP callers that send any baseline field (baseHash, baseHashMissing,
+          baseRevision) switch to a conditional write through BuildBaselineCommit; omitting
+          all of them keeps the old unconditional behavior.
+          BaseRevision 是客户端确认基线时看到服务端版本令牌；为空表示没有可信版本令牌，不得据此执行条件删除。
+          REST/MCP 调用方只要发送任一基线字段（baseHash、baseHashMissing、baseRevision）就通过
+          BuildBaselineCommit 切换为条件写；全部省略时保持旧的无条件行为。
+        example: 0123456789abcdef0123456789abcdef
+        type: string
       content:
         description: Note content // 笔记内容
         example: '# Hello World'
@@ -1198,6 +1367,10 @@ definitions:
         description: Creation timestamp // 创建时间戳
         example: 1700000000
         type: integer
+      isConflictResolved:
+        description: Marks if conflict is resolved manually // 标记是否为手动解决冲突
+        example: false
+        type: boolean
       mtime:
         description: Modification timestamp // 修改时间戳
         example: 1700000000
@@ -1249,6 +1422,12 @@ definitions:
         type: string
       pathHash:
         description: Path hash // 路径哈希
+        type: string
+      revision:
+        description: |-
+          Revision lets a REST client take the current version token from a list page
+          and use it as baseRevision for a conditional write.
+          Revision 让 REST 客户端直接从列表页拿到当前版本令牌，作为条件写的 baseRevision。
         type: string
       size:
         description: Note size // 笔记大小
@@ -1461,6 +1640,9 @@ definitions:
       pathHash:
         description: Path hash // 路径哈希
         type: string
+      revision:
+        description: Server revision token // 服务端版本令牌
+        type: string
       updatedAt:
         description: Updated at time // 更新时间
       version:
@@ -1496,12 +1678,27 @@ definitions:
       pathHash:
         description: Path hash // 路径哈希值
         type: string
+      revision:
+        description: Server revision token // 服务端版本令牌
+        type: string
       updatedAt:
         description: Updated at time // 更新时间
         type: string
     type: object
   dto.SettingDeleteRequest:
     properties:
+      baseHash:
+        description: Content baseline // 内容基线
+        example: bhash789
+        type: string
+      baseHashMissing:
+        description: No trusted content baseline // 没有可信内容基线
+        example: false
+        type: boolean
+      baseRevision:
+        description: Server revision token of the baseline // 基线的服务端版本令牌
+        example: 0123456789abcdef0123456789abcdef
+        type: string
       context:
         description: Context // 同步上下文
         example: ctx123
@@ -1524,6 +1721,18 @@ definitions:
     type: object
   dto.SettingModifyOrCreateRequest:
     properties:
+      baseHash:
+        description: Content baseline // 内容基线
+        example: bhash789
+        type: string
+      baseHashMissing:
+        description: No trusted content baseline // 没有可信内容基线
+        example: false
+        type: boolean
+      baseRevision:
+        description: Server revision token of the baseline // 基线的服务端版本令牌
+        example: 0123456789abcdef0123456789abcdef
+        type: string
       content:
         description: Setting content // 配置内容
         example: dark
@@ -1540,6 +1749,10 @@ definitions:
         description: Creation timestamp // 创建时间戳
         example: 1700000000
         type: integer
+      isConflictResolved:
+        description: Marks if conflict is resolved manually // 标记是否为手动解决冲突
+        example: false
+        type: boolean
       mtime:
         description: Modification timestamp // 修改时间戳
         example: 1700000000
@@ -1586,6 +1799,23 @@ definitions:
     - newPath
     - oldPath
     - vault
+    type: object
+  dto.ShareBaseURLResponse:
+    properties:
+      baseUrl:
+        description: Effective base URL (empty when unset) // 生效的基址（未设置时为空）
+        type: string
+      source:
+        description: '"override" (runtime) or "config" (server.share-base-url) //
+          override（运行时）或 config（配置）'
+        type: string
+    type: object
+  dto.ShareBaseURLUpdateRequest:
+    properties:
+      baseUrl:
+        description: New public base URL, http(s) only; empty clears the override
+          // 新的公开基址，仅支持 http(s)；空值清除覆盖
+        type: string
     type: object
   dto.ShareCancelRequest:
     properties:
@@ -1779,13 +2009,13 @@ definitions:
       github:
         allOf:
         - $ref: '#/definitions/dto.SourceProbeItem'
-        description: GitHub probe result // GitHub 探测结果
+        description: GitHub 探测结果
       recommended:
-        description: 'Recommended source: "github" // 推荐源'
+        description: 推荐源
         example: github
         type: string
       selectedMode:
-        description: Current configured pull-source mode // 当前配置的选源模式
+        description: 当前配置的选源模式
         example: auto
         type: string
     type: object
@@ -1951,6 +2181,64 @@ definitions:
       vaultId:
         description: Vault ID // 笔记本 ID
         type: integer
+    type: object
+  dto.TokenCapabilitiesResponse:
+    properties:
+      isAdmin:
+        description: Effective admin flag // 是否生效管理员
+        type: boolean
+      permissions:
+        allOf:
+        - $ref: '#/definitions/dto.TokenCapabilityFunctions'
+        description: Effective function permissions // 有效功能权限
+      protocol:
+        description: Protocol dimension from scope // scope 中的协议维度
+        type: string
+      readOnly:
+        description: True when neither note nor file write is allowed // 不允许笔记与附件写时为
+          true
+        type: boolean
+      restricted:
+        description: Vault-restricted or not full permissions // 是否限制库或非全权限
+        type: boolean
+      tokenId:
+        description: Database token ID (string for plugin convenience) // 数据库令牌 ID（字符串，便于插件消费）
+        type: string
+      uid:
+        description: User ID // 用户 ID
+        type: integer
+      vaults:
+        description: Allowed vaults (empty = unrestricted) // 允许的库（空 = 不限制）
+        items:
+          type: string
+        type: array
+    type: object
+  dto.TokenCapabilityFunctions:
+    properties:
+      fileRead:
+        description: file_r // 附件读
+        type: boolean
+      fileWrite:
+        description: file_w // 附件写
+        type: boolean
+      noteRead:
+        description: note_r // 笔记读
+        type: boolean
+      noteWrite:
+        description: note_w // 笔记写
+        type: boolean
+      settingRead:
+        description: config_r // 设置读
+        type: boolean
+      settingWrite:
+        description: config_w // 设置写
+        type: boolean
+      vaultRead:
+        description: vault_r // 库读
+        type: boolean
+      vaultWrite:
+        description: vault_w // 库写
+        type: boolean
     type: object
   dto.UserChangePasswordRequest:
     properties:
@@ -2471,6 +2759,67 @@ paths:
       summary: Trigger server restart
       tags:
       - System
+  /api/admin/share-base-url:
+    get:
+      description: Return the currently effective share base URL and whether it comes
+        from a runtime override or the config file. An empty baseUrl means there is
+        no fixed share base URL right now, so links are built from ext-api-url or
+        the request address.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            allOf:
+            - $ref: '#/definitions/app.Res'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.ShareBaseURLResponse'
+              type: object
+        "403":
+          description: Insufficient privileges
+          schema:
+            $ref: '#/definitions/app.Res'
+      security:
+      - UserAuthToken: []
+      summary: Get effective share base URL
+      tags:
+      - Admin
+    post:
+      consumes:
+      - application/json
+      description: Set a public http(s) base URL for generated share links (empty
+        clears the override and falls back to the config). Intended for CGNAT / tunnel
+        setups whose public address changes dynamically.
+      parameters:
+      - description: Base URL
+        in: body
+        name: params
+        required: true
+        schema:
+          $ref: '#/definitions/dto.ShareBaseURLUpdateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            allOf:
+            - $ref: '#/definitions/app.Res'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.ShareBaseURLResponse'
+              type: object
+        "403":
+          description: Insufficient privileges
+          schema:
+            $ref: '#/definitions/app.Res'
+      security:
+      - UserAuthToken: []
+      summary: Update runtime share base URL
+      tags:
+      - Admin
   /api/admin/system/info:
     get:
       description: Get server runtime, CPU, memory, host and process info, requires
@@ -2877,13 +3226,34 @@ paths:
   /api/file:
     delete:
       description: Permanently delete a specific attachment record and its physical
-        file
+        file. Sending both baseRevision and baseHash turns the delete into a conditional
+        delete; a mismatch returns code 530 with a structured conflict body.
       parameters:
+      - description: Content baseline // 内容基线
+        example: bhash789
+        in: query
+        name: baseHash
+        type: string
+      - description: No trusted content baseline // 没有可信内容基线
+        example: false
+        in: query
+        name: baseHashMissing
+        type: boolean
+      - description: Server revision token of the baseline // 基线的服务端版本令牌
+        example: 0123456789abcdef0123456789abcdef
+        in: query
+        name: baseRevision
+        type: string
       - description: Context // 同步上下文
         example: ctx123
         in: query
         name: context
         type: string
+      - description: Marks if conflict is resolved manually // 标记是否为手动解决冲突
+        example: false
+        in: query
+        name: isConflictResolved
+        type: boolean
       - description: File path // 文件路径
         example: Image.png
         in: query
@@ -2965,7 +3335,9 @@ paths:
     post:
       consumes:
       - multipart/form-data
-      description: Upload a file as an attachment
+      description: Upload a file as an attachment. Sending any baseline field turns
+        the upload into a conditional write; a mismatch returns code 530 with a structured
+        conflict body and writes nothing.
       parameters:
       - description: Vault name
         in: formData
@@ -2977,6 +3349,10 @@ paths:
         name: path
         required: true
         type: string
+      - description: Path hash
+        in: formData
+        name: pathHash
+        type: string
       - description: Creation timestamp
         format: int64
         in: formData
@@ -2987,6 +3363,22 @@ paths:
         in: formData
         name: mtime
         type: integer
+      - description: Server revision token of the baseline
+        in: formData
+        name: baseRevision
+        type: string
+      - description: Content hash baseline
+        in: formData
+        name: baseHash
+        type: string
+      - description: No trusted content baseline
+        in: formData
+        name: baseHashMissing
+        type: boolean
+      - description: Marks a manual conflict resolution
+        in: formData
+        name: isConflictResolved
+        type: boolean
       - description: File to upload
         in: formData
         name: file
@@ -3700,6 +4092,79 @@ paths:
       summary: Get git sync histories
       tags:
       - GitSync
+  /api/git-sync/status:
+    get:
+      parameters:
+      - in: query
+        name: vault
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            allOf:
+            - $ref: '#/definitions/app.Res'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/dto.GitSyncPublicStatusDTO'
+                  type: array
+              type: object
+        "400":
+          description: Invalid Params
+          schema:
+            $ref: '#/definitions/app.Res'
+        "401":
+          description: Token Required
+          schema:
+            $ref: '#/definitions/app.Res'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/app.Res'
+      security:
+      - UserAuthToken: []
+      summary: Get git sync status for a vault
+      tags:
+      - GitSync
+  /api/git-sync/trigger:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Parameters
+        in: body
+        name: params
+        required: true
+        schema:
+          $ref: '#/definitions/dto.GitSyncVaultTriggerRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            $ref: '#/definitions/app.Res'
+        "400":
+          description: Invalid Params
+          schema:
+            $ref: '#/definitions/app.Res'
+        "401":
+          description: Token Required
+          schema:
+            $ref: '#/definitions/app.Res'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/app.Res'
+      security:
+      - UserAuthToken: []
+      summary: Trigger git sync for a vault
+      tags:
+      - GitSync
   /api/git-sync/validate:
     post:
       consumes:
@@ -3750,13 +4215,35 @@ paths:
       - System
   /api/note:
     delete:
-      description: Move note to trash
+      description: Move note to trash. Sending both baseRevision and baseHash turns
+        the delete into a conditional delete; a mismatch returns code 530 with a structured
+        conflict body.
       parameters:
+      - description: Content baseline // 内容基线
+        example: bhash789
+        in: query
+        name: baseHash
+        type: string
+      - description: No trusted content baseline // 没有可信内容基线
+        example: false
+        in: query
+        name: baseHashMissing
+        type: boolean
+      - description: Server revision token of the baseline // 基线的服务端版本令牌
+        example: 0123456789abcdef0123456789abcdef
+        in: query
+        name: baseRevision
+        type: string
       - description: Context // 同步上下文
         example: ctx123
         in: query
         name: context
         type: string
+      - description: Marks if conflict is resolved manually // 标记是否为手动解决冲突
+        example: false
+        in: query
+        name: isConflictResolved
+        type: boolean
       - description: Note path // 笔记路径
         example: ReadMe.md
         in: query
@@ -3837,7 +4324,9 @@ paths:
       consumes:
       - application/json
       description: Handle note creation, modification, or renaming (identified by
-        path change)
+        path change). Sending any baseline field turns the request into a conditional
+        write; a mismatch returns code 530 with a structured conflict body and writes
+        nothing.
       parameters:
       - description: Note Content
         in: body
@@ -4992,6 +5481,28 @@ paths:
       summary: Get sync log list
       tags:
       - Sync Log
+  /api/upgrade/cli:
+    get:
+      description: Proxy the latest FastNodeSync-CLI release (fixed upstream, 10-minute
+        in-memory cache) so restricted intranet clients can upgrade. Requires an authenticated
+        user token.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            allOf:
+            - $ref: '#/definitions/app.Res'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.CLIUpgradeResponse'
+              type: object
+      security:
+      - UserAuthToken: []
+      summary: Get latest FastNodeSync-CLI release
+      tags:
+      - System
   /api/user/change_password:
     post:
       consumes:
@@ -5118,6 +5629,28 @@ paths:
           schema:
             $ref: '#/definitions/app.Res'
       summary: User registration
+      tags:
+      - User
+  /api/user/token-capabilities:
+    get:
+      description: Report the effective protocol, vault allowlist, read/write permissions
+        and read-only flag of the authenticated token. Never returns secrets or the
+        raw token.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Success
+          schema:
+            allOf:
+            - $ref: '#/definitions/app.Res'
+            - properties:
+                data:
+                  $ref: '#/definitions/dto.TokenCapabilitiesResponse'
+              type: object
+      security:
+      - UserAuthToken: []
+      summary: Get token capabilities
       tags:
       - User
   /api/vault:
@@ -5290,8 +5823,8 @@ paths:
       - System
   /api/version/probe:
     get:
-      description: Probe GitHub releases and return reachability,
-        latency, recommended source and current selected mode
+      description: Probe GitHub releases and return reachability, latency, recommended
+        source and current mode
       produces:
       - application/json
       responses:
