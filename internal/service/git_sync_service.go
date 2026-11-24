@@ -1228,7 +1228,7 @@ func (s *gitSyncService) stageWorkspaceChanges(conf *domain.GitSyncConfig, r *gi
 	if err != nil {
 		return false, fmt.Errorf("invalid target subdirectory: %w", err)
 	}
-	if err := stageExportScope(wt, wsPath, scope); err != nil {
+	if err := stageExportScope(r, wt, wsPath, scope); err != nil {
 		return false, err
 	}
 
@@ -1318,23 +1318,54 @@ func gitSyncHeadFiles(r *git.Repository) (map[string]object.File, plumbing.Hash,
 
 // stageExportScope stages changes under scope (a slash-separated workspace-relative
 // directory). An empty scope keeps the legacy full-mirror behavior of staging the whole
-// workspace.
+// workspace. When the scope directory is gone, the deletion is staged by dropping the
+// HEAD entries under the scope from the index (the equivalent of
+// `git rm -r --cached --ignore-unmatch <scope>`); paths outside the scope stay untouched.
 // stageExportScope 暂存 scope（斜杠分隔的工作区相对目录）下的改动；scope 为空时保持旧的整库
-// 镜像行为，暂存整个工作区。
-func stageExportScope(wt *git.Worktree, wsPath, scope string) error {
+// 镜像行为，暂存整个工作区。scope 目录整个不存在时，从索引里移除 HEAD 中该前缀下的条目来
+// 暂存删除（等价于 `git rm -r --cached --ignore-unmatch <scope>`），范围外的路径不动。
+func stageExportScope(r *git.Repository, wt *git.Worktree, wsPath, scope string) error {
 	if scope == "" {
 		return wt.AddWithOptions(&git.AddOptions{All: true})
 	}
 	rel := filepath.FromSlash(scope)
 	if _, err := os.Stat(filepath.Join(wsPath, rel)); err != nil {
 		if os.IsNotExist(err) {
-			// 目标目录尚未创建：导出范围内没有任何文件可暂存。
-			// The scope directory does not exist yet, so there is nothing to stage.
-			return nil
+			// 目标目录不存在：导出范围内的文件应视为已删除，从索引里移除其条目，
+			// 让删除随本次提交生效。
+			// The scope directory is gone, so every file inside it is treated as deleted:
+			// drop those entries from the index so the deletion is committed.
+			return unstageScopeFromIndex(r, scope)
 		}
 		return err
 	}
 	return wt.AddWithOptions(&git.AddOptions{Path: rel})
+}
+
+// unstageScopeFromIndex removes the index entries under scope, leaving entries outside
+// the scope alone. The index was just reset to HEAD, so the removed entries become
+// deletions in the next commit.
+// unstageScopeFromIndex 移除索引中 scope 前缀下的条目，范围外的条目保持不变。索引刚被重置到
+// HEAD，移除的条目会在下一次提交里表现为删除。
+func unstageScopeFromIndex(r *git.Repository, scope string) error {
+	idx, err := r.Storer.Index()
+	if err != nil {
+		return err
+	}
+	kept := idx.Entries[:0]
+	removed := false
+	for _, e := range idx.Entries {
+		if syncPathInScope(e.Name, scope) {
+			removed = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if !removed {
+		return nil
+	}
+	idx.Entries = kept
+	return r.Storer.SetIndex(idx)
 }
 
 // syncPathInScope reports whether a slash-separated workspace path belongs to the export
