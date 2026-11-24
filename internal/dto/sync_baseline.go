@@ -106,6 +106,50 @@ const (
 	BaselineRejectServerMissing = SyncConflictReasonServerMissing
 )
 
+// BuildBaselineCommit builds the conditional-commit contract from wire fields that
+// a REST or MCP caller may supply explicitly. It returns nil when the caller sent no
+// baseline at all, so the write keeps the unconditional legacy behavior. An explicitly
+// empty baseHash is treated as "no baseline" too: clients that always serialize the
+// field (protobuf-derived JSON, form defaults) must not silently switch to conditional
+// writes.
+// BuildBaselineCommit 用 REST / MCP 调用方可能显式提供的字段构造条件提交契约。
+// 调用方完全没提供基线时返回 nil，写入保持旧的无条件行为。显式传入空 baseHash 同样视为
+// 没有基线：总是序列化该字段的客户端（protobuf 派生的 JSON、表单默认值）不得因此被
+// 静默切换成条件写。
+func BuildBaselineCommit(baseHash string, baseHashMissing bool, baseRevision string, isConflictResolved bool) *BaselineCommit {
+	if baseHash == "" && !baseHashMissing && baseRevision == "" {
+		return nil
+	}
+	hash, missing := NormalizeBaseline(baseHash, baseHashMissing)
+	return &BaselineCommit{
+		HasBase:            !missing,
+		BaseHash:           hash,
+		BaseRevision:       baseRevision,
+		IsConflictResolved: isConflictResolved,
+	}
+}
+
+// BaselineConflictResponse is the structured body of a rejected REST conditional
+// write, carried inside the existing 530 (ErrorSyncConflict) envelope. It mirrors
+// the realtime SyncConflict payload closely enough that a REST client can render the
+// same conflict UI, without inlining attachment bytes.
+// BaselineConflictResponse 是被拒绝的 REST 条件写的结构化响应体，放在现有 530
+// （ErrorSyncConflict）信封里。它与实时 SyncConflict 载荷保持一致，使 REST 客户端能
+// 复用同一套冲突界面，且不内联附件二进制。
+type BaselineConflictResponse struct {
+	Conflict       bool   `json:"conflict" example:"true"`                                             // Always true // 固定为 true
+	Kind           string `json:"kind" example:"note"`                                                 // note | file // 资源类型
+	Path           string `json:"path,omitempty" example:"ReadMe.md"`                                  // Full path // 完整路径
+	PathHash       string `json:"pathHash,omitempty" example:"hash123"`                                // Path hash // 路径哈希
+	Reason         string `json:"reason" example:"both_modified"`                                      // Conflict reason // 冲突原因
+	ServerRevision string `json:"serverRevision,omitempty" example:"0123456789abcdef0123456789abcdef"` // Current server revision // 当前服务端版本令牌
+	ServerHash     string `json:"serverHash,omitempty" example:"chash456"`                             // Current server content hash // 当前服务端内容哈希
+	ServerDeleted  bool   `json:"serverDeleted" example:"false"`                                       // Current state is a tombstone // 当前是墓碑
+	BaseHash       string `json:"baseHash,omitempty" example:"bhash789"`                               // Baseline used for this decision // 本次判断使用的基线
+	BaseMissing    bool   `json:"baseMissing" example:"false"`                                         // Real base content unavailable // 真实基线内容不可用
+	ServerContent  string `json:"serverContent,omitempty" example:"# new"`                             // Live note body; never attachment bytes // 活跃笔记正文；不含附件二进制
+}
+
 // BaselineConflictError is returned by a rejected conditional commit. Callers map it
 // onto the unified SyncConflict payload (530 for realtime writes).
 // BaselineConflictError 是条件提交被拒绝时返回的错误；调用方把它映射为统一 SyncConflict 载荷

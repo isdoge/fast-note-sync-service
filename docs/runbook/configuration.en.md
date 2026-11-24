@@ -67,6 +67,7 @@ This reference follows the 3.8.0 implementation in `internal/config/*.go`, `inte
 | `ws-write-timeout` | int seconds | `10` | Application write deadline; explicit `0` disables it. |
 | `ws-ping-interval` | int seconds | `25` | WebSocket ping interval; code requires a positive value. Adjust with the next setting for idle Tunnel disconnects. |
 | `ws-ping-wait` | int seconds | `60` | Inbound liveness timeout followed by a grace period; try `180` for Cloudflare Tunnel. This only delays reconnection when pongs are continuously lost. |
+| `sync-exclude-system-junk` | bool | `true` | Refuse to create, modify, upload or rename-to system junk files (`.DS_Store`, `Thumbs.db`, `desktop.ini`, and names starting with `._`). Junk entries already in a vault stay readable, downloadable and deletable. Set to `false` to sync them as before. |
 | `pull-source` | string | `auto` | Update source: `auto` or `github`; legacy values fall back to GitHub. |
 | `pull-release-channel` | string | `stable` | Update channel `stable` or `beta`; supported by code but absent from the sample YAML. |
 | `fts-bleve-enabled` | bool | `true` | Bleve full-text search; automatically disabled on 32-bit ARM. |
@@ -85,6 +86,7 @@ This reference follows the 3.8.0 implementation in `internal/config/*.go`, `inte
 | `webgui-login-token-bind-ip` | bool | `true` | Bind WebGUI tokens to client IP. |
 | `webgui-login-token-bind-ua` | bool | `true` | Bind WebGUI tokens to User-Agent. |
 | `strict-empty-protocol` | bool | `false` | Strictly reject token scopes whose protocol dimension is empty (whole-string empty scope or `p:` with no value); such scopes act as wildcards by default and are denied when enabled. Verification-side only; newly issued tokens no longer produce an empty protocol dimension. Before enabling, run `SELECT id, uid, scope FROM auth_token WHERE scope = '' OR scope LIKE 'p: %';` to confirm no legacy rows. |
+| `share-base-url-token` | string | Empty | Optional static token for the runtime share base URL admin endpoints (`POST/GET /api/admin/share-base-url`). When set, an external dynamic-address notifier can push the latest public base URL with `Authorization: Bearer <token>` or the `X-Share-Base-Url-Token` header (empty value clears the override and falls back to `server.share-base-url`) without an admin login token or a config edit + restart. When empty, only the effective admin may call them. The static token may push (POST) and clear the override, but reading it back (GET) stays admin-only; the token is compared in constant time and never logged. |
 
 ## database and user-database
 

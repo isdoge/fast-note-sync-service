@@ -117,6 +117,32 @@ func checkVaultAccess(ctx context.Context, vault string) error {
 	return nil
 }
 
+// checkVaultIDAccess enforces the token's vault allowlist for tools that address a
+// resource by ID rather than by vault name (note_history_get/restore). The resource
+// carries only its VaultID, so the vault name has to be resolved first; otherwise a
+// restricted token could read or rewrite a note in another vault by guessing an ID
+// (#458, same rule as the REST history handlers).
+// checkVaultIDAccess 对按 ID 寻址资源（note_history_get/restore）的工具执行令牌库白名单校验。
+// 资源只带 VaultID，必须先解析库名；否则受限令牌可以靠猜 ID 读取或改写其它库的笔记
+// （#458，与 REST 历史处理器同一规则）。
+func checkVaultIDAccess(ctx context.Context, appContainer *app.App, uid, vaultID int64) error {
+	allowedVaults, _ := ctx.Value("vaults").(string)
+	if allowedVaults == "" {
+		return nil
+	}
+	if appContainer.VaultService == nil {
+		return fmt.Errorf("vault access restricted: vault service unavailable")
+	}
+	vault, err := appContainer.VaultService.Get(ctx, uid, vaultID)
+	if err != nil || vault == nil {
+		return fmt.Errorf("vault access restricted: unknown vault %d", vaultID)
+	}
+	if !util.VerifyVaultAccess(allowedVaults, vault.Name) {
+		return fmt.Errorf("vault access restricted: %s", vault.Name)
+	}
+	return nil
+}
+
 // cleanToolPath normalizes a vault-relative path for MCP write tools:
 // it strips leading "/" and rejects empty paths, absolute paths, ".."-segment
 // and NUL paths, segment-wise with no URL decoding (#342 S-8). Backslashes are
@@ -154,6 +180,36 @@ func cleanNewNotePath(path string) (string, error) {
 	return util.EnsureMDExt(cleaned), nil
 }
 
+// cleanWriteToolPath is cleanToolPath plus the optional system junk rejection for
+// MCP tools that create or overwrite an entry. Read/delete/restore/recycle-clear
+// tools and rename old paths must keep using cleanToolPath so legacy junk entries
+// stay readable, deletable and fixable.
+// cleanWriteToolPath 在 cleanToolPath 基础上，对新建或覆盖条目的 MCP 工具按开关
+// 拒收系统垃圾文件。读取、删除、恢复、清理回收站工具以及改名的旧路径必须继续用
+// cleanToolPath，以保证库里已有的垃圾条目仍可读取、删除和改名修正。
+func cleanWriteToolPath(cfg *app.AppConfig, path string) (string, error) {
+	cleaned, err := cleanToolPath(path)
+	if err != nil {
+		return "", err
+	}
+	if cfg != nil && cfg.App.SyncExcludeSystemJunkEnabled() && util.IsSystemJunkPath(cleaned) {
+		return "", fmt.Errorf("system junk file is not synced: %s", cleaned)
+	}
+	return cleaned, nil
+}
+
+// cleanNewWriteNotePath is cleanNewNotePath plus the system junk rejection; it is
+// for tools that create a new note path.
+// cleanNewWriteNotePath 在 cleanNewNotePath 基础上拒收系统垃圾文件，用于会产生
+// 新笔记路径的工具。
+func cleanNewWriteNotePath(cfg *app.AppConfig, path string) (string, error) {
+	cleaned, err := cleanWriteToolPath(cfg, path)
+	if err != nil {
+		return "", err
+	}
+	return util.EnsureMDExt(cleaned), nil
+}
+
 func NewMCPServer(appContainer *app.App, wss *pkgapp.WebsocketServer) *mcpsrv.MCPServer {
 	// Create MCP server
 	srv := mcpsrv.NewMCPServer(
@@ -169,6 +225,10 @@ func NewMCPServer(appContainer *app.App, wss *pkgapp.WebsocketServer) *mcpsrv.MC
 
 	// Folder Tools
 	registerFolderTools(srv, appContainer, wss)
+	registerFolderListTool(srv, appContainer)
+
+	// Note history tools
+	registerHistoryTools(srv, appContainer, wss)
 
 	// Vault Tools
 	registerVaultTools(srv, appContainer)

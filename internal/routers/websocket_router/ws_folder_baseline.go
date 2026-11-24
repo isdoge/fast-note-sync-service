@@ -135,6 +135,10 @@ func (h *FolderWSHandler) doFolderSyncBaseline(c *pkgapp.WebsocketClient, params
 				needModifyCount++
 			}
 		case baselineActionUpload:
+			// 服务端没有该目录时，系统垃圾目录不再创建；老客户端每轮上报本地垃圾目录。
+			if !server.Found && h.writeRejectsSystemJunk(path) {
+				break
+			}
 			if !hasWritePermission {
 				break
 			}

@@ -981,6 +981,7 @@ func enSendDataPayload(action WebSocketSendAction, data any) ([]byte, error) {
 				ChunkSize:   src.ChunkSize,
 				TotalChunks: src.TotalChunks,
 				Size:        src.Size,
+				Revision:    src.Revision,
 			}
 			return proto.Marshal(pbMsg)
 		}

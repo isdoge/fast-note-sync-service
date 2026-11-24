@@ -360,6 +360,7 @@ func registerSearchTools(srv *mcpsrv.MCPServer, appContainer *app.App) {
 				UpdatedTimestamp: n.UpdatedTimestamp,
 				UpdatedAt:        formatNoteTime(n.UpdatedAt),
 				CreatedAt:        formatNoteTime(n.CreatedAt),
+				Revision:         n.Revision,
 			})
 		}
 		return mcp.NewToolResultStructured(out, "notes under '"+prefix+"': "+itoa(out.Count)), nil

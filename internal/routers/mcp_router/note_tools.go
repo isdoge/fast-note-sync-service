@@ -127,10 +127,13 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 
 	// 3. Create or Update Note
 	toolCreateUpdateNote := mcp.NewTool("note_create_or_update",
-		mcp.WithDescription("Create or update a note"),
+		mcp.WithDescription(mcpBaselineHint("Create or update a note", "note_restore")),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped and a missing '.md' suffix is appended automatically")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("Note content")),
+		mcpBaseRevisionOption(),
+		mcpBaseHashOption(),
+		mcpBaseHashMissingOption(),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolCreateUpdateNote, cfg, false, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -150,7 +153,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanNewNotePath(path)
+		path, err := cleanNewWriteNotePath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -167,9 +170,13 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			ContentHash: contentHash,
 			Mtime:       now,
 			Ctime:       now,
+			Baseline:    mcpBaselineFromArgs(args),
 		}, false)
 
 		if err != nil {
+			if conflict, ok := mcpBaselineConflict(err); ok {
+				return mcpConflictResult(vault, conflict, dto.SyncConflictKindNote, path, pathHash, stringArg(args, "base_hash")), nil
+			}
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
@@ -184,9 +191,11 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 
 	// 4. Delete Note
 	toolDeleteNote := mcp.NewTool("note_delete",
-		mcp.WithDescription("Delete a note"),
+		mcp.WithDescription(mcpBaselineDeleteHint("Delete a note")),
 		mcp.WithString("vault", mcp.Description("Vault name. Omitting this or providing 'default' will use the client-configured default vault.")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Note path, relative to the vault root, separated by '/'; a leading '/' is stripped (use the exact stored path, no suffix is added)")),
+		mcpBaseRevisionOption(),
+		mcpBaseHashDeleteOption(),
 		mcp.WithOutputSchema[mcpNoteMutationOutput](),
 	)
 	srv.AddTool(writeMCPTool(toolDeleteNote, cfg, true, "notes:write"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -216,9 +225,13 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			Vault:    vault,
 			Path:     path,
 			PathHash: pathHash,
+			Baseline: mcpBaselineFromArgs(args),
 		})
 
 		if err != nil {
+			if conflict, ok := mcpBaselineConflict(err); ok {
+				return mcpConflictResult(vault, conflict, dto.SyncConflictKindNote, path, pathHash, stringArg(args, "base_hash")), nil
+			}
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
@@ -261,7 +274,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		newPath, err = cleanNewNotePath(newPath)
+		newPath, err = cleanNewWriteNotePath(cfg, newPath)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -430,7 +443,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanToolPath(path)
+		path, err := cleanWriteToolPath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -497,7 +510,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanToolPath(path)
+		path, err := cleanWriteToolPath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -548,7 +561,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanToolPath(path)
+		path, err := cleanWriteToolPath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -603,7 +616,7 @@ func registerNoteTools(srv *mcpsrv.MCPServer, appContainer *app.App, wss *pkgapp
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		path, _ := args["path"].(string)
-		path, err := cleanToolPath(path)
+		path, err := cleanWriteToolPath(cfg, path)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

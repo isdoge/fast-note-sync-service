@@ -207,8 +207,6 @@ func (s *fileService) UpdateCheck(ctx context.Context, uid int64, params *dto.Fi
 
 	file, _ := s.fileRepo.GetByPathHashAndPath(ctx, params.PathHash, params.Path, vaultID, uid)
 	if file != nil {
-		fileDTO := s.domainToDTO(file)
-
 		// Check if file is deleted
 		// 检查文件是否已删除
 		if file.Action == domain.FileActionDelete {
@@ -218,28 +216,129 @@ func (s *fileService) UpdateCheck(ctx context.Context, uid int64, params *dto.Fi
 		// Check if content is consistent
 		// 检查内容是否一致
 		if file.ContentHash == params.ContentHash {
-			// Notify user to update mtime when user mtime is less than server mtime
-			// 当用户 mtime 小于服务端 mtime 时，通知用户更新 mtime
-			if params.Mtime < file.Mtime {
-				return "UpdateMtime", fileDTO, nil
-			} else if params.Mtime > file.Mtime {
-				if err := s.fileRepo.UpdateMtime(ctx, params.Mtime, file.ID, uid); err != nil {
-					// Non-critical update failed, log warning but do not block flow
-					// 非关键更新失败，记录警告日志但不阻断流程
-					zap.L().Warn("UpdateMtime failed for file",
-						zap.Int64(logger.FieldUID, uid),
-						zap.Int64("fileId", file.ID),
-						zap.Int64("mtime", params.Mtime),
-						zap.String(logger.FieldMethod, "FileService.UpdateCheck"),
-						zap.Error(err),
-					)
-				}
-			}
-			return "", fileDTO, nil
+			mode, fileDTO := s.reconcileContentEqual(ctx, uid, file, params)
+			return mode, fileDTO, nil
 		}
-		return "UpdateContent", fileDTO, nil
+
+		// 存量大文件哈希口径桥接：旧版服务端把 >10MB 附件存成「前 5MB + 后 5MB」，
+		// 新版插件按「前 5MB + 中 5MB + 后 5MB」上报。若磁盘上的实体文件确实与客户端
+		// 哈希一致，就把库内该行的 content_hash 就地升级为三分段哈希，避免用户升级后
+		// 把几百 MB 大附件全部重传一遍。
+		// Legacy large-file hash bridge: the old server stored >10MB attachments with a
+		// head+tail sample, while the new plugin reports head+middle+tail. If the payload
+		// on disk genuinely matches the client's hash, upgrade the stored content_hash in
+		// place instead of forcing every user to re-upload their large attachments.
+		if aligned, aerr := s.realignLegacyLargeFileHash(ctx, uid, file, params); aerr != nil {
+			// 兼容分支失败必须放行正常上传，不能让通知路径阻断同步。
+			// A failing bridge must fall through to the normal upload path.
+			zap.L().Warn("legacy large-file hash realign failed",
+				zap.Int64(logger.FieldUID, uid),
+				zap.Int64("fileId", file.ID),
+				zap.String(logger.FieldPath, file.Path),
+				zap.String(logger.FieldMethod, "FileService.UpdateCheck"),
+				zap.Error(aerr),
+			)
+		} else if aligned {
+			mode, fileDTO := s.reconcileContentEqual(ctx, uid, file, params)
+			return mode, fileDTO, nil
+		}
+
+		return "UpdateContent", s.domainToDTO(file), nil
 	}
 	return "Create", nil, nil
+}
+
+// reconcileContentEqual handles the case where the server and client agree on content.
+// It only reconciles mtime and never writes content.
+// reconcileContentEqual 处理服务端与客户端内容一致的情况：只对齐 mtime，不写内容。
+func (s *fileService) reconcileContentEqual(ctx context.Context, uid int64, file *domain.File, params *dto.FileUpdateCheckRequest) (string, *dto.FileDTO) {
+	fileDTO := s.domainToDTO(file)
+
+	// Notify user to update mtime when user mtime is less than server mtime
+	// 当用户 mtime 小于服务端 mtime 时，通知用户更新 mtime
+	if params.Mtime < file.Mtime {
+		return "UpdateMtime", fileDTO
+	}
+	if params.Mtime > file.Mtime {
+		if err := s.fileRepo.UpdateMtime(ctx, params.Mtime, file.ID, uid); err != nil {
+			// Non-critical update failed, log warning but do not block flow
+			// 非关键更新失败，记录警告日志但不阻断流程
+			zap.L().Warn("UpdateMtime failed for file",
+				zap.Int64(logger.FieldUID, uid),
+				zap.Int64("fileId", file.ID),
+				zap.Int64("mtime", params.Mtime),
+				zap.String(logger.FieldMethod, "FileService.UpdateCheck"),
+				zap.Error(err),
+			)
+		}
+	}
+	return "", fileDTO
+}
+
+// realignLegacyLargeFileHash upgrades a stored legacy (>10MB head+tail) content hash to
+// the three-segment hash the plugin now reports. It never skips an upload on a guess:
+// the server rereads the payload on disk, and realigns only when
+//
+//  1. the stored hash is still the legacy hash of that same on-disk payload, and
+//  2. the on-disk three-segment hash equals the hash the client just sent.
+//
+// Both hashes are sampled in a single pass. The DB write is a CAS on the old hash, so a
+// concurrent upload that replaced the payload wins and this check falls back to the
+// normal UpdateContent path.
+// realignLegacyLargeFileHash 把库内旧版（>10MB 前+后 5MB）哈希升级为插件现在上报的
+// 三分段哈希。绝不在猜测的前提下放过上传：服务端会真正重读磁盘实体文件，仅在
+// 1) 库内旧哈希确实描述该实体文件，且 2) 实体文件的三分段哈希等于客户端哈希时
+// 才就对升级。两种哈希在一次采样中一起算出；数据库写入以旧哈希为 CAS 条件，
+// 并发上传换掉载荷时本次对齐失败，回退到正常 UpdateContent 流程。
+func (s *fileService) realignLegacyLargeFileHash(ctx context.Context, uid int64, file *domain.File, params *dto.FileUpdateCheckRequest) (bool, error) {
+	if params.ContentHash == "" || file.SavePath == "" {
+		return false, nil
+	}
+
+	info, err := os.Stat(file.SavePath)
+	if err != nil {
+		return false, nil
+	}
+	// Only payloads that were sampled by both schemes can be bridged.
+	// 只有两种口径都会采样的大文件才需要桥接。
+	if !info.Mode().IsRegular() || info.Size() <= util.FileHashThreshold {
+		return false, nil
+	}
+
+	diskCurrent, diskLegacy, err := util.EncodeHash32FileWithLegacy(file.SavePath)
+	if err != nil {
+		return false, err
+	}
+
+	// The stored row must still describe this payload under the legacy scheme.
+	// 库内哈希必须仍是该实体文件的旧版哈希，说明行与磁盘载荷对应。
+	if diskLegacy != file.ContentHash {
+		return false, nil
+	}
+	// The client's new hash must match the payload actually on disk.
+	// 客户端的新哈希必须等于磁盘实体文件的三分段哈希；内容真变了这里必然不等。
+	if diskCurrent != params.ContentHash {
+		return false, nil
+	}
+
+	ok, err := s.fileRepo.UpdateContentHashIfCurrent(ctx, file.ID, uid, file.ContentHash, diskCurrent)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		// The row changed concurrently; let the normal content path decide.
+		// 该行已被并发改写，交给正常内容路径判定。
+		return false, nil
+	}
+
+	file.ContentHash = diskCurrent
+	zap.L().Info("legacy large-file content hash realigned",
+		zap.Int64(logger.FieldUID, uid),
+		zap.Int64("fileId", file.ID),
+		zap.String(logger.FieldPath, file.Path),
+		zap.Int64("size", info.Size()),
+	)
+	return true, nil
 }
 
 // UpdateOrCreate creates or modifies a file
@@ -372,8 +471,11 @@ func (s *fileService) UpdateOrCreate(ctx context.Context, uid int64, params *dto
 					if latest == nil {
 						latest = file
 					}
+					// 只有客户端带了可信内容基线时才能判定"双方都改了"；否则只能报令牌已移动。
+					// Only a client that carried a trusted content baseline can be told
+					// "both modified"; without one the honest reason is revision_changed.
 					reason := dto.BaselineRejectRevisionMoved
-					if latest.ContentHash != params.Baseline.BaseHash {
+					if params.Baseline.HasBase && latest.ContentHash != params.Baseline.BaseHash {
 						reason = dto.BaselineRejectBothModified
 					}
 					return nil, baselineConflictFromFile(reason, latest)

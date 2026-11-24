@@ -94,6 +94,10 @@ func (h *NoteWSHandler) NoteModify(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path").WithData(errPathData(slotPath)))
 		return
 	}
+	if h.writeRejectsSystemJunk(params.Path) {
+		h.respondSystemJunkPath(c, slotPath)
+		return
+	}
 
 	pkgapp.NoteModifyLog(c.TraceID, c.User.UID, "NoteModify", params.Path, params.Vault)
 
@@ -724,6 +728,11 @@ func (h *NoteWSHandler) NoteRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid note path").WithData(errPathData(slotPath)))
 		return
 	}
+	// 改名只看新路径：旧路径是垃圾、新路径正常的放行，便于清理历史数据。
+	if h.writeRejectsSystemJunk(params.Path) {
+		h.respondSystemJunkPath(c, slotPath)
+		return
+	}
 
 	// 基线模式统一走「创建目标 + 条件删除源」：原生 Rename 没有基线契约，会绕过
 	// 版本令牌直接改写两条记录。旧连接（版本 0）保持原行为。
@@ -1280,6 +1289,19 @@ func (h *NoteWSHandler) doNoteSync(c *pkgapp.WebsocketClient, params *dto.NoteSy
 			if note.Path != "" {
 				if sNote, ok := serverNotes[note.Path]; ok && sNote != nil &&
 					sNote.Action != "delete" && sNote.ContentHash == note.ContentHash && sNote.Mtime == note.Mtime {
+					continue
+				}
+			}
+
+			// 服务端没有存活行时，系统垃圾文件不再要求客户端上传：老客户端每轮都会
+			// 上报本地垃圾文件，要求上传只会被写入入口拒收。服务端已有的垃圾行仍按
+			// 上面的一致性判断处理，不影响历史数据下发与删除。
+			// When the server has no live row, do not ask the client to upload a system
+			// junk file: old clients report local junk every round, and the upload would
+			// only be rejected at the write entry point. Existing server junk rows keep
+			// the consistency check above, so legacy data is still delivered.
+			if note.Path != "" && h.writeRejectsSystemJunk(note.Path) {
+				if sNote, ok := serverNotes[note.Path]; !ok || sNote == nil || sNote.Action == "delete" {
 					continue
 				}
 			}

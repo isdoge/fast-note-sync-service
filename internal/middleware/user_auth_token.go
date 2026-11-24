@@ -48,6 +48,14 @@ func UserAuthTokenWithConfigStrict(secretKey string, tokenService service.TokenS
 		// 记录入口时的客户端与严格开关，供依赖请求体的 handler 级功能点检查
 		//（例如整库清空回收站）与路由级检查保持一致。
 		c.Set(contextKeyStrictEmptyProtocol, strictEmptyProtocol)
+		// Expose the database token ID so user-level handlers (e.g.
+		// /api/user/token-capabilities) can report which token authenticated the
+		// request without re-reading the token store.
+		// 暴露数据库令牌 ID，供用户级 handler（如 /api/user/token-capabilities）
+		// 报告本次请求使用的令牌，无需重复读取令牌存储。
+		if dbToken != nil {
+			c.Set(contextKeyAuthTokenID, dbToken.ID)
+		}
 		c.Next()
 	}
 }
@@ -59,7 +67,22 @@ func UserAuthTokenWithConfigStrict(secretKey string, tokenService service.TokenS
 const (
 	contextKeyStrictEmptyProtocol = "auth_strict_empty_protocol"
 	contextKeyAuthRestClient      = "auth_rest_client"
+	contextKeyAuthTokenID         = "auth_token_id"
 )
+
+// AuthTokenID returns the database token ID that authenticated the request.
+// The second return value is false when the middleware did not run or the
+// request was authenticated by other means (e.g. OAuth in tests).
+// AuthTokenID 返回本次请求认证所用的数据库令牌 ID；中间件未运行或请求以其它
+// 方式认证（如测试中的 OAuth）时第二个返回值为 false。
+func AuthTokenID(c *gin.Context) (int64, bool) {
+	value, ok := c.Get(contextKeyAuthTokenID)
+	if !ok {
+		return 0, false
+	}
+	id, ok := value.(int64)
+	return id, ok
+}
 
 // RestFunctionAllowed reports whether the authenticated request's token scope
 // admits the given REST function point. The decision reuses the same
@@ -510,6 +533,28 @@ func restRouteFunction(path, method string, isRead bool) (string, *code.Code) {
 	case path == "/api/user/info", path == "/api/auth/logout":
 		return "", nil
 	case strings.HasPrefix(path, "/api/oauth/stytch/"):
+		return "", nil
+	// Token capability self-report: any authenticated token may ask what it can
+	// do; the handler derives everything from the token's own scope.
+	// 令牌能力自检：任何已认证令牌都可查询自己的能力，handler 全部基于令牌
+	// 自身 scope 推导。
+	case path == "/api/user/token-capabilities":
+		return "", nil
+
+	// ---------------- CLI upgrade relay ----------------
+	// Proxies a fixed upstream GitHub API; an authenticated caller is enough
+	// (no function point), matching /api/version/probe.
+	// CLI 升级中转：代理固定的上游 GitHub API，已认证调用者即可（无功能点），
+	// 与 /api/version/probe 一致。
+	case path == "/api/upgrade/cli":
+		return "", nil
+
+	// ---------------- Runtime share base URL (static-token or admin) ----------------
+	// These routes use ShareBaseURLAuth, not this middleware, but classify them
+	// defensively: the handler requires the effective admin or the static token.
+	// 运行时分享基址：这两条路由使用 ShareBaseURLAuth 而非本中间件，此处防御性
+	// 归类；handler 要求生效管理员或静态令牌。
+	case path == "/api/admin/share-base-url":
 		return "", nil
 
 	// ---------------- Admin status & upgrade (plain group) ----------------

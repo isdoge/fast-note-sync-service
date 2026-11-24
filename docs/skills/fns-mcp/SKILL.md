@@ -46,8 +46,8 @@ Before using this skill, the agent needs to connect to the MCP SSE interface.
 | :--- | :--- | :--- |
 | `note_list` | List notes in a vault / 列出笔记 | `vault`, `keyword` |
 | `note_get` | Get note content / 获取笔记内容 | `vault`, `path` |
-| `note_create_or_update` | Create/Update note / 创建或更新笔记 | `vault`, `path`, `content` |
-| `note_delete` | Delete note / 删除笔记 | `vault`, `path` |
+| `note_create_or_update` | Create/Update note / 创建或更新笔记 | `vault`, `path`, `content`; optional `base_revision`, `base_hash`, `base_hash_missing` for a guarded compare-and-set write |
+| `note_delete` | Delete note / 删除笔记 | `vault`, `path`; a guarded delete requires both `base_revision` and `base_hash` |
 | `note_rename` | Rename note / 重命名笔记 | `vault`, `oldPath`, `newPath` |
 | `note_restore` | Restore note / 恢复笔记 | `vault`, `path` |
 | `note_append` | Append content / 追加内容 | `vault`, `path`, `content` |
@@ -64,8 +64,9 @@ Before using this skill, the agent needs to connect to the MCP SSE interface.
 | `file_list` | List files / 列出文件 | `vault`, `keyword` |
 | `file_get_info` | Get metadata / 获取元数据 | `vault`, `path` |
 | `file_read` | Read content (Base64) / 读取内容 | `vault`, `path` |
-| `file_delete` | Delete file / 删除文件 | `vault`, `path` |
+| `file_delete` | Delete file / 删除文件 | `vault`, `path`; a guarded delete requires both `base_revision` and `base_hash` |
 | `file_rename` | Rename file / 重命名文件 | `vault`, `oldPath`, `newPath` |
+| `file_write` | Create/update file from Base64 / 以 Base64 新建或更新附件 | `vault`, `path`, `content` (Base64); optional `base_revision`, `base_hash`, `base_hash_missing` for a guarded write |
 
 ### 3. Query Tools / 查询工具
 
@@ -85,6 +86,18 @@ with the returned path when you need the full text.
 | `note_list_recent` | Newest notes first, metadata only / 最近修改的笔记 | `vault`, `limit` |
 | `note_list_by_prefix` | Notes under a folder prefix / 某目录下的笔记 | `vault`, `prefix` |
 | `vault_stats` | Note/file/link/tag counts and sizes / 库的统计信息 | `vault` |
+| `folder_list` | Immediate child folders under a path / 某路径下的直接子目录 | `vault`, `path` |
+
+### 3.1 History Tools / 历史版本工具
+
+| Tool Name / 工具 | Description / 描述 | Arguments / 参数 |
+| :--- | :--- | :--- |
+| `note_history_list` | List a note's stored versions / 列出笔记的历史版本 | `vault`, `path`, `isRecycle`, `page`, `pageSize` |
+| `note_history_get` | Full content of one version / 读取某个历史版本的完整内容 | `id` |
+| `note_history_restore` | Restore a note to a version / 把笔记恢复到某个历史版本 | `id` |
+
+History tools address a version by ID, so the version's vault is checked against the token's vault allowlist before any content is returned or restored.
+历史工具按 ID 寻址版本，返回内容或恢复之前都会按令牌的库白名单校验该版本所属的库。
 
 ### 4. Vault Tools / 库工具
 
@@ -104,3 +117,4 @@ with the returned path when you need the full text.
 3. **Encoding**: `file_read` returns Base64. (文件读取返回 Base64 编码)
 4. **Consistency**: Be aware of path changes after rename/move. (重命名后注意路径变更)
 5. **Search first, then read**: `note_search` returns snippets, not bodies — narrow the candidates first and call `note_get` only for the notes you actually need. (先用 `note_search` 拿片段缩小范围，再用 `note_get` 读全文)
+6. **Guard your writes**: reads and lists return a `revision` token. Pass it as `base_revision` (plus the `contentHash` as `base_hash`) to `note_create_or_update`, `note_delete`, `file_write`, or `file_delete` to avoid overwriting a concurrent change; `note_delete` and `file_delete` require both fields in guarded mode. A conflict comes back as an error result whose text is a JSON object `{"vault": ..., "conflict": {...}}` with `conflict.conflict: true`, `conflict.reason` and the current `conflict.serverRevision`. A guarded write never restores a deleted item: when `conflict.serverDeleted` is true or the reason is `remote_deleted`/`server_missing`, use `note_restore`/`file_restore`, or retry without baseline arguments to recreate it. (读和列表都会返回 `revision`；把它作为 `base_revision` 传给写入工具即可避免覆盖并发改动，`note_delete` 与 `file_delete` 的条件删除必须两个字段都给；冲突以错误结果返回，文本是 JSON `{"vault": ..., "conflict": {...}}`，其中 `conflict.conflict` 为 true，并带 `conflict.reason` 与当前 `conflict.serverRevision`；条件写不会恢复已删除的项：`conflict.serverDeleted` 为 true 或原因是 `remote_deleted`/`server_missing` 时，改用 `note_restore`/`file_restore`，或去掉基线参数重新创建)

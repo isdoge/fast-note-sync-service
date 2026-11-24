@@ -92,6 +92,16 @@ func TestNewSuss(t *testing.T) {
 	})
 }
 
+// 530 同时用于条件写入被拒与实时同步冲突，文案不得承诺一定生成冲突副本。
+// Code 530 also covers rejected conditional writes, which create no copy, so the
+// message must not promise one.
+func TestSyncConflictMessageNoCopyPromise(t *testing.T) {
+	assert.Equal(t, "检测到同步冲突", zh_cn_messages[530])
+	assert.Equal(t, "Sync conflict detected", en_messages[530])
+	assert.NotContains(t, zh_cn_messages[530], "副本")
+	assert.NotContains(t, en_messages[530], "copy")
+}
+
 func TestCode_Is(t *testing.T) {
 	zh_cn_messages[999904] = "Is测试1"
 	en_messages[999904] = "Is Test 1"
@@ -107,4 +117,3 @@ func TestCode_Is(t *testing.T) {
 	assert.NotErrorIs(t, c1, c2)
 	assert.NotErrorIs(t, c1.WithDetails("detail"), c2)
 }
-

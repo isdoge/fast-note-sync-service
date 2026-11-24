@@ -115,10 +115,10 @@ Business codes normally appear in an HTTP 200 response body and are not HTTP sta
 | 436 | Note list failed | Inspect database or index logs. |
 | 437 / 438 | Rename failed / target exists | Choose another path or resolve the existing note. |
 | 439 / 440 | Note sync / update check failed | Reconnect, sync, and inspect details. |
-| 441 | Target note already exists | Resolve the conflicting target; distinct from conflict copy 530. |
+| 441 | Target note already exists | Resolve the conflicting target; distinct from the sync conflict reported as 530. |
 | 442 | No match found | Change the search. |
 | 443 | Invalid regex | Correct the expression. |
-| 444 | Path contains `..` | Use a vault-relative path without traversal. |
+| 444 | Path contains `..`, or the write targets a system junk file | Use a vault-relative path without traversal. When the details read `system junk file is not synced`, a `.DS_Store`, `Thumbs.db`, `desktop.ini` or `._*` file was refused, which is expected; set `app.sync-exclude-system-junk` to `false` if you really need to sync them. |
 | 445 / 446 | Folder missing / already exists | Refresh folder state. |
 | 447–451 | Folder get/save/delete/list/rename failed | Inspect paths and storage logs. |
 | 455 / 456 | Attachment missing / retrieval failed | Refresh attachment state and inspect storage. |
@@ -134,5 +134,5 @@ Business codes normally appear in an HTTP 200 response body and are not HTTP sta
 | 500–502 | Storage missing/type disabled/validation failed | Check storage configuration and `storage.*.is-enable`. |
 | 510–512 | Git configuration missing/task running/validation failed | Wait for the task; use details to fix URL, credentials, branch, or network. |
 | 520 / 521 | cloudflared download failed / binary missing | Check GitHub connectivity or place the binary manually. |
-| 530 | Sync conflict; conflict copy created | Resolve the copy on the client and sync. |
+| 530 | Sync conflict | Legacy realtime sync conflicts create a conflict copy; rejected conditional writes create none—handle the returned conflict information. |
 | 531 | Stale revival ignored | Server already has a tombstone; refresh local state instead of re-uploading the identical old version. |

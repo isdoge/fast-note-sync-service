@@ -431,6 +431,37 @@ func (r *fileRepository) UpdateMtime(ctx context.Context, mtime int64, id, uid i
 	})
 }
 
+// UpdateContentHashIfCurrent rewrites content_hash only while the row still carries
+// expectedHash. It deliberately leaves updated_timestamp untouched so the correction
+// does not push the row into another client's incremental sync window: the payload on
+// disk did not change, only the hash scheme used to describe it.
+// UpdateContentHashIfCurrent 仅在行内 content_hash 仍等于 expectedHash 时就地改写，
+// 且刻意不刷新 updated_timestamp：磁盘载荷没有变化，只是描述它的哈希口径变了，
+// 不应把该行推进其它客户端的增量同步窗口。
+func (r *fileRepository) UpdateContentHashIfCurrent(ctx context.Context, id, uid int64, expectedHash, newHash string) (bool, error) {
+	var affected int64
+	err := r.dao.ExecuteWrite(ctx, uid, r, func(db *gorm.DB) error {
+		u := r.file(uid).File
+
+		res, err := u.WithContext(ctx).Where(
+			u.ID.Eq(id),
+			u.ContentHash.Eq(expectedHash),
+		).UpdateSimple(
+			u.ContentHash.Value(newHash),
+			u.UpdatedAt.Value(timex.Now()),
+		)
+		if err != nil {
+			return err
+		}
+		affected = res.RowsAffected
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
 // UpdateActionMtime updates file action and modification time
 // UpdateActionMtime 更新文件类型并修改时间
 func (r *fileRepository) UpdateActionMtime(ctx context.Context, action domain.FileAction, mtime int64, id, uid int64) error {

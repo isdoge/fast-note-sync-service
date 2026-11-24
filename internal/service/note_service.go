@@ -279,6 +279,7 @@ func (s *noteService) domainToNoContentDTO(note *domain.Note) *dto.NoteNoContent
 		UpdatedTimestamp: note.UpdatedTimestamp,
 		UpdatedAt:        timex.Time(note.UpdatedAt),
 		CreatedAt:        timex.Time(note.CreatedAt),
+		Revision:         note.Revision,
 	}
 }
 
@@ -534,8 +535,11 @@ func (s *noteService) ModifyOrCreate(ctx context.Context, uid int64, params *dto
 					if latest == nil {
 						latest = note
 					}
+					// 只有客户端带了可信内容基线时才能判定"双方都改了"；否则只能报令牌已移动。
+					// Only a client that carried a trusted content baseline can be told
+					// "both modified"; without one the honest reason is revision_changed.
 					reason := dto.BaselineRejectRevisionMoved
-					if latest.ContentHash != params.Baseline.BaseHash {
+					if params.Baseline.HasBase && latest.ContentHash != params.Baseline.BaseHash {
 						reason = dto.BaselineRejectBothModified
 					}
 					return nil, newBaselineConflict(reason, latest)

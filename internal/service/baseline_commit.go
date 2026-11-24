@@ -103,28 +103,6 @@ func baselineConflictFromFolder(reason string, folder *domain.Folder) error {
 	return conflict
 }
 
-// checkBaselineUpdate applies the "has baseline update" branch: the caller must carry
-// a revision token, and the row it writes must still carry that same token. Without a
-// token the server cannot prove the client saw the current state, so the write is
-// refused.
-// checkBaselineUpdate 实现"有基线更新"分支：调用方必须携带版本令牌，且写入的行仍带同一令牌；
-// 没有令牌就无法证明客户端见过当前状态，因此拒绝写入。
-func checkBaselineUpdate(commit *dto.BaselineCommit, currentRevision string, currentHash string, conflictErr func(string) error) error {
-	if commit == nil {
-		return nil
-	}
-	if commit.BaseRevision == "" || commit.BaseRevision != currentRevision {
-		return conflictErr(dto.BaselineRejectRevisionMoved)
-	}
-	// 内容资源还要求未声明解决时当前内容仍等于基线内容（避免旧基线覆盖重建）。
-	// Content resources additionally require the current content to still equal the
-	// baseline unless the user explicitly resolved the conflict.
-	if !commit.IsConflictResolved && commit.HasBase && currentHash != commit.BaseHash {
-		return conflictErr(dto.BaselineRejectBothModified)
-	}
-	return nil
-}
-
 // checkBaselineDelete applies the realtime delete branch: an already-deleted or
 // missing row is an idempotent success (handled by callers), while a live row may
 // only be soft-deleted when the client carries a matching revision (and, for content

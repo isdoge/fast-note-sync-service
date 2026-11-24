@@ -106,6 +106,12 @@ app:
   # 串行上传同步的分包大小
   # Serial upload sync batch size
   sync-up-chunk-num: 100
+  # 是否在写入入口拒收系统垃圾文件（.DS_Store、Thumbs.db、desktop.ini、._*），默认 true。
+  # 关闭后行为与旧版本一致，垃圾文件照常同步；库里已有的垃圾条目仍可读取和删除。
+  # Whether to reject system junk files (.DS_Store, Thumbs.db, desktop.ini, ._*) at write
+  # entry points. Defaults to true; when disabled, behavior matches older versions and
+  # junk files sync as usual. Existing junk entries stay readable and deletable.
+  sync-exclude-system-junk: true
   # 上行同步流水线窗口大小（0 = 禁用窗口，退回逐批 stop-and-wait，作为运行时回滚开关）
   # Upload sync pipeline window size (0 = disable window, fall back to per-batch stop-and-wait; runtime rollback switch)
   pipeline-window-up: 8
@@ -237,6 +243,17 @@ security:
   # scopes are denied. Verification-side only; newly issued tokens no longer
   # produce an empty protocol dimension.
   strict-empty-protocol: false
+  # 运行时分享基址写入接口（POST /api/admin/share-base-url）的可选静态令牌。
+  # 设置后，外部动态地址通知脚本（如 CGNAT / 内网穿透的换址脚本）可用该令牌
+  # 通过 `Authorization: Bearer <token>` 或 `X-Share-Base-Url-Token` 头推送
+  # 最新公开基址，无需管理员登录令牌，也不用改配置重启容器。
+  # 读取当前值（GET）始终仅限生效管理员；留空时两个接口都仅生效管理员可调用。
+  # Optional static token for the runtime share base URL write endpoint (POST).
+  # When set, an external address notifier can push a new public base URL with
+  # this token (via `Authorization: Bearer <token>` or `X-Share-Base-Url-Token`)
+  # instead of an admin login token. Reading the value (GET) always requires the
+  # effective admin; when empty, only the effective admin may call either one.
+  share-base-url-token: ""
 
 # 主数据库配置
 # Main database configuration

@@ -219,16 +219,31 @@ func (h *FileHandler) Delete(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	fileSvc := h.App.GetFileService(h.getClientInfo(c))
+
+	// 调用方显式提供基线字段时启用条件删除；全部省略时 Baseline 保持 nil。
+	// Only an explicit baseline switches to a conditional delete.
+	params.Baseline = dto.BuildBaselineCommit(params.BaseHash, params.BaseHashMissing, params.BaseRevision, params.IsConflictResolved)
+
 	// Execute deletion
 	// 执行删除
 	file, err := fileSvc.Delete(ctx, uid, params)
 	if err != nil {
+		if conflict, ok := baselineConflictOf(err); ok {
+			h.respondBaselineConflict(c, uid, dto.SyncConflictKindFile, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict)
+			return
+		}
 		h.logError(ctx, "FileHandler.Delete", err)
 		apperrors.ErrorResponse(c, err)
 		return
 	}
 
 	response.ToResponse(code.Success.WithData(file))
+
+	// 条件删除命中不存在/已删除的行时是幂等空操作：不广播。
+	// A conditional delete that hit a missing/already-deleted row is an idempotent no-op.
+	if params.Baseline != nil && file.Unchanged {
+		return
+	}
 
 	h.WSS.BroadcastToUser(uid, code.Success.WithData(
 		dto.FileSyncDeleteMessage{
@@ -488,9 +503,13 @@ func (h *FileHandler) Rename(c *gin.Context) {
 
 	// Validate and clean both paths (#342 S-8)
 	// 校验并清洗新旧两个路径（#342 S-8）
-	newPath, ok := cleanAPIPath(params.Path)
+	newPath, codeErr := h.cleanWriteAPIPath(params.Path)
 	oldPath, okOld := cleanAPIPath(params.OldPath)
-	if !ok || !okOld {
+	if codeErr != nil {
+		response.ToResponse(codeErr)
+		return
+	}
+	if !okOld {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}
@@ -579,9 +598,9 @@ func (h *FileHandler) Upload(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8)
 	// 校验并清洗路径（#342 S-8）
-	cleaned, ok := cleanAPIPath(input.Path)
-	if !ok {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleaned, codeErr := h.cleanWriteAPIPath(input.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if input.Path != cleaned {
@@ -646,12 +665,19 @@ func (h *FileHandler) Upload(c *gin.Context) {
 		Size:        file.Size,
 		Ctime:       ctime,
 		Mtime:       mtime,
+		// 显式基线字段启用条件写；全部省略时 Baseline 保持 nil，沿用旧行为。
+		// Explicit baseline fields enable a conditional write; omitting all keeps nil.
+		Baseline: dto.BuildBaselineCommit(input.BaseHash, input.BaseHashMissing, input.BaseRevision, input.IsConflictResolved),
 	}
 
 	ctx := c.Request.Context()
 	fileSvc := h.App.GetFileService(h.getClientInfo(c))
 	_, fileDTO, err := fileSvc.UpdateOrCreate(ctx, uid, params, false)
 	if err != nil {
+		if conflict, ok := baselineConflictOf(err); ok {
+			h.respondBaselineConflict(c, uid, dto.SyncConflictKindFile, input.Vault, input.Path, input.PathHash, input.BaseHash, conflict)
+			return
+		}
 		h.logError(ctx, "FileHandler.Upload.UpdateOrCreate", err)
 		apperrors.ErrorResponse(c, err)
 		return
@@ -662,14 +688,6 @@ func (h *FileHandler) Upload(c *gin.Context) {
 	// Broadcast WebSocket event: FileSyncUpdate
 	// 广播 WebSocket 事件: 文件同步更新
 	h.WSS.BroadcastToUser(uid, code.Success.WithData(
-		dto.FileSyncModifyMessage{
-			Path:             fileDTO.Path,
-			PathHash:         fileDTO.PathHash,
-			ContentHash:      fileDTO.ContentHash,
-			Size:             fileDTO.Size,
-			Ctime:            fileDTO.Ctime,
-			Mtime:            fileDTO.Mtime,
-			UpdatedTimestamp: fileDTO.UpdatedTimestamp,
-		},
+		fileDTO.ToSyncModifyMessage(),
 	).WithVault(input.Vault), "FileSyncUpdate")
 }

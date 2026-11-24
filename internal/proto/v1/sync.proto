@@ -395,6 +395,7 @@ message FileSyncDownloadMessage {
     int64 chunkSize = 6;
     int64 totalChunks = 7;
     int64 size = 8;
+    string revision = 9;
 }
 
 message FileRenameAckMessage {

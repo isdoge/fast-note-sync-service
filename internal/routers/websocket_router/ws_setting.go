@@ -47,6 +47,10 @@ func (h *SettingWSHandler) SettingModify(c *pkgapp.WebsocketClient, msg *pkgapp.
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid setting path").WithData(errPathData(slotPath)))
 		return
 	}
+	if h.writeRejectsSystemJunk(params.Path) {
+		h.respondSystemJunkPath(c, slotPath)
+		return
+	}
 
 	params.Ctime = timex.NormalizeMilli(params.Ctime)
 	params.Mtime = timex.NormalizeMilli(params.Mtime)
@@ -705,6 +709,15 @@ func (h *SettingWSHandler) doSettingSync(c *pkgapp.WebsocketClient, params *dto.
 			sSetting.Action != "delete" && sSetting.ContentHash == s.ContentHash && sSetting.Mtime == s.Mtime &&
 			(s.Path == "" || sSetting.Path == s.Path) {
 			continue
+		}
+		// 服务端没有存活行时，系统垃圾文件不再要求客户端上传（老客户端每轮都会
+		// 上报本地垃圾文件）。服务端已有的垃圾行仍按上面的比对处理，历史数据照常下发。
+		// When the server has no live row, do not request an upload for a system junk
+		// setting; existing server junk rows keep the comparison above.
+		if h.writeRejectsSystemJunk(s.Path) {
+			if sSetting, ok := serverSettings[pathHash]; !ok || sSetting == nil || sSetting.Action == "delete" {
+				continue
+			}
 		}
 		// Add message to queue instead of sending immediately
 		// 将消息添加到队列而非立即发送

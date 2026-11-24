@@ -93,6 +93,14 @@ type FileRepository interface {
 	// UpdateMtime 更新文件修改时间
 	UpdateMtime(ctx context.Context, mtime int64, id, uid int64) error
 
+	// UpdateContentHashIfCurrent 仅在行内 content_hash 仍等于 expectedHash 时把
+	// content_hash 就地改写为 newHash（CAS），且不刷新 updated_timestamp。
+	// 用于存量大文件哈希口径迁移：内容未变，只是哈希算法升级，不应触发同步窗口。
+	// UpdateContentHashIfCurrent rewrites content_hash in place only while the row still
+	// carries expectedHash (CAS), leaving updated_timestamp untouched. Used by the
+	// large-file hash migration: the content is unchanged, only the hash scheme moved.
+	UpdateContentHashIfCurrent(ctx context.Context, id, uid int64, expectedHash, newHash string) (bool, error)
+
 	// UpdateActionMtime 更新文件类型并修改时间
 	UpdateActionMtime(ctx context.Context, action FileAction, mtime int64, id, uid int64) error
 

@@ -67,6 +67,7 @@
 | `ws-write-timeout` | int 秒 | `10` | 应用层写超时；显式 `0` 禁用。 |
 | `ws-ping-interval` | int 秒 | `25` | WebSocket ping 间隔；代码校验要求大于 0。Tunnel 空闲断线时可与下一项一起调整。 |
 | `ws-ping-wait` | int 秒 | `60` | 上行存活超时，之后还有宽限；Tunnel 可先试 `180`。只延后重连，不能修复持续丢 pong 的链路。 |
+| `sync-exclude-system-junk` | bool | `true` | 不接收系统垃圾文件（`.DS_Store`、`Thumbs.db`、`desktop.ini`、`._` 开头的文件）的新建、修改、上传与改名；库里已有的这类文件仍可读取、下载和删除。设为 `false` 时照常同步。 |
 | `pull-source` | string | `auto` | 更新数据拉取源；支持 `auto` / `github`，旧值按 GitHub 处理。 |
 | `pull-release-channel` | string | `stable` | 更新通道 `stable` / `beta`；示例 YAML 未列出但代码支持。 |
 | `fts-bleve-enabled` | bool | `true` | Bleve 全文搜索；32 位 ARM 自动禁用，其余架构遵循此项。 |
@@ -85,6 +86,7 @@
 | `webgui-login-token-bind-ip` | bool | `true` | WebGUI 令牌绑定 IP；客户端 IP 随链路变化时可关。 |
 | `webgui-login-token-bind-ua` | bool | `true` | WebGUI 令牌绑定 UA；UA 被网关改写导致 313 时可关。 |
 | `strict-empty-protocol` | bool | `false` | 严格校验协议维度为空的令牌 scope（整串空 scope 或 `p:` 后无值），这类 scope 默认按通配放行，开启后一律拒绝。仅影响校验端；新签发令牌已不再产生空协议维度。开启前建议执行 `SELECT id, uid, scope FROM auth_token WHERE scope = '' OR scope LIKE 'p: %';` 确认无存量。 |
+| `share-base-url-token` | string | 空 | 运行时分享基址管理接口（`POST/GET /api/admin/share-base-url`）的可选静态令牌。设置后外部动态地址通知脚本可用 `Authorization: Bearer <token>` 或 `X-Share-Base-Url-Token` 头推送最新公开基址（空值清除覆盖、回落 `server.share-base-url`），无需管理员登录令牌，也不用改配置重启。留空时仅生效管理员可调用。静态令牌只能推送（POST）与清除覆盖值，回读（GET）仍仅限生效管理员；令牌只做常量时间比较，不写日志。 |
 
 ## database 与 user-database
 

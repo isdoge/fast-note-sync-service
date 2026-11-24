@@ -1,4 +1,4 @@
-[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
+[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.en.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
 
 > [!IMPORTANT]
 > **本リポジトリは独立メンテナンスの修正版です。** アップストリーム [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service) は 2026 年 8 月以降更新されていません。本リポジトリは [isdoge](https://github.com/isdoge) がアップストリーム v3.6.1 からフォークし、未処理だった PR をマージして既知の問題を修正したもので、以後は独立して進化し、バージョン番号はアップストリームに追随しません。イメージとダウンロード先も変更されています。詳細は下記の「本リポジトリについて」をご覧ください。
@@ -71,6 +71,7 @@
   - ノート庫を制限した API トークンは、リクエストに必ずノート庫パラメータを含める必要があります。
   - Git 同期のリポジトリがイントラネットまたは `100.64.0.0/10`（例：Tailscale 経由の Gitea）にある場合、アドレスまたはサブネットを `git.allowed-private-hosts` に追加してください。
   - 全く応答のない WebSocket 接続は約 100 秒で切断されます（以前は約 75 秒）。Cloudflare Tunnel などで頻繁に切断される場合は `app.ws-ping-wait` を大きくしてください。
+  - v3.8.9 以降はシステムのゴミファイル（`.DS_Store`、`Thumbs.db`、`desktop.ini`、`._` で始まるファイル）をデフォルトでは受け付けません。クライアントがこの種のファイルをアップロードするとエラーコード 444 が返されます。ノート庫に既にあるファイルは影響を受けず、引き続き削除できます。通常どおり同期したい場合は `app.sync-exclude-system-junk` を `false` に設定してください。
 
 ## 🎯 主な機能
 
@@ -78,15 +79,19 @@
   * `FNS` はMCPサーバーとして、`Cherry Studio`や`Cursor`などの互換性のあるAIクライアントに接続でき、AIにプライベートなノートや添付ファイルの読み書き機能を提供します。すべての変更は各クライアントにリアルタイムで同期されます。
   * 7 つのナレッジ検索ツールを追加：全文検索、壊れたリンク、孤立ノート、タグ、最近の変更、プレフィックス付き一覧、ノート庫統計。`note_list`、`file_list` はページングに対応。
   * OpenAI Secure MCP Tunnel 経由で ChatGPT コネクタとして接続できます。
+  * 書き込みと削除は条件付きコミットに対応：読み取り時に取得した `revision` を指定すると、内容が他の人によって変更されている場合は上書きせずに拒否されます。また、ノート履歴の表示 / 復元とフォルダ一覧のツールを追加しました。
 * **🚀 REST API サポート**:
   * 标准のREST APIインターフェースを提供し、プログラム（自動化スクリプトやAIアシスタントの統合など）を介したObsidianノートのCRUD操作をサポートします。
   * 詳細は、[RESTful API ドキュメント](/docs/REST_API.md) または [OpenAPI ドキュメント](/docs/swagger.yaml) を参照してください。
+  * ノートと添付ファイルの書き込み・削除は条件付きコミット（`baseRevision` / `baseHash`）に対応し、同時変更の上書きを防ぎます。
+  * トークンは自身の実際の権限を照会できます（`GET /api/user/token-capabilities`）。クライアントが「なぜ書き込めないのか」を切り分けるのに便利です。
 * **💻 Web管理パネル**:
   * 最新の管理画面を内蔵し、ユーザーの作成、プラグイン設定の生成、リポジトリやノート内容の管理を簡単に行えます。
   * 期限切れのログイントークンを毎日自動的にクリーンアップします。
 * **🔄 複数デバイスのノート同期**:
   * Vault（リポジトリ）の自動作成をサポート。
   * ノート管理（追加、削除、編集、検索）をサポートし、変更はミリ秒単位でリアルタイムにすべてのオンラインデバイスに配信されます。
+  * システムのゴミファイル（`.DS_Store`、`Thumbs.db`、`desktop.ini`、`._` で始まるファイル）はデフォルトでは受け付けません。`app.sync-exclude-system-junk` を `false` にすると無効にできます。
 * **🖼️ 添付ファイル同期サポート**:
   * 画像などのノート以外のファイルの同期を完全にサポート。
   * 大容量の添付ファイルの分割アップロード・ダウンロードをサポートし、分割サイズを設定して同期効率を向上できます。
@@ -110,6 +115,7 @@
   * 共有アクセス統計機能を提供。
   * 共有ノートのアクセスパスワードを設定可能。
   * 共有ノートの短縮リンクを生成可能。
+  * 共有リンクで使う公開アドレスは、再起動せずに実行中に更新できます（公開アドレスが変わる環境に適しています）。
 * **📂 フォルダ同期**:
   * フォルダの作成/名前変更/移動/削除の同期をサポート。
 

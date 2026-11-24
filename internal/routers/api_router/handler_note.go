@@ -102,6 +102,7 @@ func (h *NoteHandler) Get(c *gin.Context) {
 		UpdatedTimestamp: note.UpdatedTimestamp,
 		UpdatedAt:        note.UpdatedAt,
 		CreatedAt:        note.CreatedAt,
+		Revision:         note.Revision,
 	}
 
 	response.ToResponse(code.Success.WithData(noteWithLinks))
@@ -200,9 +201,9 @@ func (h *NoteHandler) CreateOrUpdate(c *gin.Context) {
 	// Validate and clean the path: strip leading "/", reject traversal/NUL,
 	// ensure notes end in .md (#342 S-8, #244)
 	// 校验并清洗路径：去前导 "/"、拒绝越界与 NUL、保证笔记以 .md 结尾（#342 S-8, #244）
-	cleaned, ok := cleanAPIPath(params.Path)
-	if !ok {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleaned, codeErr := h.cleanWriteAPIPath(params.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if params.Path != cleaned {
@@ -239,33 +240,60 @@ func (h *NoteHandler) CreateOrUpdate(c *gin.Context) {
 
 	noteSvc := h.App.GetNoteService(h.getClientInfo(c))
 
-	// Check update
-	// 检查更新
-	checkParams := &dto.NoteUpdateCheckRequest{
-		Vault:       params.Vault,
-		Path:        params.Path,
-		PathHash:    params.PathHash,
-		ContentHash: params.ContentHash,
-		Ctime:       params.Ctime,
-		Mtime:       params.Mtime,
-	}
-	_, checkedNote, noteSelect, err := noteSvc.UpdateCheckWithNote(ctx, uid, checkParams)
-	if err != nil {
-		h.logError(ctx, "NoteHandler.CreateOrUpdate.NoteUpdateCheck", err)
-		response.ToResponse(code.Failed.WithDetails(err.Error()))
+	// 调用方显式提供基线字段时才启用条件写；全部省略时 Baseline 保持 nil，
+	// 完全沿用旧的无条件写入（含 UpdateCheckWithNote 的 mtime 校准）。
+	// Only an explicit baseline switches to a conditional write; omitting every
+	// baseline field keeps Baseline nil and the legacy unconditional behavior
+	// (including UpdateCheckWithNote's mtime adjustment).
+	params.Baseline = dto.BuildBaselineCommit(params.BaseHash, params.BaseHashMissing, params.BaseRevision, params.IsConflictResolved)
+	if params.Baseline == nil {
+		// Check update
+		// 检查更新
+		checkParams := &dto.NoteUpdateCheckRequest{
+			Vault:       params.Vault,
+			Path:        params.Path,
+			PathHash:    params.PathHash,
+			ContentHash: params.ContentHash,
+			Ctime:       params.Ctime,
+			Mtime:       params.Mtime,
+		}
+		_, checkedNote, noteSelect, err := noteSvc.UpdateCheckWithNote(ctx, uid, checkParams)
+		if err != nil {
+			h.logError(ctx, "NoteHandler.CreateOrUpdate.NoteUpdateCheck", err)
+			response.ToResponse(code.Failed.WithDetails(err.Error()))
+			return
+		}
+
+		if noteSelect != nil {
+			if params.ContentHash != noteSelect.ContentHash {
+				params.Mtime = time.Now().UnixMilli()
+			}
+		}
+
+		var noteNew *dto.NoteDTO
+		_, noteNew, err = noteSvc.ModifyOrCreate(ctx, uid, params, false, checkedNote)
+		if err != nil {
+			h.logError(ctx, "NoteHandler.CreateOrUpdate.NoteModifyOrCreate", err)
+			apperrors.ErrorResponse(c, err)
+			return
+		}
+
+		response.ToResponse(code.Success.WithData(noteNew))
+		h.WSS.BroadcastToUser(uid, code.Success.WithData(noteNew).WithVault(params.Vault), "NoteSyncModify")
 		return
 	}
 
-	if noteSelect != nil {
-		if params.ContentHash != noteSelect.ContentHash {
-			params.Mtime = time.Now().UnixMilli()
-		}
-	}
-
-	var noteNew *dto.NoteDTO
-
-	_, noteNew, err = noteSvc.ModifyOrCreate(ctx, uid, params, false, checkedNote)
+	// 条件写：跳过 UpdateCheckWithNote（它会写 mtime，属于副作用），直接进入
+	// ModifyOrCreate 的 CAS 临界区；冲突时返回 530 且不写库、不广播。
+	// Conditional write: skip UpdateCheckWithNote (it writes mtime as a side effect)
+	// and go straight into ModifyOrCreate's CAS critical section; a conflict returns
+	// 530 without writing or broadcasting.
+	_, noteNew, err := noteSvc.ModifyOrCreate(ctx, uid, params, false)
 	if err != nil {
+		if conflict, ok := baselineConflictOf(err); ok {
+			h.respondBaselineConflict(c, uid, dto.SyncConflictKindNote, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict)
+			return
+		}
 		h.logError(ctx, "NoteHandler.CreateOrUpdate.NoteModifyOrCreate", err)
 		apperrors.ErrorResponse(c, err)
 		return
@@ -330,33 +358,53 @@ func (h *NoteHandler) Delete(c *gin.Context) {
 
 	noteSvc := h.App.GetNoteService(h.getClientInfo(c))
 
-	// Check if note exists
-	// 检查笔记是否存在
-	noteSrc, err := noteSvc.Get(ctx, uid, &dto.NoteGetRequest{
-		Vault:    params.Vault,
-		Path:     params.Path,
-		PathHash: params.PathHash,
-	})
-	if err != nil {
-		h.logError(ctx, "NoteHandler.Delete.NoteGet", err)
-		apperrors.ErrorResponse(c, err)
-		return
-	}
-	if noteSrc == nil || noteSrc.Action == "delete" {
-		response.ToResponse(code.ErrorNoteNotFound)
-		return
+	// 调用方显式提供基线字段时启用条件删除；全部省略时 Baseline 保持 nil。
+	// Only an explicit baseline switches to a conditional delete.
+	params.Baseline = dto.BuildBaselineCommit(params.BaseHash, params.BaseHashMissing, params.BaseRevision, params.IsConflictResolved)
+
+	// 条件删除把"存在且仍匹配基线"的判断交给服务层 CAS 临界区（连同墓碑幂等语义），
+	// 不做会与临界区竞争的前置读；无条件删除保持原有的存在性预检。
+	// A conditional delete lets the service CAS decide "exists and still matches";
+	// an unconditional delete keeps the original existence pre-check.
+	if params.Baseline == nil {
+		// Check if note exists
+		// 检查笔记是否存在
+		noteSrc, err := noteSvc.Get(ctx, uid, &dto.NoteGetRequest{
+			Vault:    params.Vault,
+			Path:     params.Path,
+			PathHash: params.PathHash,
+		})
+		if err != nil {
+			h.logError(ctx, "NoteHandler.Delete.NoteGet", err)
+			apperrors.ErrorResponse(c, err)
+			return
+		}
+		if noteSrc == nil || noteSrc.Action == "delete" {
+			response.ToResponse(code.ErrorNoteNotFound)
+			return
+		}
 	}
 
 	// Execute deletion
 	// 执行删除
 	note, err := noteSvc.Delete(ctx, uid, params)
 	if err != nil {
+		if conflict, ok := baselineConflictOf(err); ok {
+			h.respondBaselineConflict(c, uid, dto.SyncConflictKindNote, params.Vault, params.Path, params.PathHash, params.BaseHash, conflict)
+			return
+		}
 		h.logError(ctx, "NoteHandler.Delete.NoteDelete", err)
 		apperrors.ErrorResponse(c, err)
 		return
 	}
 
 	response.ToResponse(code.Success.WithData(note))
+	// 条件删除命中不存在/已删除的行时是幂等空操作：不广播，避免向其它设备下发无效删除。
+	// A conditional delete that hit a missing/already-deleted row is an idempotent
+	// no-op: do not broadcast an ineffective delete to other devices.
+	if params.Baseline != nil && note.Unchanged {
+		return
+	}
 	h.WSS.BroadcastToUser(uid, code.Success.WithData(note).WithVault(params.Vault), "NoteSyncDelete")
 }
 
@@ -486,9 +534,9 @@ func (h *NoteHandler) PatchFrontmatter(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPIPath(params.Path)
-	if !ok {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleaned, codeErr := h.cleanWriteAPIPath(params.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if params.Path != cleaned {
@@ -557,9 +605,9 @@ func (h *NoteHandler) Append(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPIPath(params.Path)
-	if !ok {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleaned, codeErr := h.cleanWriteAPIPath(params.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if params.Path != cleaned {
@@ -628,9 +676,9 @@ func (h *NoteHandler) Prepend(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPIPath(params.Path)
-	if !ok {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleaned, codeErr := h.cleanWriteAPIPath(params.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if params.Path != cleaned {
@@ -699,9 +747,9 @@ func (h *NoteHandler) Replace(c *gin.Context) {
 
 	// Validate and clean the path (#342 S-8, #244)
 	// 校验并清洗路径（#342 S-8, #244）
-	cleaned, ok := cleanAPIPath(params.Path)
-	if !ok {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleaned, codeErr := h.cleanWriteAPIPath(params.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if params.Path != cleaned {
@@ -773,9 +821,13 @@ func (h *NoteHandler) Rename(c *gin.Context) {
 	// Validate and clean both paths: strip leading "/", reject traversal/NUL,
 	// ensure notes end in .md (#342 S-8, #244)
 	// 校验并清洗新旧两个路径：去前导 "/"、拒绝越界与 NUL、保证笔记以 .md 结尾（#342 S-8, #244）
-	newPath, ok := cleanAPIPath(params.Path)
+	newPath, codeErr := h.cleanWriteAPIPath(params.Path)
 	oldPath, okOld := cleanAPIPath(params.OldPath)
-	if !ok || !okOld {
+	if codeErr != nil {
+		response.ToResponse(codeErr)
+		return
+	}
+	if !okOld {
 		response.ToResponse(code.ErrorInvalidPath)
 		return
 	}

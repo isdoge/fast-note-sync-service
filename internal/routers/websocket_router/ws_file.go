@@ -189,6 +189,10 @@ func (h *FileWSHandler) FileUploadCheck(c *pkgapp.WebsocketClient, msg *pkgapp.W
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path").WithData(errPathData(slotPath)))
 		return
 	}
+	if h.writeRejectsSystemJunk(params.Path) {
+		h.respondSystemJunkPath(c, slotPath)
+		return
+	}
 
 	ctx := c.Context()
 
@@ -689,6 +693,11 @@ func (h *FileWSHandler) FileRename(c *pkgapp.WebsocketClient, msg *pkgapp.WebSoc
 		c.ToResponse(code.ErrorInvalidPath.WithDetails("invalid file path").WithData(errPathData(slotPath)))
 		return
 	}
+	// 改名只看新路径：旧路径是垃圾、新路径正常的放行，便于清理历史数据。
+	if h.writeRejectsSystemJunk(params.Path) {
+		h.respondSystemJunkPath(c, slotPath)
+		return
+	}
 
 	// Check if there is an active upload session for the old path hash
 	// 检查旧路径哈希是否存在活跃的上传会话
@@ -824,6 +833,12 @@ func (h *FileWSHandler) FileChunkDownload(c *pkgapp.WebsocketClient, msg *pkgapp
 			ChunkSize:   session.ChunkSize,
 			TotalChunks: session.TotalChunks,
 			Size:        session.Size,
+			// 带上该附件当前的 revision：插件下载完成后据此记录“已确认基线”，
+			// 否则后续改名/修改会被当成无基线冲突。
+			// Carry the attachment's current revision so the plugin can record a
+			// confirmed baseline after the download; without it every later
+			// rename/edit is rejected as a no-baseline conflict.
+			Revision: fileSvc.Revision,
 		},
 	).WithVault(params.Vault).WithContext(params.Context), FileSyncChunkDownload)
 
@@ -1278,6 +1293,17 @@ func (h *FileWSHandler) doFileSync(c *pkgapp.WebsocketClient, params *dto.FileSy
 				}
 			}
 
+			// 服务端没有存活行时，系统垃圾文件不再要求客户端上传（老客户端每轮都会
+			// 上报本地垃圾文件，发起会话只会被写入入口拒收）。服务端已有的垃圾行仍走
+			// 原有判定，历史数据照常下发与删除。
+			// When the server has no live row, do not request an upload for a system junk
+			// file; existing server junk rows keep the original verdict.
+			if file.Path != "" && h.writeRejectsSystemJunk(file.Path) {
+				if sFile, ok := serverFiles[file.Path]; !ok || sFile == nil || sFile.Action == "delete" {
+					continue
+				}
+			}
+
 			// Create upload session and return FileUpload message
 			// 创建上传会话并返回 FileUpload 消息
 			if hasWritePermission {
@@ -1432,6 +1458,11 @@ func (h *FileWSHandler) handleFileUploadSessionTimeout(c *pkgapp.WebsocketClient
 // handleFileUploadSession initializes a file upload session and returns upload message.
 // handleFileUploadSession 初始化一个文件上传会话并返回上传消息.
 func (h *FileWSHandler) handleFileUploadSessionCreate(c *pkgapp.WebsocketClient, vault, path, pathHash, contentHash string, size, ctime, mtime int64, context string) (*FileUploadBinaryChunkSession, error) {
+	// 写入口统一拒收系统垃圾文件；同步清单已在发起上传前跳过垃圾路径，
+	// 这里兜住“服务端已有历史垃圾条目、客户端内容更新”的写入。
+	if h.writeRejectsSystemJunk(path) {
+		return nil, code.ErrorInvalidPath.WithDetails("system junk file is not synced")
+	}
 	// Reuse a session only for the same vault and full path with matching attributes,
 	// and only while it is still accepting chunks. Shared fields are read/written
 	// under session.mu because a parallel chunk write holds the same lock.

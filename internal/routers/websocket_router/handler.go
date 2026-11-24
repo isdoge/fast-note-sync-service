@@ -10,6 +10,7 @@ import (
 	"github.com/haierkeys/fast-note-sync-service/internal/app"
 	pkgapp "github.com/haierkeys/fast-note-sync-service/pkg/app"
 	"github.com/haierkeys/fast-note-sync-service/pkg/code"
+	"github.com/haierkeys/fast-note-sync-service/pkg/util"
 	"go.uber.org/zap"
 )
 
@@ -129,6 +130,26 @@ func extractMsgMeta(data []byte) (msgCtx, vault, path string) {
 // 只有在 data.path 为字符串时才释放该动作占用的并发名额，因此占名额动作的出错返回都必须带上。
 func errPathData(path string) map[string]string {
 	return map[string]string{"path": path}
+}
+
+// writeRejectsSystemJunk reports whether a WebSocket write entry point should reject
+// this path: the switch is on and the path contains a system junk segment. Only
+// create/overwrite entry points and rename target paths may call this; delete,
+// restore and read handlers must not, so legacy junk entries stay deletable.
+// writeRejectsSystemJunk 返回 WebSocket 写入口是否应拒收该路径：开关开启且路径
+// 含系统垃圾文件段。只有新建/覆盖入口与改名目标路径可以调用；删除、恢复与读取
+// 处理器不得调用，以保证库里已有的垃圾条目仍可删除。
+func (h *WSHandler) writeRejectsSystemJunk(path string) bool {
+	return h != nil && h.App != nil && h.App.Config().App.SyncExcludeSystemJunkEnabled() && util.IsSystemJunkPath(path)
+}
+
+// respondSystemJunkPath rejects a junk write with the existing invalid-path code and
+// echoes the client's raw slot path, so the plugin releases its concurrency slot and
+// the sync round can finish. No new error code is introduced.
+// respondSystemJunkPath 用既有非法路径错误码拒收垃圾写入，并回显客户端占用并发
+// 名额的原始路径，让插件释放名额、结束同步轮；不新增错误码。
+func (h *WSHandler) respondSystemJunkPath(c *pkgapp.WebsocketClient, slotPath string) {
+	c.ToResponse(code.ErrorInvalidPath.WithDetails("system junk file is not synced").WithData(errPathData(slotPath)))
 }
 
 // clientSlotPath returns the path the client used to reserve its concurrency slot.

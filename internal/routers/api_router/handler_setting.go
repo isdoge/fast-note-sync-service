@@ -101,9 +101,9 @@ func (h *SettingHandler) CreateOrUpdate(c *gin.Context) {
 		return
 	}
 
-	cleanedPath, okPath := cleanAPIPath(params.Path)
-	if !okPath {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleanedPath, codeErr := h.cleanWriteAPIPath(params.Path)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if params.Path != cleanedPath {
@@ -199,9 +199,9 @@ func (h *SettingHandler) Rename(c *gin.Context) {
 		return
 	}
 
-	cleanedNewPath, okNewPath := cleanAPIPath(params.NewPath)
-	if !okNewPath {
-		response.ToResponse(code.ErrorInvalidPath)
+	cleanedNewPath, codeErr := h.cleanWriteAPIPath(params.NewPath)
+	if codeErr != nil {
+		response.ToResponse(codeErr)
 		return
 	}
 	if params.NewPath != cleanedNewPath {

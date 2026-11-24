@@ -33,11 +33,19 @@ func (h *FileWSHandler) doFileSyncBaseline(c *pkgapp.WebsocketClient, params *dt
 	type clientState struct {
 		pathHash string
 		state    baselineClientState
+		// size/ctime/mtime are the client-reported attributes of the local version.
+		// They must drive the upload session: using the server row's values makes a
+		// new attachment (server absent → 0 bytes) or a larger replacement finish
+		// after the first chunk and persist a truncated size.
+		// size/ctime/mtime 是客户端上报的本地版本属性，必须用于创建上传会话；
+		// 若沿用服务端旧行（新建时不存在 → 0 字节），会话分片数会错，首个分片即判定
+		// 完成，落库大小错误且内容被截断。
+		size, ctime, mtime int64
 	}
 	clients := make(map[string]*clientState, len(params.Files)+len(params.DelFiles)+len(params.MissingFiles))
-	newState := func(pathHash, baseHash string, baseHashMissing bool, baseRevision, contentHash string) *clientState {
+	newState := func(pathHash, baseHash string, baseHashMissing bool, baseRevision, contentHash string, size, ctime, mtime int64) *clientState {
 		hash, missing := dto.NormalizeBaseline(baseHash, baseHashMissing)
-		return &clientState{pathHash: pathHash, state: baselineClientState{
+		return &clientState{pathHash: pathHash, size: size, ctime: ctime, mtime: mtime, state: baselineClientState{
 			LocalHash:    contentHash,
 			BaseHash:     hash,
 			HasBase:      !missing,
@@ -46,15 +54,16 @@ func (h *FileWSHandler) doFileSyncBaseline(c *pkgapp.WebsocketClient, params *dt
 		}}
 	}
 	for _, f := range params.Files {
-		clients[f.Path] = newState(f.PathHash, f.BaseHash, f.BaseHashMissing, f.BaseRevision, f.ContentHash)
+		clients[f.Path] = newState(f.PathHash, f.BaseHash, f.BaseHashMissing, f.BaseRevision, f.ContentHash,
+			f.Size, timex.NormalizeMilli(f.Ctime), timex.NormalizeMilli(f.Mtime))
 	}
 	for _, f := range params.DelFiles {
-		cs := newState(f.PathHash, f.BaseHash, f.BaseHashMissing, f.BaseRevision, "")
+		cs := newState(f.PathHash, f.BaseHash, f.BaseHashMissing, f.BaseRevision, "", 0, 0, 0)
 		cs.state.Deleted = true
 		clients[f.Path] = cs
 	}
 	for _, f := range params.MissingFiles {
-		cs := newState(f.PathHash, f.BaseHash, f.BaseHashMissing, f.BaseRevision, "")
+		cs := newState(f.PathHash, f.BaseHash, f.BaseHashMissing, f.BaseRevision, "", 0, 0, 0)
 		cs.state.Missing = true
 		clients[f.Path] = cs
 	}
@@ -135,11 +144,21 @@ func (h *FileWSHandler) doFileSyncBaseline(c *pkgapp.WebsocketClient, params *dt
 			})
 			needModifyCount++
 		case baselineActionUpload:
+			// 服务端没有该路径时，系统垃圾文件不再发起上传会话；老客户端每轮上报
+			// 本地垃圾文件，会话只会被写入入口拒收。服务端已有垃圾行保持原有决策。
+			if !server.Found && h.writeRejectsSystemJunk(path) {
+				break
+			}
 			if !hasWritePermission {
 				h.logWarn(c, "websocket_router.file.FileSync: permission denied for upload", zap.String(logger.FieldPath, path))
 				break
 			}
-			session, ferr := h.handleFileUploadSessionCreateWithBaseline(c, params.Vault, path, cs.pathHash, cs.state.LocalHash, server.Size, server.Ctime, server.Mtime, params.Context, cs.state)
+			// 上传会话必须按客户端上报的版本属性建立；服务端行可能不存在（Size=0）
+			// 或仍是旧版本大小，拿它算分片数会提前判完成并截断内容。
+			// Build the session from the client-reported attributes: the server row may
+			// be absent (Size=0) or still describe the old version, and its size would
+			// finish the upload early and truncate the content.
+			session, ferr := h.handleFileUploadSessionCreateWithBaseline(c, params.Vault, path, cs.pathHash, cs.state.LocalHash, cs.size, cs.ctime, cs.mtime, params.Context, cs.state)
 			if ferr != nil {
 				h.logError(c, "websocket_router.file.FileSync.handleFileUploadSession", ferr)
 				break

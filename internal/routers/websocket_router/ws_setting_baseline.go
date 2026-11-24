@@ -149,6 +149,11 @@ func (h *SettingWSHandler) doSettingSyncBaseline(c *pkgapp.WebsocketClient, para
 			})
 			needModifyCount++
 		case baselineActionUpload:
+			// 服务端没有该路径时，系统垃圾配置不再要求客户端上传；老客户端每轮都会
+			// 上报本地垃圾文件。服务端已有垃圾行保持原有决策。
+			if !server.Found && h.writeRejectsSystemJunk(path) {
+				break
+			}
 			if !hasWritePermission {
 				h.logWarn(c, "websocket_router.setting.SettingSync: permission denied for upload", zap.String(logger.FieldPath, path))
 				break

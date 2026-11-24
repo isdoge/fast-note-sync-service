@@ -1,4 +1,4 @@
-[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-CN.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
+[简体中文](https://github.com/isdoge/fast-note-sync-service/blob/master/README.md) / [English](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.en.md) / [日本語](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ja.md) / [한국어](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.ko.md) / [繁體中文](https://github.com/isdoge/fast-note-sync-service/blob/master/docs/README.zh-TW.md)
 
 > [!IMPORTANT]
 > **이 저장소는 독립적으로 유지 관리되는 수정판입니다.** 업스트림 [haierkeys/fast-note-sync-service](https://github.com/haierkeys/fast-note-sync-service)는 2026년 8월 이후 업데이트되지 않고 있습니다. 이 저장소는 [isdoge](https://github.com/isdoge)가 업스트림 v3.6.1에서 포크하여, 밀려 있던 PR을 병합하고 알려진 문제를 수정한 것으로, 이후에는 독립적으로 발전하며 버전 번호는 업스트림을 따르지 않습니다. 이미지와 다운로드 주소도 변경되었습니다. 자세한 내용은 아래의 '이 저장소에 대해'를 참고하세요.
@@ -71,6 +71,7 @@
   - 노트 보관소가 제한된 API 토큰은 요청에 반드시 보관소 매개변수를 포함해야 합니다.
   - Git 동기화 저장소가 사설망 또는 `100.64.0.0/10`(예: Tailscale로 접근하는 Gitea)에 있는 경우, 주소 또는 대역을 `git.allowed-private-hosts`에 추가해야 합니다.
   - 응답이 전혀 없는 WebSocket 연결은 약 100초 후에 끊깁니다(이전에는 약 75초). Cloudflare Tunnel 등의 경로에서 잦은 연결 끊김이 발생하면 `app.ws-ping-wait`를 늘리세요.
+  - v3.8.9부터는 기본적으로 시스템 정크 파일(`.DS_Store`, `Thumbs.db`, `desktop.ini`, `._`로 시작하는 파일)을 받지 않습니다. 클라이언트가 이런 파일을 업로드하면 오류 코드 444가 반환됩니다. 보관소에 이미 있는 파일은 영향을 받지 않으며 계속 삭제할 수 있습니다. 평소처럼 동기화하려면 `app.sync-exclude-system-junk`를 `false`로 설정하세요.
 
 ## 🎯 주요 기능
 
@@ -78,15 +79,19 @@
   * `FNS`는 MCP 서버로써 `Cherry Studio`, `Cursor` 등 호환되는 AI 클라이언트에 연결될 수 있어, AI가 개인 노트와 첨부 파일을 읽고 쓸 수 있도록 지원하며 모든 변경 사항은 실시간으로 모든 단말기에 동기화됩니다.
   * 지식 조회 도구 7종 추가: 전문 검색, 깨진 링크, 고립 노트, 태그, 최근 수정, 접두사별 목록, 보관소 통계. `note_list`, `file_list` 페이지네이션 지원.
   * OpenAI Secure MCP Tunnel을 통해 ChatGPT 커넥터로 연결할 수 있습니다.
+  * 쓰기와 삭제는 조건부 커밋을 지원합니다: 읽을 때 받은 `revision`을 함께 보내면, 다른 사람이 내용을 변경한 경우 덮어쓰지 않고 거부됩니다. 또한 노트 이력 보기 / 복원과 폴더 목록 도구를 추가했습니다.
 * **🚀 REST API 지원**:
   * 표준 REST API 인터페이스를 제공하여 프로그램 방식(예: 자동화 스크립트, AI 비서 통합)을 통한 Obsidian 노트의 CRUD 작업을 지원합니다.
   * 자세한 내용은 [RESTful API 문서](/docs/REST_API.md) 또는 [OpenAPI 문서](/docs/swagger.yaml)를 참조하세요.
+  * 노트와 첨부 파일의 쓰기, 삭제는 조건부 커밋(`baseRevision` / `baseHash`)을 지원하여 동시 수정 덮어쓰기를 방지합니다.
+  * 토큰은 자신의 실제 권한을 조회할 수 있습니다(`GET /api/user/token-capabilities`). 클라이언트가 '왜 쓸 수 없는지'를 진단하는 데 유용합니다.
 * **💻 웹 관리 패널**:
   * 현대적인 관리 인터페이스가 내장되어 사용자 생성, 플러그인 구성 생성, 저장소 및 노트 콘텐츠 관리를 쉽게 처리할 수 있습니다.
   * 만료된 로그인 토큰을 매일 자동으로 정리합니다.
 * **🔄 멀티 디바이스 노트 동기화**:
   * Vault (저장소) 자동 생성을 지원합니다.
   * 노트 관리(CRUD)를 지원하며, 변경 사항은 밀리초 단위로 실시간으로 모든 온라인 디바이스에 배포됩니다.
+  * 시스템 정크 파일(`.DS_Store`, `Thumbs.db`, `desktop.ini`, `._`로 시작하는 파일)은 기본적으로 받지 않습니다. `app.sync-exclude-system-junk`를 `false`로 설정하면 끌 수 있습니다.
 * **🖼️ 첨부 파일 동기화 지원**:
   * 이미지 등 노트 이외 파일의 동기화를 완벽하게 지원합니다.
   * 대용량 첨부 파일의 분할 업로드 및 다운로드를 지원하며, 분할 크기를 구성하여 동기화 효율성을 높일 수 있습니다.
@@ -110,6 +115,7 @@
   * 공유 방문 통계 기능을 제공합니다.
   * 공유 노트의 액세스 비밀번호를 설정할 수 있습니다.
   * 공유 노트에 대한 단축 링크를 생성할 수 있습니다.
+  * 공유 링크에 사용하는 공개 주소는 재시작 없이 실행 중에 업데이트할 수 있습니다(공개 주소가 바뀌는 환경에 적합).
 * **📂 폴더 동기화**:
   * 폴더의 생성/이름 변경/이동/삭제 동기화를 지원합니다.
 
