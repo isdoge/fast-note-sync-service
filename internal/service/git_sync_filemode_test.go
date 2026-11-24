@@ -192,3 +192,98 @@ func TestEnsureWorkspaceFileModeConfig(t *testing.T) {
 	// 已经是 false 时再调用一次也不报错。
 	require.NoError(t, ensureWorkspaceFileModeConfig(repo))
 }
+
+// TestGitSyncService_CommitStagesScopeDeletionAndRename verifies that removing a note and
+// renaming another inside the export scope both reach the commit, while a content change
+// outside the scope stays uncommitted.
+// TestGitSyncService_CommitStagesScopeDeletionAndRename 验证导出范围内删除笔记、改名笔记都会
+// 进入提交，而范围外的内容改动不会。
+func TestGitSyncService_CommitStagesScopeDeletionAndRename(t *testing.T) {
+	repo, wt, wsPath := seedFileModeWorkspace(t)
+
+	// 范围内的删除与改名：old.md 删除，pic.bin 改名并保留内容。
+	require.NoError(t, os.Remove(filepath.Join(wsPath, "src/content/posts/old.md")))
+	require.NoError(t, os.Rename(
+		filepath.Join(wsPath, "src/content/posts/assets/pic.bin"),
+		filepath.Join(wsPath, "src/content/posts/assets/renamed.bin"),
+	))
+	// 范围外的改动不得进入提交。
+	require.NoError(t, os.WriteFile(filepath.Join(wsPath, "README.md"), []byte("outside changed\n"), 0644))
+
+	svc := newTestGitSyncService(new(domainmocks.MockGitSyncRepository))
+	committed, err := svc.commitWorkspace(&domain.GitSyncConfig{ID: 1, TargetSubdir: "src/content/posts"}, repo, wt, wsPath)
+	require.NoError(t, err)
+	require.True(t, committed, "a deletion and a rename inside the scope must produce a commit")
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(head.Hash())
+	require.NoError(t, err)
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+
+	stats, err := commit.Stats()
+	require.NoError(t, err)
+	changed := make(map[string]struct{}, len(stats))
+	for _, st := range stats {
+		changed[st.Name] = struct{}{}
+	}
+	require.Equal(t, map[string]struct{}{
+		"src/content/posts/old.md": {},
+		// go-git 把改名统计为「旧路径 => 新路径」一条。
+		// go-git reports a rename as a single "old => new" entry.
+		"src/content/posts/assets/pic.bin => src/content/posts/assets/renamed.bin": {},
+	}, changed)
+
+	// 删除与改名都落到 HEAD 的树里。
+	_, err = tree.File("src/content/posts/old.md")
+	require.Error(t, err, "deleted note must be gone from the commit tree")
+	_, err = tree.File("src/content/posts/assets/pic.bin")
+	require.Error(t, err, "renamed source must be gone from the commit tree")
+	require.Equal(t, "pic\n", mustTreeFileContents(t, tree, "src/content/posts/assets/renamed.bin"))
+	// 范围外的文件保持 HEAD 内容。
+	require.Equal(t, "readme\n", mustTreeFileContents(t, tree, "README.md"))
+}
+
+// TestGitSyncService_CommitStagesScopeDeletionWhenDirectoryMissing verifies the review fix:
+// when the export directory itself no longer exists, its tracked files are staged as
+// deletions instead of being silently skipped, and nothing outside the scope is removed.
+// TestGitSyncService_CommitStagesScopeDeletionWhenDirectoryMissing 验证复核修复：导出目录整个
+// 不存在时，其下已跟踪文件按删除提交，而不是被静默跳过；范围外的文件不受影响。
+func TestGitSyncService_CommitStagesScopeDeletionWhenDirectoryMissing(t *testing.T) {
+	repo, wt, wsPath := seedFileModeWorkspace(t)
+
+	// 整个导出目录消失，同时改动一个范围外的文件。
+	require.NoError(t, os.RemoveAll(filepath.Join(wsPath, "src/content/posts")))
+	require.NoError(t, os.WriteFile(filepath.Join(wsPath, "README.md"), []byte("outside changed\n"), 0644))
+
+	svc := newTestGitSyncService(new(domainmocks.MockGitSyncRepository))
+	committed, err := svc.commitWorkspace(&domain.GitSyncConfig{ID: 1, TargetSubdir: "src/content/posts"}, repo, wt, wsPath)
+	require.NoError(t, err)
+	require.True(t, committed, "deletions under a missing scope directory must produce a commit")
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(head.Hash())
+	require.NoError(t, err)
+	tree, err := commit.Tree()
+	require.NoError(t, err)
+
+	stats, err := commit.Stats()
+	require.NoError(t, err)
+	changed := make(map[string]struct{}, len(stats))
+	for _, st := range stats {
+		changed[st.Name] = struct{}{}
+	}
+	require.Equal(t, map[string]struct{}{
+		"src/content/posts/old.md":           {},
+		"src/content/posts/scripts/build.sh": {},
+		"src/content/posts/assets/pic.bin":   {},
+	}, changed)
+
+	// 范围内文件从树里消失，范围外文件原样保留。
+	_, err = tree.File("src/content/posts/old.md")
+	require.Error(t, err)
+	require.Equal(t, "readme\n", mustTreeFileContents(t, tree, "README.md"))
+	require.Equal(t, filemode.Executable, mustTreeEntryMode(t, tree, "deploy/app.sh"))
+}
