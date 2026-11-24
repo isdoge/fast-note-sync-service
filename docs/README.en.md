@@ -45,7 +45,7 @@ This repository is an independently maintained fork of [haierkeys/fast-note-sync
 - **Origin**: Forked from upstream v3.6.1, it merges the 13 PRs that were pending upstream at the time and fixes a batch of known issues. See the [changelog](CHANGELOG.en.md) for the complete list.
 - **Versioning**: Version numbers increment independently starting from v3.7.0 and no longer follow upstream.
 - **Release channels**: Binaries are published only on this repository's [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases), and the container image is published only to `ghcr.io/isdoge/fast-note-sync-service`. The in-app update check and download URLs have also been pointed at this repository.
-- **Companion plugin**: Pair it with the likewise independently maintained [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync) (v2.5.0 or newer). Some fixes only take effect when both the server and the plugin are upgraded.
+- **Companion plugin**: Pair it with the likewise independently maintained [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync) (v2.6.10 or newer; older plugin versions can still connect, but new features require the newer plugin). Some fixes only take effect when both the server and the plugin are upgraded.
 - **Unchanged**: The original author's copyright attribution and sponsorship information, and the Go module path (`github.com/haierkeys/fast-note-sync-service`); existing configuration files and data directories can be used as they are.
 - **Feedback**: Please report issues and feature requests to this repository's [Issues](https://github.com/isdoge/fast-note-sync-service/issues), not to the upstream repository.
 
