@@ -21,6 +21,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -1042,6 +1043,13 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 	if err != nil {
 		return err
 	}
+	// 工作区内部由 commitWorkspace 归一化模式；core.fileMode=false 只是让直接在工作区执行
+	// git status 时不再看到模式差异，写入失败不影响同步。
+	// commitWorkspace normalizes modes itself; this only keeps a plain `git status` in the
+	// workspace quiet, so a failure here must not fail the sync.
+	if cfgErr := ensureWorkspaceFileModeConfig(r); cfgErr != nil {
+		s.logger.Warn("Failed to set core.fileMode=false on workspace", zap.Int64("configId", conf.ID), zap.Error(cfgErr))
+	}
 
 	// 2. Pull latest // 2. 拉取最新变更
 	s.logger.Info("Pulling latest changes", zap.Int64("configId", conf.ID))
@@ -1070,7 +1078,7 @@ func (s *gitSyncService) doSync(ctx context.Context, conf *domain.GitSyncConfig)
 	}
 
 	// 3. Extract DB content to Workspace and commit // 3. 提取 DB 内容到工作区并提交
-	committed, err := s.exportAndCommit(ctx, conf, wt, wsPath)
+	committed, err := s.exportAndCommit(ctx, conf, r, wt, wsPath)
 	if err != nil {
 		return err
 	}
@@ -1147,25 +1155,28 @@ func (s *gitSyncService) consumeWebhookRetry(configID int64) bool {
 const gitSyncPushMaxAttempts = 2
 
 // exportAndCommit mirrors DB content (notes, attachments, settings) into the workspace and
-// commits when the worktree is dirty. It reports whether a commit was created.
-// exportAndCommit 将 DB 内容（笔记、附件、设置）镜像到工作区，工作区有变更时提交。
+// commits when the mirrored content actually changed. It reports whether a commit was created.
+// exportAndCommit 将 DB 内容（笔记、附件、设置）镜像到工作区，内容确有变化时提交。
 // 返回是否产生了新提交。
-func (s *gitSyncService) exportAndCommit(ctx context.Context, conf *domain.GitSyncConfig, wt *git.Worktree, wsPath string) (bool, error) {
+func (s *gitSyncService) exportAndCommit(ctx context.Context, conf *domain.GitSyncConfig, r *git.Repository, wt *git.Worktree, wsPath string) (bool, error) {
 	if _, err := s.mirrorNotesToWorkspace(ctx, conf, wsPath, conf.LastSyncTime); err != nil {
 		return false, fmt.Errorf("mirror to workspace failed: %w", err)
 	}
 
-	status, err := wt.Status()
+	return s.commitWorkspace(conf, r, wt, wsPath)
+}
+
+// commitWorkspace stages the exported subtree, commits it when the content actually changed
+// and returns whether a commit was created.
+// commitWorkspace 暂存导出范围内的改动，内容确有变化时提交，并返回是否产生了新提交。
+func (s *gitSyncService) commitWorkspace(conf *domain.GitSyncConfig, r *git.Repository, wt *git.Worktree, wsPath string) (bool, error) {
+	changed, err := s.stageWorkspaceChanges(conf, r, wt, wsPath)
 	if err != nil {
 		return false, err
 	}
-	if status.IsClean() {
+	if !changed {
 		s.logger.Info("No changes to commit", zap.Int64("configId", conf.ID))
 		return false, nil
-	}
-
-	if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		return false, err
 	}
 
 	name := s.gitConf.Name
@@ -1187,6 +1198,177 @@ func (s *gitSyncService) exportAndCommit(ctx context.Context, conf *domain.GitSy
 		return false, err
 	}
 	return true, nil
+}
+
+// stageWorkspaceChanges stages only the export scope and keeps the commit free of file-mode
+// changes. go-git records an index entry's mode straight from the OS file (Lstat) and does
+// not honor core.fileMode, so a workspace on a filesystem that reports the owner execute bit
+// for ordinary files would otherwise rewrite every tracked file as 100755. Tracked files
+// keep the mode from HEAD (scripts stay 100755), new files are committed as 100644, and paths
+// outside TargetSubdir are never staged.
+// stageWorkspaceChanges 只暂存导出范围内的改动，并让文件模式变化不进入提交。go-git 直接按
+// 磁盘模式记录索引项、不识别 core.fileMode；工作区所在文件系统若给普通文件带上所有者执行位，
+// 整仓库都会被改写成 100755。跟踪文件沿用 HEAD 里的模式（脚本仍是 100755），新文件按 100644
+// 提交，TargetSubdir 以外的路径一律不暂存。
+func (s *gitSyncService) stageWorkspaceChanges(conf *domain.GitSyncConfig, r *git.Repository, wt *git.Worktree, wsPath string) (bool, error) {
+	headFiles, headHash, hasHead, err := gitSyncHeadFiles(r)
+	if err != nil {
+		return false, err
+	}
+	if hasHead {
+		// 先把索引还原到 HEAD，丢弃上一次运行可能遗留的暂存内容；提交因此只包含本次暂存的路径。
+		// Reset the index to HEAD first so a previous interrupted run cannot leak staged paths
+		// outside the export scope into this commit.
+		if err := wt.Reset(&git.ResetOptions{Mode: git.MixedReset, Commit: headHash}); err != nil {
+			return false, fmt.Errorf("reset index to head failed: %w", err)
+		}
+	}
+
+	scope, err := normalizeRelativeSubdir(conf.TargetSubdir)
+	if err != nil {
+		return false, fmt.Errorf("invalid target subdirectory: %w", err)
+	}
+	if err := stageExportScope(wt, wsPath, scope); err != nil {
+		return false, err
+	}
+
+	idx, err := r.Storer.Index()
+	if err != nil {
+		return false, err
+	}
+
+	modesNormalized := false
+	for _, e := range idx.Entries {
+		if !syncPathInScope(e.Name, scope) {
+			continue
+		}
+		if f, ok := headFiles[e.Name]; ok {
+			if e.Mode != f.Mode {
+				e.Mode = f.Mode
+				modesNormalized = true
+			}
+			continue
+		}
+		// 新文件一律按普通文件提交，不受磁盘执行位影响。
+		// New files are always committed as regular files, regardless of the on-disk exec bit.
+		if e.Mode == filemode.Executable {
+			e.Mode = filemode.Regular
+			modesNormalized = true
+		}
+	}
+	if modesNormalized {
+		if err := r.Storer.SetIndex(idx); err != nil {
+			return false, err
+		}
+	}
+
+	// 只有内容或增删的差异才算变更：纯模式差异在上面已经被抹平。
+	// Only content changes and additions/deletions count: mode-only differences were
+	// normalized away above.
+	indexed := make(map[string]struct{}, len(idx.Entries))
+	for _, e := range idx.Entries {
+		if !syncPathInScope(e.Name, scope) {
+			continue
+		}
+		indexed[e.Name] = struct{}{}
+		f, ok := headFiles[e.Name]
+		if !ok || f.Hash != e.Hash || f.Mode != e.Mode {
+			return true, nil
+		}
+	}
+	for name := range headFiles {
+		if !syncPathInScope(name, scope) {
+			continue
+		}
+		if _, ok := indexed[name]; !ok {
+			return true, nil // 导出范围内的文件被删除 // deleted inside the export scope
+		}
+	}
+	return false, nil
+}
+
+// gitSyncHeadFiles indexes the blobs of the current HEAD commit by path. hasHead is false on
+// an unborn HEAD (a freshly initialized workspace).
+// gitSyncHeadFiles 按路径索引 HEAD 提交里的 blob；全新初始化、尚无提交的工作区 hasHead 为 false。
+func gitSyncHeadFiles(r *git.Repository) (map[string]object.File, plumbing.Hash, bool, error) {
+	head, err := r.Head()
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return nil, plumbing.ZeroHash, false, nil
+		}
+		return nil, plumbing.ZeroHash, false, err
+	}
+	commit, err := r.CommitObject(head.Hash())
+	if err != nil {
+		return nil, plumbing.ZeroHash, false, err
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, plumbing.ZeroHash, false, err
+	}
+	files := make(map[string]object.File)
+	if err := tree.Files().ForEach(func(f *object.File) error {
+		files[f.Name] = *f
+		return nil
+	}); err != nil {
+		return nil, plumbing.ZeroHash, false, err
+	}
+	return files, head.Hash(), true, nil
+}
+
+// stageExportScope stages changes under scope (a slash-separated workspace-relative
+// directory). An empty scope keeps the legacy full-mirror behavior of staging the whole
+// workspace.
+// stageExportScope 暂存 scope（斜杠分隔的工作区相对目录）下的改动；scope 为空时保持旧的整库
+// 镜像行为，暂存整个工作区。
+func stageExportScope(wt *git.Worktree, wsPath, scope string) error {
+	if scope == "" {
+		return wt.AddWithOptions(&git.AddOptions{All: true})
+	}
+	rel := filepath.FromSlash(scope)
+	if _, err := os.Stat(filepath.Join(wsPath, rel)); err != nil {
+		if os.IsNotExist(err) {
+			// 目标目录尚未创建：导出范围内没有任何文件可暂存。
+			// The scope directory does not exist yet, so there is nothing to stage.
+			return nil
+		}
+		return err
+	}
+	return wt.AddWithOptions(&git.AddOptions{Path: rel})
+}
+
+// syncPathInScope reports whether a slash-separated workspace path belongs to the export
+// scope; an empty scope covers the whole workspace.
+// syncPathInScope 判断斜杠分隔的工作区路径是否属于导出范围；空范围表示整个工作区。
+func syncPathInScope(name, scope string) bool {
+	if scope == "" {
+		return true
+	}
+	name = filepath.ToSlash(name)
+	return name == scope || strings.HasPrefix(name, scope+"/")
+}
+
+// ensureWorkspaceFileModeConfig writes core.fileMode=false into the workspace repository's
+// own config. go-git does not consult the option (stageWorkspaceChanges normalizes the index
+// itself), but a plain `git status` run by an operator in the workspace then ignores on-disk
+// permission differences instead of reporting the whole tree as modified.
+// ensureWorkspaceFileModeConfig 把 core.fileMode=false 写进工作区仓库自己的配置。go-git 不读取
+// 该选项（stageWorkspaceChanges 自己归一化索引），但运维人员直接在工作区执行 git status 时，
+// 就不会把整棵工作树报成已修改。
+func ensureWorkspaceFileModeConfig(r *git.Repository) error {
+	cfg, err := r.Config()
+	if err != nil {
+		return err
+	}
+	if cfg.Raw == nil {
+		return nil
+	}
+	core := cfg.Raw.Section("core")
+	if strings.EqualFold(core.Option("filemode"), "false") {
+		return nil
+	}
+	core.SetOption("filemode", "false")
+	return r.SetConfig(cfg)
 }
 
 // localAheadOfRemote reports whether the local branch HEAD differs from the remote-tracking
@@ -1297,7 +1479,7 @@ func (s *gitSyncService) realignAndReexport(ctx context.Context, r *git.Reposito
 		return false, err
 	}
 
-	committed, err := s.exportAndCommit(ctx, conf, wt, wsPath)
+	committed, err := s.exportAndCommit(ctx, conf, r, wt, wsPath)
 	if err != nil {
 		return false, err
 	}
