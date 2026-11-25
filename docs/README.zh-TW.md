@@ -45,7 +45,7 @@
 - **來源**：從上游 v3.6.1 分出，合併了上游當時未處理的 13 個 PR，並修復了一批已知問題。完整清單見[更新日誌](/docs/CHANGELOG.zh-TW.md)。
 - **版本號**：自 v3.7.0 起獨立遞增，不再跟隨上游。
 - **發布管道**：二進位檔只在本倉庫的 [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases) 發布，映像檔只發布到 `ghcr.io/isdoge/fast-note-sync-service`。程式內的更新檢查與下載位址也已指向本倉庫。
-- **配套外掛**：請搭配同樣獨立維護的 [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)（v2.5.0 及以上）。部分修復需要服務端和外掛都升級才生效。
+- **配套外掛**：請搭配同樣獨立維護的 [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)（v2.6.10 及以上；舊版外掛仍可連線，新功能需要新版外掛配合）。部分修復需要服務端和外掛都升級才生效。
 - **保持不變**：原作者的版權署名與贊助資訊、Go module 路徑（`github.com/haierkeys/fast-note-sync-service`）；原有的設定檔和資料目錄可以直接沿用。
 - **意見回饋**：問題和需求請提到本倉庫的 [Issues](https://github.com/isdoge/fast-note-sync-service/issues)，不要提到上游倉庫。
 

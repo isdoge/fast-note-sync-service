@@ -45,7 +45,7 @@
 - **由来**：アップストリーム v3.6.1 からフォークし、当時未処理だった 13 件の PR をマージし、一連の既知の問題を修正しています。完全な一覧は[更新履歴](/docs/CHANGELOG.ja.md)をご覧ください。
 - **バージョン番号**：v3.7.0 以降は独立して採番され、アップストリームには追随しません。
 - **リリースチャネル**：バイナリは本リポジトリの [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases) のみで、コンテナイメージは `ghcr.io/isdoge/fast-note-sync-service` のみで公開されます。アプリ内のアップデート確認とダウンロード先も本リポジトリを指すようになりました。
-- **併用するプラグイン**：同じく独立メンテナンスされている [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)（v2.5.0 以上）と併用してください。一部の修正はサーバーとプラグインの両方をアップグレードしないと有効になりません。
+- **併用するプラグイン**：同じく独立メンテナンスされている [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)（v2.6.10 以上。旧バージョンのプラグインでも接続できますが、新機能には新しいプラグインが必要です）と併用してください。一部の修正はサーバーとプラグインの両方をアップグレードしないと有効になりません。
 - **変更しないもの**：原作者の著作権表記と寄付情報、Go module パス（`github.com/haierkeys/fast-note-sync-service`）。既存の設定ファイルとデータディレクトリはそのまま使えます。
 - **フィードバック**：問題やご要望は本リポジトリの [Issues](https://github.com/isdoge/fast-note-sync-service/issues) までお寄せください。アップストリームには投稿しないでください。
 

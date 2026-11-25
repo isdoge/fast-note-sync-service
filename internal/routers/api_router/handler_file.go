@@ -166,7 +166,7 @@ func (h *FileHandler) GetInfo(c *gin.Context) {
 
 // Delete deletes a file
 // @Summary Delete attachment
-// @Description Permanently delete a specific attachment record and its physical file
+// @Description Permanently delete a specific attachment record and its physical file. Sending both baseRevision and baseHash turns the delete into a conditional delete; a mismatch returns code 530 with a structured conflict body.
 // @Tags File
 // @Security UserAuthToken
 // @Produce json
@@ -562,15 +562,20 @@ func (h *FileHandler) Rename(c *gin.Context) {
 
 // Upload uploads a file
 // @Summary Upload attachment
-// @Description Upload a file as an attachment
+// @Description Upload a file as an attachment. Sending any baseline field turns the upload into a conditional write; a mismatch returns code 530 with a structured conflict body and writes nothing.
 // @Tags File
 // @Security UserAuthToken
 // @Accept multipart/form-data
 // @Produce json
 // @Param vault formData string true "Vault name"
 // @Param path formData string true "File path"
+// @Param pathHash formData string false "Path hash"
 // @Param ctime formData int64 false "Creation timestamp"
 // @Param mtime formData int64 false "Modification timestamp"
+// @Param baseRevision formData string false "Server revision token of the baseline"
+// @Param baseHash formData string false "Content hash baseline"
+// @Param baseHashMissing formData boolean false "No trusted content baseline"
+// @Param isConflictResolved formData boolean false "Marks a manual conflict resolution"
 // @Param file formData file true "File to upload"
 // @Success 200 {object} pkgapp.Res{data=dto.FileDTO} "Success"
 // @Router /api/file [post]

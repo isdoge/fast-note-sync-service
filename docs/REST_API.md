@@ -52,6 +52,87 @@ interface ListResponse<T> {
 | page | number | Page number | 1 |
 | page_size | number | Items per page | 10 (Max 100) |
 
+### Conditional Writes (Optimistic Concurrency)
+
+`POST /api/note`, `DELETE /api/note`, `POST /api/file` and `DELETE /api/file` accept
+optional baseline fields. Sending none of them keeps the legacy unconditional
+behavior; sending any of them turns the request into a guarded compare-and-set:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| baseRevision | string | Server revision token of the version the caller last saw. Read it from the `revision` field returned by note/file reads, lists and writes. |
+| baseHash | string | Content hash of that version (`contentHash` for attachments, content hash for notes). |
+| baseHashMissing | boolean | Set `true` when there is no trusted content baseline; the revision check still applies. |
+| isConflictResolved | boolean | Marks an explicit user choice. It never bypasses the revision check; it only allows reviving a server tombstone when `baseRevision` still matches. |
+
+Rules:
+
+- Updating an existing note or attachment requires `baseRevision`. Without it, a
+  conditional update is rejected with `530` (`revision_changed`).
+- A conditional delete requires **both** `baseRevision` and `baseHash`. Supplying
+  only one is rejected with `530` (`local_deleted`).
+- Deleting a row that is already deleted or missing is an idempotent success; it is
+  not broadcast to other clients.
+- A rejected write returns HTTP 200 with `code: 530`, message
+  `Sync conflict detected`, and a structured `data` body. No write is performed, no
+  conflict copy is created and no realtime event is broadcast.
+
+Conflict body (`data`):
+
+```json
+{
+  "conflict": true,
+  "kind": "note",
+  "path": "Notes/ReadMe.md",
+  "pathHash": "hash123",
+  "reason": "both_modified",
+  "serverRevision": "0123456789abcdef0123456789abcdef",
+  "serverHash": "chash456",
+  "serverDeleted": false,
+  "baseHash": "bhash789",
+  "baseMissing": true,
+  "serverContent": "# current note body"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| conflict | Always `true`. |
+| kind | `note` or `file`. |
+| reason | `both_modified`, `revision_changed`, `remote_deleted`, `local_deleted` or `server_missing`. |
+| serverRevision / serverHash | Current server version token and content hash. |
+| serverDeleted | `true` when the server row is a tombstone. |
+| baseHash | Baseline used for this decision. |
+| baseMissing | Always `true` for REST: the common-ancestor body is not resolved. |
+| serverContent | Live note body for note conflicts; omitted for attachments and deleted rows. |
+
+A guarded write never restores a deleted item. When `serverDeleted` is `true` (or
+the reason is `remote_deleted` / `server_missing`), use `PUT /api/note/restore` or
+`PUT /api/file/restore`, or retry without baseline fields to recreate the item.
+
+### System Junk File Filtering
+
+When `app.sync-exclude-system-junk` is `true` (default), REST write entry points
+reject paths containing system junk names. Matching is per path segment:
+
+- `.DS_Store`, `Thumbs.db` and `desktop.ini` match as a whole segment,
+  case-insensitively.
+- Any segment starting with `._` (macOS AppleDouble files) matches.
+- Names that merely contain these strings (`my._notes.md`) do not match.
+
+Rejected requests return `code: 444` (`Invalid path`) with
+`details: "system junk file is not synced"`.
+
+Affected endpoints: `POST /api/note`, `PATCH /api/note/frontmatter`,
+`POST /api/note/append`, `POST /api/note/prepend`, `POST /api/note/replace`,
+`POST /api/note/rename` (target path), `POST /api/file`, `POST /api/file/rename`
+(target path), `POST /api/folder`, `POST /api/setting` and
+`POST /api/setting/rename` (target path).
+
+Read, list, download, delete, restore and recycle-clear endpoints are not affected;
+junk entries already stored remain readable and deletable. Set
+`app.sync-exclude-system-junk: false` to restore the previous behavior.
+
 ---
 
 ## Error Codes Reference
@@ -72,10 +153,13 @@ interface ListResponse<T> {
 | 408 | Username already exists |
 | 414 | Note Vault does not exist |
 | 428 | Note does not exist |
+| 411 | This operation requires administrator privileges |
+| 444 | Invalid path (also returned for system junk paths when filtering is enabled) |
 | 445 | This operation requires administrator privileges |
 | 505 | Invalid Params |
 | 507 | Not logged in |
 | 508 | Session expired |
+| 530 | Sync conflict detected (conditional write or delete rejected) |
 
 ---
 
@@ -252,10 +336,43 @@ Schema: `file`
 
 ---
 
+### Upload attachment
+**Endpoint**: `POST /api/file`
+
+Upload a file as an attachment (`multipart/form-data`). Sending any baseline field
+turns the upload into a conditional write (see [Conditional Writes](#conditional-writes-optimistic-concurrency)).
+
+**Parameters**:
+| Name | In | Type | Required | Description |
+|------|----|------|----------|-------------|
+| token | header | string | ✓ | Auth Token |
+| vault | formData | string | ✓ | Vault name // 保险库名称 |
+| path | formData | string | ✓ | File path // 文件路径 |
+| pathHash | formData | string | - | Path hash // 路径哈希 |
+| ctime | formData | int64 | - | Creation timestamp // 创建时间戳 |
+| mtime | formData | int64 | - | Modification timestamp // 修改时间戳 |
+| file | formData | file | ✓ | File to upload // 上传的文件 |
+| baseRevision | formData | string | - | Server revision token of the baseline // 基线的服务端版本令牌 |
+| baseHash | formData | string | - | Content hash baseline // 内容基线 |
+| baseHashMissing | formData | boolean | - | No trusted content baseline // 没有可信内容基线 |
+| isConflictResolved | formData | boolean | - | Marks a manual conflict resolution // 标记手动解决冲突 |
+
+**Success Response (200)**:
+Schema: `pkgapp.Res{data=dto.FileDTO}`. `data.revision` is the new server revision
+token, usable as the next `baseRevision`.
+
+**Conflict (200, code 530)**:
+Schema: `pkgapp.Res{data=dto.BaselineConflictResponse}` — see
+[Conditional Writes](#conditional-writes-optimistic-concurrency). Attachment bytes
+are never inlined.
+
+---
+
 ### Delete attachment
 **Endpoint**: `DELETE /api/file`
 
-Permanently delete a specific attachment record and its physical file
+Permanently delete a specific attachment record and its physical file. Sending both
+`baseRevision` and `baseHash` turns the delete into a conditional delete.
 
 **Parameters**:
 | Name | In | Type | Required | Description |
@@ -264,9 +381,17 @@ Permanently delete a specific attachment record and its physical file
 | path | query | string | ✓ | File path // 文件路径 |
 | pathHash | query | string | ✓ | Path hash // 路径哈希 |
 | vault | query | string | ✓ | Vault name // 保险库名称 |
+| baseRevision | query | string | - | Server revision token of the baseline // 基线的服务端版本令牌 |
+| baseHash | query | string | - | Content hash baseline // 内容基线 |
+| baseHashMissing | query | boolean | - | No trusted content baseline // 没有可信内容基线 |
+| isConflictResolved | query | boolean | - | Marks a manual conflict resolution // 标记手动解决冲突 |
 
 **Success Response (200)**:
-Schema: `app.Res`
+Schema: `pkgapp.Res{data=dto.FileDTO}`
+
+**Conflict (200, code 530)**:
+Schema: `pkgapp.Res{data=dto.BaselineConflictResponse}`. A conditional delete of an
+already-deleted or missing row succeeds idempotently and is not broadcast.
 
 ---
 
@@ -608,7 +733,8 @@ Get specific note content and metadata by path or path hash
 | vault | query | string | ✓ | Vault name // 保险库名称 |
 
 **Success Response (200)**:
-Schema: `app.Res`
+Schema: `pkgapp.Res{data=dto.NoteWithFileLinksResponse}`. `data.revision` is the
+current server revision token, usable as `baseRevision`.
 
 ---
 
@@ -623,15 +749,25 @@ Handle note creation, modification, or renaming (identified by path change)
 | token | header | string | ✓ | Auth Token |
 | params | body | dto.NoteModifyOrCreateRequest | ✓ | Note Content |
 
+The body may also carry `baseRevision`, `baseHash`, `baseHashMissing` and
+`isConflictResolved`. Sending any of them turns the request into a conditional
+write (see [Conditional Writes](#conditional-writes-optimistic-concurrency));
+omitting all of them keeps the unconditional behavior.
+
 **Success Response (200)**:
-Schema: `app.Res`
+Schema: `pkgapp.Res{data=dto.NoteDTO}`. `data.revision` is the new server revision
+token.
+
+**Conflict (200, code 530)**:
+Schema: `pkgapp.Res{data=dto.BaselineConflictResponse}`. No write or broadcast occurs.
 
 ---
 
 ### Delete note
 **Endpoint**: `DELETE /api/note`
 
-Move note to trash
+Move note to trash. Sending both `baseRevision` and `baseHash` turns the delete into a
+conditional delete.
 
 **Parameters**:
 | Name | In | Type | Required | Description |
@@ -640,9 +776,17 @@ Move note to trash
 | path | query | string | ✓ | Note path // 笔记路径 |
 | pathHash | query | string | - | Path hash // 路径哈希 |
 | vault | query | string | ✓ | Vault name // 保险库名称 |
+| baseRevision | query | string | - | Server revision token of the baseline // 基线的服务端版本令牌 |
+| baseHash | query | string | - | Content hash baseline // 内容基线 |
+| baseHashMissing | query | boolean | - | No trusted content baseline // 没有可信内容基线 |
+| isConflictResolved | query | boolean | - | Marks a manual conflict resolution // 标记手动解决冲突 |
 
 **Success Response (200)**:
-Schema: `app.Res`
+Schema: `pkgapp.Res{data=dto.NoteDTO}`
+
+**Conflict (200, code 530)**:
+Schema: `pkgapp.Res{data=dto.BaselineConflictResponse}`. A conditional delete of an
+already-deleted or missing note succeeds idempotently and is not broadcast.
 
 ---
 
@@ -830,7 +974,8 @@ Get note list for current user with pagination
 | pageSize | query | integer | - | Page size // 每页数量 |
 
 **Success Response (200)**:
-Schema: `app.Res`
+Schema: `pkgapp.Res{data={list: []dto.NoteNoContentDTO}}`. Every list item includes
+`revision`, so a client can list then conditionally update without an extra read.
 
 ---
 
@@ -1220,6 +1365,118 @@ Schema: `app.Res`
 
 ---
 
+### Get effective share base URL
+**Endpoint**: `GET /api/admin/share-base-url`
+
+Return the currently effective share base URL and its source. Requires the effective
+administrator; the static notifier token (see the update endpoint) cannot read it.
+
+**Parameters**:
+| Name | In | Type | Required | Description |
+|------|----|------|----------|-------------|
+| token | header | string | ✓ | Auth Token |
+
+**Success Response (200)**:
+Schema: `pkgapp.Res{data=dto.ShareBaseURLResponse}`
+
+```json
+{
+  "baseUrl": "https://notes.example.com",
+  "source": "override"
+}
+```
+
+`source` is `override` when a runtime value is set, or `config` when it falls back to
+`server.share-base-url`. An empty `baseUrl` means no fixed share base URL is
+configured; links are then built from the external API URL or the request address.
+
+---
+
+### Update runtime share base URL
+**Endpoint**: `POST /api/admin/share-base-url`
+
+Set or clear the runtime share base URL used for generated share links. Intended for
+CGNAT or tunnel setups whose public address changes dynamically, so an external
+notifier can push the new address without editing the config or restarting.
+
+**Authentication**: either an effective administrator user token, or the static
+token configured in `security.share-base-url-token` (sent as
+`Authorization: Bearer <token>` or `X-Share-Base-Url-Token: <token>`). The static
+token may only push or clear the value; reading still requires the administrator.
+
+**Parameters**:
+| Name | In | Type | Required | Description |
+|------|----|------|----------|-------------|
+| token | header | string | ✓ | Admin Auth Token, or static token (see above) |
+| params | body | dto.ShareBaseURLUpdateRequest | ✓ | Base URL |
+
+```json
+{
+  "baseUrl": "https://notes.example.com"
+}
+```
+
+`baseUrl` must be an absolute `http` or `https` URL without credentials, control
+characters, query string or fragment; trailing slashes are trimmed and a subpath is
+preserved. An empty `baseUrl` clears the override and falls back to
+`server.share-base-url`. The value is persisted atomically in `storage/share_base_url`
+(mode 0600) and loaded on restart.
+
+**Success Response (200)**:
+Schema: `pkgapp.Res{data=dto.ShareBaseURLResponse}`
+
+**Failure**:
+`code: 411` (`This operation requires administrator privileges`) when the caller is
+neither the effective administrator nor authorized by the static token; `code: 305`
+(`Invalid Params`) for an invalid or empty body/URL; `code: 479` when persisting the
+override fails.
+
+---
+
+### Get latest FastNodeSync-CLI release
+**Endpoint**: `GET /api/upgrade/cli`
+
+Relay the latest [Go1c/FastNodeSync-CLI](https://github.com/Go1c/FastNodeSync-CLI)
+release so restricted intranet clients can upgrade without direct GitHub access. The
+upstream repository is fixed server-side; clients cannot influence it.
+
+**Parameters**:
+| Name | In | Type | Required | Description |
+|------|----|------|----------|-------------|
+| token | header | string | ✓ | Auth Token |
+
+**Success Response (200)**:
+Schema: `pkgapp.Res{data=dto.CLIUpgradeResponse}`
+
+```json
+{
+  "repository": "Go1c/FastNodeSync-CLI",
+  "version": "v1.0.0",
+  "name": "v1.0.0",
+  "publishedAt": "2026-11-24T00:00:00Z",
+  "htmlUrl": "https://github.com/Go1c/FastNodeSync-CLI/releases/tag/v1.0.0",
+  "body": "Release notes",
+  "assets": [
+    {
+      "name": "FastNodeSync-CLI-linux-amd64",
+      "downloadUrl": "https://github.com/.../download/...",
+      "size": 12345678
+    }
+  ],
+  "prerelease": false,
+  "cached": true,
+  "cachedAt": "2026-11-24T00:00:00Z",
+  "stale": false
+}
+```
+
+Results are cached in memory for 10 minutes. `cached` is `true` when the response came
+from that cache; `stale` is `true` when an upstream refresh failed and an expired
+cached payload was served instead. A request with no cache and a failed upstream
+returns `code: 300` (`Server Internal Error`).
+
+---
+
 ### Get connected WebSocket clients
 **Endpoint**: `GET /api/admin/ws_clients`
 
@@ -1339,6 +1596,59 @@ Handle request to get current user info.
 
 **Success Response (200)**:
 Schema: `app.Res`
+
+---
+
+### Get token capabilities
+**Endpoint**: `GET /api/user/token-capabilities`
+
+Report the effective capabilities of the token that authenticated this request. Any
+authenticated token may call it, including read-only and vault-restricted tokens; no
+extra function point is required. Permissions are the union of the REST and WebSocket
+channels, computed with the same verification logic used by request authentication.
+The response never contains secrets, passwords or the raw token.
+
+**Parameters**:
+| Name | In | Type | Required | Description |
+|------|----|------|----------|-------------|
+| token | header | string | ✓ | Auth Token |
+
+**Success Response (200)**:
+Schema: `pkgapp.Res{data=dto.TokenCapabilitiesResponse}`
+
+```json
+{
+  "uid": 1,
+  "isAdmin": true,
+  "tokenId": "12",
+  "protocol": "rest,ws",
+  "restricted": false,
+  "vaults": [],
+  "permissions": {
+    "noteRead": true,
+    "noteWrite": true,
+    "fileRead": true,
+    "fileWrite": true,
+    "settingRead": true,
+    "settingWrite": true,
+    "vaultRead": true,
+    "vaultWrite": true
+  },
+  "readOnly": false
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| isAdmin | Whether this token belongs to the effective administrator. |
+| tokenId | Database token ID as a string (empty when not applicable). |
+| protocol | Protocol dimension from the token scope (`rest`, `ws`, or both). |
+| restricted | `true` when the token is vault-restricted or lacks full permissions. |
+| vaults | Allowed vault names; an empty array means unrestricted. |
+| permissions | Effective read/write permissions per resource. |
+| readOnly | `true` when neither note nor attachment write is allowed. |
+
+Clients can use `readOnly` and `permissions` to switch to a read-only UI.
 
 ---
 

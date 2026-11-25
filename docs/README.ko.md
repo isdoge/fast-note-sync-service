@@ -45,7 +45,7 @@
 - **유래**: 업스트림 v3.6.1에서 포크하여 당시 처리되지 않던 13개의 PR을 병합하고 알려진 문제들을 수정했습니다. 전체 목록은 [업데이트 로그](/docs/CHANGELOG.ko.md)를 참고하세요.
 - **버전 번호**: v3.7.0부터 독립적으로 증가하며 업스트림을 따르지 않습니다.
 - **배포 채널**: 바이너리는 이 저장소의 [GitHub Releases](https://github.com/isdoge/fast-note-sync-service/releases)에만, 컨테이너 이미지는 `ghcr.io/isdoge/fast-note-sync-service`에만 게시됩니다. 프로그램 내 업데이트 확인 및 다운로드 주소도 이 저장소를 가리키도록 변경되었습니다.
-- **함께 사용할 플러그인**: 마찬가지로 독립적으로 유지 관리되는 [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)(v2.5.0 이상)와 함께 사용하세요. 일부 수정 사항은 서버와 플러그인을 모두 업그레이드해야 적용됩니다.
+- **함께 사용할 플러그인**: 마찬가지로 독립적으로 유지 관리되는 [isdoge/obsidian-fast-note-sync](https://github.com/isdoge/obsidian-fast-note-sync)(v2.6.10 이상. 이전 버전 플러그인도 연결할 수 있지만, 새 기능에는 새 플러그인이 필요합니다)와 함께 사용하세요. 일부 수정 사항은 서버와 플러그인을 모두 업그레이드해야 적용됩니다.
 - **변경되지 않는 것**: 원작자의 저작권 표시와 후원 정보, Go module 경로(`github.com/haierkeys/fast-note-sync-service`). 기존 구성 파일과 데이터 디렉터리는 그대로 사용할 수 있습니다.
 - **피드백**: 문제와 요청 사항은 이 저장소의 [Issues](https://github.com/isdoge/fast-note-sync-service/issues)에 올려 주세요. 업스트림 저장소에는 올리지 마세요.
 

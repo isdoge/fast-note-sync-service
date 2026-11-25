@@ -74,7 +74,9 @@ function bumpVersion(current, part) {
     const [maj, min, pat] = current.split('.').map(n => parseInt(n, 10));
     if (part === 'major') return `${maj + 1}.0.0`;
     if (part === 'minor') return `${maj}.${min + 1}.0`;
-    if (part === 'patch') return `${maj}.${min}.${pat + 1}`;
+    // 修订号最大到 9：X.Y.9 之后接 X.(Y+1).0，不生成 .10
+    // Patch tops out at 9: X.Y.9 is followed by X.(Y+1).0, never .10
+    if (part === 'patch') return pat >= 9 ? `${maj}.${min + 1}.0` : `${maj}.${min}.${pat + 1}`;
     throw new Error('未知的增量类型: ' + part);
 }
 

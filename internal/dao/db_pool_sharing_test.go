@@ -203,9 +203,15 @@ func TestGetOrCreateDB_BuildDoesNotBlockCachedKey(t *testing.T) {
 // TestQueryWithOnceInitWaitsForRunningMigration 验证并发首次调用不会在初始化
 // 函数（如 AutoMigrate）返回前就开始查询。
 func TestQueryWithOnceInitWaitsForRunningMigration(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "once.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	tmpDir := t.TempDir()
+	db, err := gorm.Open(sqlite.Open(filepath.Join(tmpDir, "once.sqlite3")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
-	d := New(db, context.Background(), WithLogger(zap.NewNop()))
+	// 用户库也指向临时目录：不传配置时会回退到相对路径 storage/database/db.sqlite3，
+	// 在包目录下留下未跟踪的测试产物。
+	// Point the user database at the temp dir too: without a config it falls back to
+	// the relative storage/database/db.sqlite3 and leaves an untracked artifact.
+	cfg := &config.DatabaseConfig{Type: "sqlite", Path: filepath.Join(tmpDir, "once-user.sqlite3"), EnableWriteQueue: util.Ptr(false)}
+	d := New(db, context.Background(), WithConfig(cfg), WithUserDatabaseConfig(cfg), WithLogger(zap.NewNop()))
 
 	var initialized atomic.Int32
 	start := make(chan struct{})
