@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -1155,6 +1156,21 @@ func (h *AdminControlHandler) Upgrade(c *gin.Context) {
 		}
 	}
 
+	// In a container the binary belongs to the image: replacing it is lost on the next
+	// recreate and skips the deployment's own backup step, so ask for an image update instead.
+	// 容器内程序属于镜像，原地替换会在重建容器后丢失，也绕过部署侧的备份，改为提示更新镜像。
+	if runningInContainer() {
+		h.App.Logger().Warn("apiRouter.AdminControl.Upgrade refused: running in a container")
+		response.ToResponse(code.ErrorUpgradeInContainer)
+		return
+	}
+
+	if !upgradeMu.TryLock() {
+		response.ToResponse(code.ErrorUpgradeInProgress)
+		return
+	}
+	defer upgradeMu.Unlock()
+
 	checkInfo := h.App.CheckVersion("")
 	version := ""
 
@@ -1190,9 +1206,23 @@ func (h *AdminControlHandler) Upgrade(c *gin.Context) {
 		return
 	}
 
+	triggered := false
+	defer func() {
+		if !triggered {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	// The download may outlast the API-wide context timeout and the server read/write
+	// deadlines (both 60s by default), so it gets its own budget.
+	// 下载可能超过 API 统一的上下文超时与服务端读写超时（默认均为 60 秒），单独给足时间。
+	ctx, cancel := upgradeDownloadContext(c.Request.Context())
+	defer cancel()
+	extendConnDeadlines(c, upgradeDownloadTimeout+time.Minute)
+
 	// Download
 	tarPath := filepath.Join(tempDir, fileName)
-	if err := h.downloadFile(c.Request.Context(), downloadURL, tarPath); err != nil {
+	if err := h.downloadFile(ctx, downloadURL, tarPath); err != nil {
 		h.App.Logger().Error("Upgrade download failed",
 			zap.String("url", downloadURL),
 			zap.Error(err),
@@ -1215,6 +1245,7 @@ func (h *AdminControlHandler) Upgrade(c *gin.Context) {
 	}
 
 	// Trigger upgrade in App
+	triggered = true
 	h.App.TriggerUpgrade(extractedBinaryPath)
 
 	response.ToResponse(code.Success.WithDetails("Upgrade triggered, server is restarting..."))
@@ -1368,9 +1399,47 @@ func (h *AdminControlHandler) KickWSClient(c *gin.Context) {
 	response.ToResponse(code.Success.WithDetails("Client kicked successfully"))
 }
 
+// upgradeDownloadTimeout bounds the whole upgrade download.
+// upgradeDownloadTimeout 限制升级包下载的总耗时。
+const upgradeDownloadTimeout = 10 * time.Minute
+
+// upgradeMu rejects a second upgrade while one is downloading (both share the temp dir).
+// upgradeMu 防止下载期间再次触发升级（两者共用临时目录）。
+var upgradeMu sync.Mutex
+
+// runningInContainer reports whether the server runs inside Docker or Podman; a var for tests.
+// runningInContainer 判断是否运行在 Docker 或 Podman 容器内；用变量便于测试替换。
+var runningInContainer = func() bool {
+	for _, p := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// upgradeDownloadContext detaches from the request context, which the API timeout
+// middleware and the server read deadline both cancel, and applies the download budget.
+// upgradeDownloadContext 脱离请求上下文（会被超时中间件和服务端读超时取消），改用下载自己的时限。
+func upgradeDownloadContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), upgradeDownloadTimeout)
+}
+
+// extendConnDeadlines pushes back the connection read/write deadlines for this request.
+// extendConnDeadlines 延长本次请求连接的读写截止时间。
+func extendConnDeadlines(c *gin.Context, d time.Duration) {
+	rc := http.NewResponseController(c.Writer)
+	deadline := time.Now().Add(d)
+	for _, err := range []error{rc.SetReadDeadline(deadline), rc.SetWriteDeadline(deadline)} {
+		if err != nil && !errors.Is(err, http.ErrNotSupported) {
+			zap.L().Debug("extend connection deadline failed", zap.Error(err))
+		}
+	}
+}
+
 func (h *AdminControlHandler) downloadFile(ctx context.Context, url string, dest string) error {
 	client := &http.Client{
-		Timeout: 3 * time.Minute,
+		Timeout: upgradeDownloadTimeout,
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   30 * time.Second,
 			ResponseHeaderTimeout: 60 * time.Second,
