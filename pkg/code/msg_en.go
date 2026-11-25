@@ -132,4 +132,6 @@ var en_messages = map[int]string{
 	530: "Sync conflict detected",
 	531: "Resource was deleted on the server; stale upload ignored",
 	532: "Resource content was purged after the retention period and can no longer be restored",
+	540: "Server runs in a container; update the image tag and recreate the container instead of upgrading in place",
+	541: "An upgrade is already in progress",
 }

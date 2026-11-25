@@ -142,4 +142,8 @@ var (
 
 	// --- Purged Tombstone Content (532) ---
 	ErrorContentPurged = NewError(532)
+
+	// --- Server Upgrade Related (540-549) ---
+	ErrorUpgradeInContainer = NewError(540)
+	ErrorUpgradeInProgress  = NewError(541)
 )
